@@ -119,6 +119,24 @@ def ned_cmd(home):
             pass
     return '"%s" "%s"' % (py, os.path.join(home, "bin", "ned.py"))
 
+SCRIPTS = os.path.join(REPO, "skills", "no-errands", "scripts")
+
+def copy_scripts(home):
+    """scripts/*.py（ned、policy、chat_guard、outbox…）一起放進 bin/，彼此可 import。"""
+    bin_dir = os.path.join(home, "bin")
+    os.makedirs(bin_dir, exist_ok=True)
+    out = []
+    for fn in sorted(os.listdir(SCRIPTS)):
+        if fn.endswith(".py"):
+            shutil.copyfile(os.path.join(SCRIPTS, fn), os.path.join(bin_dir, fn))
+            out.append(fn)
+    return out
+
+def load_policy_mod():
+    sys.path.insert(0, SCRIPTS)
+    import policy
+    return policy
+
 def skill_tree_hash(d):
     h = hashlib.sha256()
     for root, _, files in sorted(os.walk(d)):
@@ -141,6 +159,11 @@ def managed_block(home, paths, checks=None, repo=None):
         return "- ❌ %s 不可用：%s（修好後重跑 doctor）" % (key, c.get("error", "doctor 未通過"))
     playbook = os.path.join(repo, "playbook") if repo else "（repo 的 playbook/，路徑見 config.json）"
     prof = os.path.join(home, "browser-profile")
+    pol_mod = load_policy_mod()
+    pol = pol_mod.load(home)
+    py_bin = ned_cmd(home).rsplit(" ", 1)[0]
+    pol_cmd = '%s "%s"' % (py_bin, os.path.join(home, "bin", "policy.py"))
+    watch = pol.get("visibility") == "watch"
     # v0.3：區塊自給自足（可照抄的一行指令），輕手段優先，skill 只在交人/被擋時讀。
     lines = [
         MARK_S,
@@ -153,8 +176,11 @@ def managed_block(home, paths, checks=None, repo=None):
         status("profile", "- 登入過的站免再登入：上述指令加 `--profile \"%s\"`" % prof),
         status("desktop", "- 看桌面視窗：`%s <App.exe> screenshot <絕對路徑.png>`" % ned_cmd(home)),
         status("desktop", "- 操作桌面：`%s <App.exe> snapshot -i --compact`→`... click '@ref'` / `... set-value '@ref' 文字`→`... get '@ref' --property value`（ned 會鎖定 app 範圍）" % ned_cmd(home)),
-        "- 通訊/郵件/金融類 app 與網站是**預設禁區**（ned 會拒絕）：要碰必須先在對話中取得使用者指名授權。",
-        "- 使用者可能同時在用電腦：**不要搶焦點、不要動滑鼠鍵盤**（上述指令預設都不會）。",
+        "- 政策：%s（`%s show`；只在使用者明確要求時才改）" % (pol_mod.summary(pol), pol_cmd),
+        "- 通訊/郵件/金融類 app 與網站：未授權就不讀不碰（ned 會拒絕）；要碰先在對話中取得使用者指名同意。",
+        "- **你不能自己送出任何訊息**：要傳給別人的內容只能起草到核准發件匣（`outbox.py draft`），使用者核准後才會送出；發件匣頁面是你的禁區。",
+        ("- 觀看模式：使用者想看你操作——瀏覽器加 `--headed`，桌面操作可見（此時搶焦點是預期的）。" if watch else
+         "- 使用者可能同時在用電腦：**不要搶焦點、不要動滑鼠鍵盤**（上述指令預設都不會）。"),
         "- 能力明細：`%s`；playbook：`%s`（動手前先查、走通後回寫）" % (os.path.join(home, "capabilities.md"), playbook),
         "只有「準備請使用者動手」或被「登入牆 / GUI-only / 安裝精靈」擋住時，才讀 skill `no-errands`。",
         MARK_E,
@@ -203,8 +229,8 @@ def main():
         home = os.path.abspath(a.home)
         cfg_p = os.path.join(home, "config.json")
         cfg = json.load(open(cfg_p, encoding="utf-8"))
-        shutil.copyfile(os.path.join(REPO, "skills", "no-errands", "scripts", "ned.py"),
-                        os.path.join(home, "bin", "ned.py"))
+        copy_scripts(home)
+        load_policy_mod().ensure(home)
         synced = []
         paths = {t: os.path.join(home, "bin", exe_name(t)) for t in ("agent-desktop", "agent-browser")}
         for inst in cfg.get("installs", []):
@@ -240,8 +266,11 @@ def main():
             os.makedirs(os.path.join(home, d), exist_ok=True)
         paths = install_binaries(home, steps)
         ok = all(s.get("ok") for s in steps)
-        shutil.copyfile(os.path.join(REPO, "skills", "no-errands", "scripts", "ned.py"),
-                        os.path.join(home, "bin", "ned.py"))
+        scripts = copy_scripts(home)
+        pol, created = load_policy_mod().ensure(home)
+        steps.append({"step": "install:scripts+policy", "ok": True, "scripts": scripts,
+                      "policy": os.path.join(home, "policy.json"),
+                      "policy_created": created, "note": "既有 policy.json 不覆寫"})
         shutil.rmtree(skill_dst, ignore_errors=True)
         shutil.copytree(os.path.join(REPO, "skills", "no-errands"), skill_dst)
         steps.append({"step": "install:skill", "ok": True, "path": skill_dst,

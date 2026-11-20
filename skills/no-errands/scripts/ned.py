@@ -8,11 +8,18 @@
 
 規則：
 - <App.exe> 必須是正規程序名（英數._- 結尾 .exe / .app / 無副檔名小寫），其他拼法拒絕。
-- 敏感類別（通訊/郵件/金融）一律拒絕 → 需使用者在對話中指名授權，走專用守門（chat_guard）。
+- 敏感類別（通訊/郵件/金融）：未列入政策檔 granted_apps → 拒絕（同意閘門）。
+  已授權 → 只放行觀察類子指令；通訊類在未讀保護開啟時連觀察也拒絕（清單會露出未讀預覽），
+  改走 chat_guard（只碰指名對話）。任何會改狀態的動作（click/set-value…）一律走 chat_guard。
+- 可見度 background（預設）：拒絕會搶焦點或動滑鼠鍵盤的子指令（focus/type/hover/drag）。
+- 發件匣頁面是 agent 禁區：snapshot 內含發件匣標記的 ref 一律不得操作。
 - snapshot/find 自動綁 --app；ref 動作檢查 ref 的 snapshot 屬於宣告的 app，否則拒絕。
 - 每次呼叫寫 ledger（~/.no-errands/ned-ledger.jsonl；不含任何 app 內容字串）。
 """
 import json, os, re, subprocess, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import policy  # noqa: E402  同目錄（setup 一起複製到 ~/.no-errands/bin/）
 
 HOME = os.environ.get("NO_ERRANDS_HOME") or os.path.join(os.path.expanduser("~"), ".no-errands")
 STATE = os.path.join(HOME, "ned-state.json")
@@ -36,6 +43,11 @@ REF_CMDS = {"click", "double-click", "triple-click", "right-click", "type", "set
             "scroll", "scroll-to", "get", "is", "hover", "drag"}
 APP_CMDS = {"snapshot", "find", "screenshot", "list-windows"}  # 自動綁 --app
 PASS_CMDS = {"launch", "close-app", "wait", "status", "version", "skills"}
+OBSERVE_CMDS = {"snapshot", "find", "screenshot", "list-windows", "get", "is", "status", "version"}
+CHAT_APPS = {"line", "mattermost", "teams", "telegram", "whatsapp", "discord", "slack",
+             "wechat", "messenger", "signal", "skype", "fake-chat"}
+FOCUS_CMDS = {"focus", "type", "hover", "drag"}   # 會搶焦點或動滑鼠鍵盤
+OUTBOX_MARK = "NE-OUTBOX"                           # 發件匣頁面標題與 a11y 名稱都含此字串
 
 def ledger(app, sub, allowed, reason=""):
     os.makedirs(HOME, exist_ok=True)
@@ -75,9 +87,22 @@ def main():
     base = app.lower()
     if not base.endswith(".exe"):
         base += ".exe"
-    if base in SENSITIVE:
-        refuse(app, sub, "敏感類別（通訊/郵件/金融）預設禁區：需要使用者在對話中指名授權，"
-                         "並走專用守門機制（chat_guard），不可用一般桌面操作")
+    pol = policy.load(HOME)
+    canon = policy.canonical_app(base)
+    if base in SENSITIVE or canon in CHAT_APPS:
+        if not policy.is_granted(pol, base):
+            refuse(app, sub, "敏感類別（通訊/郵件/金融）預設禁區：使用者尚未在對話中指名授權此 app"
+                             "（同意閘門）。先在對話中說明要用哪個 app、讀什麼、不做什麼並取得同意，"
+                             "再由使用者要求下執行 policy.py grant")
+        if sub not in OBSERVE_CMDS:
+            refuse(app, sub, "已授權的敏感 app 只允許觀察類子指令；會改狀態的操作走 chat_guard"
+                             "（訊息輸入框、送出鈕永遠是禁區；要傳訊息只能起草到發件匣）")
+        if canon in CHAT_APPS and pol["chat"].get("unread_protection") == "on":
+            refuse(app, sub, "未讀保護開啟中：聊天 app 的畫面/結構可能含未讀預覽，不可用一般桌面"
+                             "操作觀察；請用 chat_guard 只開指名對話")
+    if sub in FOCUS_CMDS and pol.get("visibility") != "watch":
+        refuse(app, sub, "背景模式（預設）不送鍵盤事件、不搶焦點、不動滑鼠：改用 set-value / click "
+                         "語意操作；若使用者要看你操作，請他要求後把政策改成觀看模式")
 
     st = load_state()
     cmd = [ad, sub]
@@ -94,7 +119,11 @@ def main():
     elif sub in REF_CMDS:
         refs = [m.group(1) for a in rest for m in [REF_RE.search(a)] if m]
         for sid in refs:
-            owner = st.get(sid)
+            ent = st.get(sid)
+            owner = ent.get("app") if isinstance(ent, dict) else ent
+            if isinstance(ent, dict) and ent.get("outbox"):
+                refuse(app, sub, "這份 snapshot 含核准發件匣頁面：發件匣是 agent 禁區，"
+                                 "核准只能由使用者本人按")
             if owner is None:
                 refuse(app, sub, "ref 的 snapshot (%s) 不是由 ned 產生，無法證明屬於 %s——"
                                  "先用 ned %s snapshot 重拍" % (sid, app, app))
