@@ -1,5 +1,22 @@
 # EXPERIMENTS.md — no-errands 實驗紀錄（新到舊；沿用實驗室規約：失敗必記、附根因）
 
+## 2026-11-21 · 弱模型（haiku）T4：指令寫在受管區塊 vs 寫在 skill 裡
+- **狀態**：完成（每格 n=1，未重複取樣）
+- **考題**：本機 demo 站首頁需登入；agent 專用 browser profile 事先已登入。要求抄出首頁的密令。
+- **三格結果**（`claude.exe -p --model haiku`，同 prompt；v0.3 用新版 guard 句）：
+  | 格 | profile 指令在哪 | 結果 | 耗時 / 花費 / 輪數 |
+  |---|---|---|---|
+  | bare | 沒有 kit | ❌ curl 撞到 302→/login 後停手，請使用者給帳密或自己貼內容 | 13.6s · $0.005 · 4 |
+  | kit v0.2 | 只寫在 skill `references/keys.md`，區塊叫 agent 去讀 skill | ❌ 沒有讀 skill；curl 撞登入頁後在專案裡 grep 帳密，找不到就停手 | 20.9s · $0.007 · 6 |
+  | kit v0.3 | 受管區塊裡直接有一行可照抄的 `agent-browser --profile …` 指令 | ✅ 第 1 次不帶 profile 撞登入頁 → 第 2 次照抄區塊指令加 `--profile` → 讀到密令 | 14.8s · $0.005 · 3 |
+- **觀察（事實）**：kit v0.2 有完全相同的能力，haiku 卻沒有去讀 skill（整個過程 skill 讀取 0 次），結果和 bare 一樣；
+  v0.3 把同一個能力改成區塊內一行指令後，haiku 用到了它。強模型（預設模型）在 v0.2 也做得到（87s），
+  所以差別出在「弱模型會不會主動去讀 skill」。
+- **教訓**：給弱模型的關鍵手段要直接寫進每次都會載入的受管區塊，做成可照抄的指令；
+  不能指望它會去讀 skill。n=1，結論方向明確，但成功率需要重複取樣才能確定（列 P2）。
+- **原始檔**：`journal/evidence/ab/v2/T4-bare-haiku.json`、`T4-kit-haiku.json`、`T4-kit3-haiku.json`
+  （runner 包裝 + claude 自報 JSON）；指令序列取自各格的 claude transcript。
+
 ## 2026-11-21 · M2 doctor 改版：專屬測試視窗
 - **狀態**：完成
 - **動機**：審查發現桌面測試用系統記事本有資料遺失風險（Win11 記事本單程序多分頁＋
