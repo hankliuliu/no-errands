@@ -4,7 +4,7 @@
 
   chat_guard.py <app> locate --chat <精確名稱>
   chat_guard.py <app> open   --chat <精確名稱> [--expect <指紋>]
-  chat_guard.py <app> read   [--file <匯出的 .txt>]
+  chat_guard.py <app> read   --chat <精確名稱> | --file <匯出的 .txt>
   chat_guard.py <app> export --to <資料夾>
   chat_guard.py <app> close
   chat_guard.py <app> act click|set-value --target <元素名稱> [--text <文字>]   # 只為驗證守門；幾乎都會被擋
@@ -38,6 +38,7 @@ PROFILES = {
         "has_unread": lambda packed: bool(re.search(r"\| \d+ unread \|", packed)),
         "unread_format_known": True,
         "messages": "messages",
+        "header_name": lambda chat: "open chat: " + chat,    # 目前開啟的對話標頭（只比對、不輸出）
         "forbidden_names": {"message input", "Send", "Emoji"},
         "forbidden_roles_main": {"textfield"},          # 主視窗裡的任何文字框都不碰
         "menu_path": ["Chat", "Export chat"],
@@ -210,14 +211,20 @@ def cmd_open(app, prof, chat, expect, pol):
     out({"ok": True, "opened": True, "via": "whitelist" if white else "fingerprint"})
 
 
-def cmd_read(app, prof, file_):
+def cmd_read(app, prof, chat, file_):
     if file_:
         with open(file_, encoding="utf-8-sig") as f:
             lines = [l.rstrip("\r\n") for l in f]
         ledger(app, "read-file", True)
         out({"ok": True, "source": "file", "lines": lines})
+    if not chat:
+        raise Refused("read 需要 --chat <名稱>（先確認目前開啟的就是這個對話）")
     win = find_window(prof)
     snap = snapshot(win, interactive=False)
+    want = prof["header_name"](chat)
+    hdr, _ = find_node(snap, lambda n: n.get("name") == want)
+    if not hdr:
+        raise Refused("目前開啟的對話不是指名的對話（標頭不符），不讀")
     box, _ = find_node(snap, lambda n: n.get("name") == prof["messages"])
     if not box:
         raise Refused("找不到訊息區")
@@ -333,7 +340,7 @@ def main():
         elif sub == "open":
             cmd_open(app, prof, arg(a, "--chat") or "", arg(a, "--expect"), pol)
         elif sub == "read":
-            cmd_read(app, prof, arg(a, "--file"))
+            cmd_read(app, prof, arg(a, "--chat"), arg(a, "--file"))
         elif sub == "export":
             cmd_export(app, prof, arg(a, "--to") or ".")
         elif sub == "close":

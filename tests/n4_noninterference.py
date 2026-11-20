@@ -113,7 +113,7 @@ def main():
             rounds += 1
             step("shared:locate", lambda: cgo("locate", "--chat", "Alpha Team"))
             step("shared:open", lambda: cgo("open", "--chat", "Alpha Team"))
-            step("shared:read", lambda: cgo("read"))
+            step("shared:read", lambda: cgo("read", "--chat", "Alpha Team"))
             step("shared:screenshot-window", lambda: (run([AD, "screenshot", shot, "--window-id", win_b()["id"]]).returncode == 0, ""))
             step("shared:export", lambda: cgo("export", "--to", os.path.join(tmp, "exp")))
             step("shared:close", lambda: cgo("close"))

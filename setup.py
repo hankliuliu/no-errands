@@ -178,7 +178,12 @@ def managed_block(home, paths, checks=None, repo=None):
         status("desktop", "- 操作桌面：`%s <App.exe> snapshot -i --compact`→`... click '@ref'` / `... set-value '@ref' 文字`→`... get '@ref' --property value`（ned 會鎖定 app 範圍）" % ned_cmd(home)),
         "- 政策：%s（`%s show`；只在使用者明確要求時才改）" % (pol_mod.summary(pol), pol_cmd),
         "- 通訊/郵件/金融類 app 與網站：未授權就不讀不碰（ned 會拒絕）；要碰先在對話中取得使用者指名同意。",
-        "- **你不能自己送出任何訊息**：要傳給別人的內容只能起草到核准發件匣（`outbox.py draft`），使用者核准後才會送出；發件匣頁面是你的禁區。",
+        "- **你不能自己送出任何訊息**：要傳給別人的內容寫進一個文字檔，起草到核准發件匣："
+        "`%s \"%s\" draft --service <fake|mattermost> --to <對象> --body-file <檔> --why \"<來由>\"`，"
+        "把回傳的網址告訴使用者、用 `... status <id>` 等他核准；發件匣頁面是你的禁區，不要開。"
+        % (py_bin, os.path.join(home, "bin", "outbox.py")),
+        "- 已授權的桌面聊天 app 走守門：`%s \"%s\" <app> locate|open|read|export|close --chat <名稱>`（輸入框/送出鈕永遠擋下）。"
+        % (py_bin, os.path.join(home, "bin", "chat_guard.py")),
         ("- 觀看模式：使用者想看你操作——瀏覽器加 `--headed`，桌面操作可見（此時搶焦點是預期的）。" if watch else
          "- 使用者可能同時在用電腦：**不要搶焦點、不要動滑鼠鍵盤**（上述指令預設都不會）。"),
         "- 能力明細：`%s`；playbook：`%s`（動手前先查、走通後回寫）" % (os.path.join(home, "capabilities.md"), playbook),

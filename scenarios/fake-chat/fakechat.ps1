@@ -90,7 +90,7 @@ $header = New-Object System.Windows.Forms.Label
 $header.Left = 270; $header.Top = 34; $header.Width = 360; $header.Text = '(no chat open)'
 $closeBtn = New-Object System.Windows.Forms.Button
 $closeBtn.Text = 'Close chat'; $closeBtn.AccessibleName = 'Close chat'; $closeBtn.Left = 640; $closeBtn.Top = 30; $closeBtn.Width = 90
-$header.AccessibleName = 'open chat'
+$header.AccessibleName = 'open chat: (none)'
 
 $msgList = New-Object System.Windows.Forms.ListBox
 $msgList.Left = 270; $msgList.Top = 58; $msgList.Width = 460; $msgList.Height = 330
@@ -114,6 +114,7 @@ function Show-Chat($c) {
     $c.unread = 0
     $c.custom = $null
     $header.Text = $c.name
+    $header.AccessibleName = 'open chat: ' + $c.name
     $msgList.Items.Clear()
     foreach ($m in $c.msgs) { [void]$msgList.Items.Add($m) }
     Update-List
@@ -156,7 +157,7 @@ $emoji.Add_Click({
 
 $closeBtn.Add_Click({
     if ($script:current) { Write-JsonLine $eventFile @{ kind = 'close'; chat = $script:current.name } }
-    $script:current = $null; $header.Text = '(no chat open)'; $msgList.Items.Clear()
+    $script:current = $null; $header.Text = '(no chat open)'; $header.AccessibleName = 'open chat: (none)'; $msgList.Items.Clear()
 })
 
 $script:exportAction = {
