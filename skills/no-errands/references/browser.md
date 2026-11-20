@@ -1,7 +1,7 @@
 # 瀏覽器層用法（agent-browser）
 
-單檔原生 binary，免 node；路徑見 CLAUDE.md 受管區塊（下稱 `ab`）。
-第一次用先跑 `ab skills get core`（版本配對的官方指南）。預設 headless、不搶焦點。
+單檔原生 binary，免 node；路徑見 CLAUDE.md 受管區塊（下稱 `ab`）。預設 headless、不搶焦點。
+區塊裡的一行指令不夠用時，再查官方指南：`ab skills get core`（版本配對）。
 
 ## 基本迴圈（開 → 操作 → 驗收）
 

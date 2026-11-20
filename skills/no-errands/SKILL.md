@@ -1,12 +1,12 @@
 ---
 name: no-errands
 description: >-
-  讓 agent 自己動手，不叫人跑腿。在這些時刻必讀：你正要請使用者動手、截圖、貼上輸出、
-  手動打開/點擊/確認畫面、執行指令、登入後把資訊給你；你要驗收任何視覺成果（網頁、圖表、
-  PDF、GUI）；你遇到 GUI-only 工具、瀏覽器內的按鈕/設定頁、登入牆、安裝精靈、需要「看一下
-  畫面」的情況。Use when about to ask the user to run/open/click/screenshot/paste/check
-  anything, when verifying visual output, or when blocked by GUI-only apps, login walls,
-  or installers.
+  讓 agent 自己動手，不叫人跑腿。只在兩種時刻讀：(1) 你正準備把事情交回給使用者——
+  請他動手、截圖、貼上輸出、打開/點擊/確認、執行指令、登入後把資訊給你；(2) 你被擋住
+  了——登入牆、GUI-only 工具、安裝精靈、權限提示。日常的網頁/桌面操作與驗收指令已在
+  CLAUDE.md 的 no-errands 區塊，直接用即可，不需要讀本 skill。Use ONLY when about to
+  hand work back to the user, or when blocked by a login wall, GUI-only app, installer,
+  or permission prompt.
 ---
 
 # no-errands：人負責決定，agent 負責動手
@@ -25,7 +25,7 @@ description: >-
    Chrome/Edge。詳見 [references/browser.md](references/browser.md)。
 4. **瀏覽器（agent 專用已登入 profile）**：`agent-browser --profile ~/.no-errands/browser-profile`。
    未登入＝請使用者在跳出的視窗登入**一次**（你輪詢登入狀態，不等回話），之後永遠有效。
-5. **桌面 a11y**：`agent-desktop`（首次先跑 `agent-desktop skills get desktop`）。
+5. **桌面 a11y**：`agent-desktop`（常用指令見受管區塊；不夠用再 `skills get desktop`）。
    預設 headless 語意操作，不搶使用者滑鼠。
 6. **截圖＋座標**：最後手段，操作後必須再截圖驗證。
 7. **交給人**：僅限下方「合理交人」，並照交接契約。

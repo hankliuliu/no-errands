@@ -121,16 +121,21 @@ def managed_block(home, paths, checks=None, repo=None):
             return line_ok
         return "- ❌ %s 不可用：%s（修好後重跑 doctor）" % (key, c.get("error", "doctor 未通過"))
     playbook = os.path.join(repo, "playbook") if repo else "（repo 的 playbook/，路徑見 config.json）"
+    prof = os.path.join(home, "browser-profile")
+    # v0.3：區塊自給自足（可照抄的一行指令），輕手段優先，skill 只在交人/被擋時讀。
     lines = [
         MARK_S,
         "## no-errands：人負責決定，agent 負責動手",
-        "準備請使用者動手／截圖／貼上之前，先讀 skill `no-errands` 並走完能力階梯。",
-        status("desktop", "- 桌面 a11y／視窗截圖（PNG）：`%s`（首次先跑 `skills get desktop`）" % ad),
-        status("browser", "- 瀏覽器自動化（驅動系統 Chrome/Edge）：`%s`（首次先跑 `skills get core`）" % ab),
-        status("profile", "- agent 專用已登入 profile：`--profile %s`（缺登入＝請人登入一次，之後不再問）" % os.path.join(home, "browser-profile")),
-        "- 本機能力實測結果：`%s`（doctor 產出）" % os.path.join(home, "capabilities.md"),
-        "- 走通的路寫進 playbook：`%s`；私人 `%s`" % (playbook, os.path.join(home, "playbook-local")),
-        "- 驗收規則：有視覺成果就自己看過（截圖/渲染/讀回），語意層 ok ≠ 任務正確。",
+        "1. 先用最輕的手段：檔案 / CLI / curl 能解就不開瀏覽器、不開桌面工具。",
+        "2. 回報完成前自己驗收一次（截圖或讀回）；單步回 ok ≠ 任務正確。",
+        "以下工具本機已實測可用，直接照抄（不必先讀任何說明）：",
+        status("browser", "- 看網頁（一輪完成）：`\"%s\" batch \"open <url>\" \"screenshot <絕對路徑.png>\" \"close\"`" % ab),
+        status("browser", "- 操作網頁：`\"%s\" open <url>`→`snapshot -i -c`→`click '#sel'` / `fill '#sel' 文字`→`get text '#sel'`→`close`" % ab),
+        status("profile", "- 登入過的站免再登入：上述指令加 `--profile \"%s\"`" % prof),
+        status("desktop", "- 看桌面視窗：`\"%s\" screenshot <絕對路徑.png> --app <App.exe>`" % ad),
+        status("desktop", "- 操作桌面：`\"%s\" list-windows`→`snapshot --window-id <w-..> -i --compact`→`click '@ref'` / `set-value '@ref' 文字`→`get '@ref' --property value`" % ad),
+        "- 能力明細：`%s`；playbook：`%s`（動手前先查、走通後回寫）" % (os.path.join(home, "capabilities.md"), playbook),
+        "只有「準備請使用者動手」或被「登入牆 / GUI-only / 安裝精靈」擋住時，才讀 skill `no-errands`。",
         MARK_E,
     ]
     return "\n".join(lines)

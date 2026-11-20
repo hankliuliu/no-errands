@@ -1,7 +1,7 @@
 # 手：桌面 GUI（agent-desktop）
 
-單檔原生 binary；路徑見受管區塊（下稱 `ad`）。首次使用先跑：
-`ad skills get desktop` 與 `ad skills get platform`（版本配對的官方指南，比亂猜旗標準）。
+單檔原生 binary；路徑見受管區塊（下稱 `ad`）。
+區塊裡的指令不夠用時，再查官方指南：`ad skills get desktop` / `ad skills get platform`。
 
 ## 基本迴圈
 
