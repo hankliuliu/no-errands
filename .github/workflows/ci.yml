@@ -1,0 +1,106 @@
+name: ci
+
+# 三平台：stage-0 → setup（暫存 home 與 claude-dir）→ doctor → uninstall，doctor JSON 上傳 artifact。
+# 發件匣無 GUI 測試三平台都跑；chat_guard 假視窗（B3）、N4 不干擾與正對照只在 Windows 跑。
+# 結果要「如實且可解釋」：doctor 失敗不擋後續步驟，最後彙整成摘要。
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      NE_HOME: ${{ github.workspace }}/../ne-home
+      NE_CLAUDE: ${{ github.workspace }}/../ne-claude
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: stage-0 + setup (user mode into temp dirs) [Windows]
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:NE_CLAUDE | Out-Null
+          powershell -NoProfile -ExecutionPolicy Bypass -File ./setup.ps1 --user --home $env:NE_HOME --claude-dir $env:NE_CLAUDE | Tee-Object setup.json
+
+      - name: stage-0 + setup (user mode into temp dirs) [Linux/macOS]
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p "$NE_CLAUDE"
+          sh ./setup.sh --user --home "$NE_HOME" --claude-dir "$NE_CLAUDE" | tee setup.json
+
+      - name: Linux desktop deps (xvfb + at-spi)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb at-spi2-core > /dev/null
+
+      - name: doctor
+        id: doctor
+        continue-on-error: true
+        run: |
+          PY=$(python3 -c 'import sys;print(sys.executable)' 2>/dev/null || python -c 'import sys;print(sys.executable)')
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a "$PY" doctor.py --home "$NE_HOME" > doctor.json
+          else
+            "$PY" doctor.py --home "$NE_HOME" > doctor.json
+          fi
+
+      - name: outbox tests (no GUI)
+        id: outbox
+        continue-on-error: true
+        run: |
+          PY=$(python3 -c 'import sys;print(sys.executable)' 2>/dev/null || python -c 'import sys;print(sys.executable)')
+          "$PY" tests/test_outbox.py | tee outbox.txt
+
+      - name: chat_guard B3 on fake chat window [Windows]
+        id: b3
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: python tests/test_chat_guard.py --ad "$NE_HOME/bin/agent-desktop.exe" --out b3.json | tee b3.txt
+
+      - name: N4 non-interference + positive control [Windows]
+        id: n4
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: |
+          python tests/n4_noninterference.py --home "$NE_HOME" --out n4.json | tee n4.txt
+          python tests/n4_positive_control.py --i-am-ci | tee n4pos.txt
+
+      - name: uninstall
+        if: always()
+        run: |
+          PY=$(python3 -c 'import sys;print(sys.executable)' 2>/dev/null || python -c 'import sys;print(sys.executable)')
+          "$PY" setup.py --uninstall --user --home "$NE_HOME" --claude-dir "$NE_CLAUDE" | tee uninstall.json
+          test ! -d "$NE_CLAUDE/skills/no-errands" && echo "skill removed"
+
+      - name: summary
+        if: always()
+        env:
+          NE_OS: ${{ matrix.os }}
+          NE_DOCTOR: ${{ steps.doctor.outcome }}
+          NE_OUTBOX: ${{ steps.outbox.outcome }}
+          NE_B3: ${{ steps.b3.outcome }}
+          NE_N4: ${{ steps.n4.outcome }}
+        run: (python3 tests/ci_summary.py 2>/dev/null || python tests/ci_summary.py) >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.os }}
+          path: |
+            setup.json
+            doctor.json
+            outbox.txt
+            b3.*
+            n4*
+            uninstall.json
+          if-no-files-found: ignore
