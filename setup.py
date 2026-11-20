@@ -109,6 +109,25 @@ def install_binaries(home, steps):
     json.dump(state, open(state_p, "w", encoding="utf-8"))
     return paths
 
+def ned_cmd(home):
+    py = sys.executable
+    cfg_p = os.path.join(home, "config.json")
+    if os.path.exists(cfg_p):
+        try:
+            py = json.load(open(cfg_p, encoding="utf-8")).get("python") or py
+        except Exception:
+            pass
+    return '"%s" "%s"' % (py, os.path.join(home, "bin", "ned.py"))
+
+def skill_tree_hash(d):
+    h = hashlib.sha256()
+    for root, _, files in sorted(os.walk(d)):
+        for fn in sorted(files):
+            p = os.path.join(root, fn)
+            h.update(fn.encode())
+            h.update(open(p, "rb").read())
+    return h.hexdigest()[:16]
+
 def managed_block(home, paths, checks=None, repo=None):
     """checks=None（setup 剛裝完、尚未實測）→ 標「未驗證」；有 checks → 只對通過的說可用。"""
     ad = paths.get("agent-desktop", os.path.join(home, "bin", exe_name("agent-desktop")))
@@ -132,8 +151,10 @@ def managed_block(home, paths, checks=None, repo=None):
         status("browser", "- 看網頁（一輪完成）：`\"%s\" batch \"open <url>\" \"screenshot <絕對路徑.png>\" \"close\"`" % ab),
         status("browser", "- 操作網頁：`\"%s\" open <url>`→`snapshot -i -c`→`click '#sel'` / `fill '#sel' 文字`→`get text '#sel'`→`close`" % ab),
         status("profile", "- 登入過的站免再登入：上述指令加 `--profile \"%s\"`" % prof),
-        status("desktop", "- 看桌面視窗：`\"%s\" screenshot <絕對路徑.png> --app <App.exe>`" % ad),
-        status("desktop", "- 操作桌面：`\"%s\" list-windows`→`snapshot --window-id <w-..> -i --compact`→`click '@ref'` / `set-value '@ref' 文字`→`get '@ref' --property value`" % ad),
+        status("desktop", "- 看桌面視窗：`%s <App.exe> screenshot <絕對路徑.png>`" % ned_cmd(home)),
+        status("desktop", "- 操作桌面：`%s <App.exe> snapshot -i --compact`→`... click '@ref'` / `... set-value '@ref' 文字`→`... get '@ref' --property value`（ned 會鎖定 app 範圍）" % ned_cmd(home)),
+        "- 通訊/郵件/金融類 app 與網站是**預設禁區**（ned 會拒絕）：要碰必須先在對話中取得使用者指名授權。",
+        "- 使用者可能同時在用電腦：**不要搶焦點、不要動滑鼠鍵盤**（上述指令預設都不會）。",
         "- 能力明細：`%s`；playbook：`%s`（動手前先查、走通後回寫）" % (os.path.join(home, "capabilities.md"), playbook),
         "只有「準備請使用者動手」或被「登入牆 / GUI-only / 安裝精靈」擋住時，才讀 skill `no-errands`。",
         MARK_E,
@@ -174,7 +195,28 @@ def main():
     ap.add_argument("--claude-dir", default=os.path.join(os.path.expanduser("~"), ".claude"),
                     help="--user 模式的 Claude 設定目錄（測試時務必覆寫到沙盒）")
     ap.add_argument("--uninstall", action="store_true")
+    ap.add_argument("--sync", action="store_true",
+                    help="repo 規則變更後：重新同步所有已安裝目標的 skill 與受管區塊")
     a = ap.parse_args()
+
+    if a.sync:
+        home = os.path.abspath(a.home)
+        cfg_p = os.path.join(home, "config.json")
+        cfg = json.load(open(cfg_p, encoding="utf-8"))
+        shutil.copyfile(os.path.join(REPO, "skills", "no-errands", "scripts", "ned.py"),
+                        os.path.join(home, "bin", "ned.py"))
+        synced = []
+        paths = {t: os.path.join(home, "bin", exe_name(t)) for t in ("agent-desktop", "agent-browser")}
+        for inst in cfg.get("installs", []):
+            shutil.rmtree(inst["skill"], ignore_errors=True)
+            shutil.copytree(os.path.join(REPO, "skills", "no-errands"), inst["skill"])
+            upsert_block(inst["target"], managed_block(home, paths, checks=None, repo=REPO))
+            synced.append(inst["target"])
+        cfg["skill_hash"] = skill_tree_hash(os.path.join(REPO, "skills", "no-errands"))
+        json.dump(cfg, open(cfg_p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        print(json.dumps({"ok": True, "synced": synced,
+                          "note": "受管區塊標回「尚未驗證」，跑 doctor 刷新"}, ensure_ascii=False, indent=1))
+        sys.exit(0)
 
     home = os.path.abspath(a.home)
     steps, ok = [], True
@@ -198,9 +240,12 @@ def main():
             os.makedirs(os.path.join(home, d), exist_ok=True)
         paths = install_binaries(home, steps)
         ok = all(s.get("ok") for s in steps)
+        shutil.copyfile(os.path.join(REPO, "skills", "no-errands", "scripts", "ned.py"),
+                        os.path.join(home, "bin", "ned.py"))
         shutil.rmtree(skill_dst, ignore_errors=True)
         shutil.copytree(os.path.join(REPO, "skills", "no-errands"), skill_dst)
-        steps.append({"step": "install:skill", "ok": True, "path": skill_dst})
+        steps.append({"step": "install:skill", "ok": True, "path": skill_dst,
+                      "hash": skill_tree_hash(skill_dst)})
         upsert_block(md_path, managed_block(home, paths, checks=None, repo=REPO))
         steps.append({"step": "install:claude-md-block", "ok": True, "path": md_path})
         cfg_p = os.path.join(home, "config.json")
@@ -210,6 +255,8 @@ def main():
             cfg["installs"].append(entry)
         cfg["home"] = home
         cfg["repo"] = REPO
+        cfg["python"] = sys.executable
+        cfg["skill_hash"] = skill_tree_hash(os.path.join(REPO, "skills", "no-errands"))
         json.dump(cfg, open(cfg_p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         steps.append({"step": "config", "ok": True, "path": cfg_p,
                       "next": "跑 doctor.py --home %s 做各階 smoke test 並產出 capabilities.md" % home})

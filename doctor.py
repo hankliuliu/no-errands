@@ -246,9 +246,19 @@ def write_outputs(res, home, dur):
         cfg = json.load(open(cfg_p, encoding="utf-8"))
         paths = {"agent-desktop": os.path.join(home, "bin", ne.exe_name("agent-desktop")),
                  "agent-browser": os.path.join(home, "bin", ne.exe_name("agent-browser"))}
+        repo_hash = None
+        repo = cfg.get("repo")
+        if repo and os.path.isdir(os.path.join(repo, "skills", "no-errands")):
+            repo_hash = ne.skill_tree_hash(os.path.join(repo, "skills", "no-errands"))
         for inst in cfg.get("installs", []):
-            ne.upsert_block(inst["target"], ne.managed_block(home, paths, checks=res, repo=cfg.get("repo")))
+            ne.upsert_block(inst["target"], ne.managed_block(home, paths, checks=res, repo=repo))
             refreshed.append(inst["target"])
+            if repo_hash and os.path.isdir(inst["skill"]):
+                if ne.skill_tree_hash(inst["skill"]) != repo_hash:
+                    res.setdefault("skill_sync", {"ok": False,
+                        "error": "已安裝 skill 與 repo 版本不一致",
+                        "recovery": "跑 setup.py --sync --home %s" % home,
+                        "stale": []})["stale"].append(inst["skill"])
     return cap, refreshed
 
 def main():
