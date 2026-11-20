@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><title>no-errands doctor 測試頁</title></head>
+<body>
+<h1>doctor 測試頁</h1>
+<p>這顆按鈕按下去才會改變 DOM；doctor 以此驗證「點擊＋讀回」整條路。</p>
+<button id="doctorBtn" onclick="go()">執行檢查</button>
+<div id="result">（尚未執行）</div>
+<script>
+function go(){
+  var x = 0x9e3779b9 >>> 0;
+  for (var i = 0; i < 1000; i++) { x ^= x << 13; x >>>= 0; x ^= x >> 17; x ^= x << 5; x >>>= 0; }
+  document.getElementById('result').textContent = 'DOCTOR-OK-' + x.toString(16);
+}
+</script>
+</body></html>

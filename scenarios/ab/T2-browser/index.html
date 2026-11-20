@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><title>內部系統入口</title>
+<style>body{font:16px system-ui;margin:3em}#code{font-size:1.4em;margin-top:1em;font-family:monospace}</style>
+</head>
+<body>
+<h1>內部系統入口</h1>
+<p>按下按鈕以產生本次的驗證碼。</p>
+<button id="gen" onclick="gen()">產生驗證碼</button>
+<div id="code">（尚未產生）</div>
+<script>
+function gen(){
+  var s = 'NE-T2-2026-11-21', h = 2166136261 >>> 0;
+  for (var i = 0; i < s.length; i++) { h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0; }
+  var x = h || 0x1234567;
+  for (var r = 0; r < 5000000; r++) {
+    x ^= x << 13; x >>>= 0;
+    x ^= x >> 7;
+    x ^= x << 17; x >>>= 0;
+    x = (x + Math.imul(x, 2654435761)) >>> 0;
+  }
+  document.getElementById('code').textContent = '驗證碼：' + ('00000000' + x.toString(16)).slice(-8).toUpperCase();
+}
+</script>
+</body></html>
