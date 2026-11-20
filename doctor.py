@@ -176,7 +176,12 @@ def check_browser(res, home):
         rc, out, err = run(ab_cmd(home, S, ["open", page]), 90)
         if rc != 0:
             r["error"] = "open failed: %s %s" % (out[-200:], err[-200:])
-            r["recovery"] = "沒有系統瀏覽器時先跑 `agent-browser install`；或在 config.json 指定 executable"
+            if "loading shared librari" in (out + err):
+                r["recovery"] = ("缺系統庫。無 sudo 的免 root 解法：apt-get download libnspr4 libnss3 "
+                                 "libasound2t64 → dpkg -x 到 ~/ne-libs → 以 LD_LIBRARY_PATH 啟動"
+                                 "（詳見 playbook/tasks/linux-no-sudo-browser-libs.md）")
+            else:
+                r["recovery"] = "沒有系統瀏覽器時先跑 `agent-browser install`；或在 config.json 指定 executable"
             return
         run(ab_cmd(home, S, ["click", "#doctorBtn"]), 30)
         rc, out, _ = run(ab_cmd(home, S, ["get", "text", "#result"]), 30)
