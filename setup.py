@@ -29,9 +29,16 @@ def sha256_file(p):
     return h.hexdigest()
 
 def download(url, dest):
-    req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
-        shutil.copyfileobj(r, f)
+    try:
+        req = urllib.request.Request(url, headers=UA)
+        with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
+            shutil.copyfileobj(r, f)
+    except Exception as e:
+        # macOS 的 python.org 版常缺根憑證（ssl.SSLCertVerificationError）→ fallback 到系統 curl
+        import subprocess
+        rc = subprocess.run(["curl", "-fsSL", "-o", dest, url], timeout=300).returncode
+        if rc != 0:
+            raise RuntimeError("urllib failed (%s) and curl fallback rc=%d" % (e, rc))
 
 def exe_name(base):
     return base + (".exe" if os.name == "nt" else "")
@@ -102,18 +109,27 @@ def install_binaries(home, steps):
     json.dump(state, open(state_p, "w", encoding="utf-8"))
     return paths
 
-def managed_block(home, paths):
+def managed_block(home, paths, checks=None, repo=None):
+    """checks=None（setup 剛裝完、尚未實測）→ 標「未驗證」；有 checks → 只對通過的說可用。"""
     ad = paths.get("agent-desktop", os.path.join(home, "bin", exe_name("agent-desktop")))
     ab = paths.get("agent-browser", os.path.join(home, "bin", exe_name("agent-browser")))
+    def status(key, line_ok):
+        if checks is None:
+            return line_ok + "（⚠ 尚未驗證：先跑 doctor.py）"
+        c = checks.get(key, {})
+        if c.get("ok"):
+            return line_ok
+        return "- ❌ %s 不可用：%s（修好後重跑 doctor）" % (key, c.get("error", "doctor 未通過"))
+    playbook = os.path.join(repo, "playbook") if repo else "（repo 的 playbook/，路徑見 config.json）"
     lines = [
         MARK_S,
         "## no-errands：人負責決定，agent 負責動手",
         "準備請使用者動手／截圖／貼上之前，先讀 skill `no-errands` 並走完能力階梯。",
-        "- 桌面 a11y／視窗截圖（PNG）：`%s`（首次先跑 `skills get desktop`）" % ad,
-        "- 瀏覽器自動化（系統 Chrome/Edge，免安裝）：`%s`（首次先跑 `skills get core`）" % ab,
-        "- agent 專用已登入 profile：`--profile %s`（缺登入＝請人登入一次，之後不再問）" % os.path.join(home, "browser-profile"),
+        status("desktop", "- 桌面 a11y／視窗截圖（PNG）：`%s`（首次先跑 `skills get desktop`）" % ad),
+        status("browser", "- 瀏覽器自動化（驅動系統 Chrome/Edge）：`%s`（首次先跑 `skills get core`）" % ab),
+        status("profile", "- agent 專用已登入 profile：`--profile %s`（缺登入＝請人登入一次，之後不再問）" % os.path.join(home, "browser-profile")),
         "- 本機能力實測結果：`%s`（doctor 產出）" % os.path.join(home, "capabilities.md"),
-        "- 走通的路寫進 playbook：repo `playbook/`；私人 `%s`" % os.path.join(home, "playbook-local"),
+        "- 走通的路寫進 playbook：`%s`；私人 `%s`" % (playbook, os.path.join(home, "playbook-local")),
         "- 驗收規則：有視覺成果就自己看過（截圖/渲染/讀回），語意層 ok ≠ 任務正確。",
         MARK_E,
     ]
@@ -180,7 +196,7 @@ def main():
         shutil.rmtree(skill_dst, ignore_errors=True)
         shutil.copytree(os.path.join(REPO, "skills", "no-errands"), skill_dst)
         steps.append({"step": "install:skill", "ok": True, "path": skill_dst})
-        upsert_block(md_path, managed_block(home, paths))
+        upsert_block(md_path, managed_block(home, paths, checks=None, repo=REPO))
         steps.append({"step": "install:claude-md-block", "ok": True, "path": md_path})
         cfg_p = os.path.join(home, "config.json")
         cfg = json.load(open(cfg_p, encoding="utf-8")) if os.path.exists(cfg_p) else {"installs": []}
@@ -188,6 +204,7 @@ def main():
         if entry not in cfg["installs"]:
             cfg["installs"].append(entry)
         cfg["home"] = home
+        cfg["repo"] = REPO
         json.dump(cfg, open(cfg_p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         steps.append({"step": "config", "ok": True, "path": cfg_p,
                       "next": "跑 doctor.py --home %s 做各階 smoke test 並產出 capabilities.md" % home})

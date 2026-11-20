@@ -3,10 +3,13 @@
 """no-errands doctor — 每一階做「真的」smoke test（不是只看 PATH），純標準函式庫。
 
 用法: python doctor.py [--home <dir>] [--skip-desktop] [--skip-browser]
-產出: <home>/capabilities.md、刷新所有已安裝目標的 CLAUDE.md 受管區塊；stdout 一份 JSON。
-守則: 測完把自己開的視窗/程序清乾淨；殺程序一律用「參數指紋」，絕不用程序名。
+產出: <home>/capabilities.md、刷新所有已安裝目標的 CLAUDE.md 受管區塊（只對通過的項目說可用）。
+守則:
+- 桌面測試只操作 doctor 自己 spawn 的專屬測試視窗（唯一標題 + PID），絕不碰使用者的 app。
+- 測完清掉自己開的視窗/程序/暫存 profile；殺程序用 PID/參數指紋，絕不用程序名。
+- 每個 check 無論成敗都必須在結果裡留下紀錄（失敗靜默 = 誤報全綠）。
 """
-import argparse, json, os, platform, subprocess, sys, tempfile, time, urllib.request
+import argparse, json, os, platform, shutil, subprocess, sys, tempfile, time
 
 REPO = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, REPO)
@@ -15,7 +18,6 @@ import setup as ne  # 共用 exe_name / managed_block / upsert_block
 IS_WIN = os.name == "nt"
 
 def run(cmd, timeout=30):
-    """執行指令，回 (rc, stdout, stderr)。不經 shell。"""
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                            encoding="utf-8", errors="replace")
@@ -36,89 +38,126 @@ def check_python(res):
     res["python"] = {"ok": True, "version": platform.python_version(), "path": sys.executable}
 
 def check_pkg_manager(res):
+    r = {"ok": False, "found": []}
+    res["pkg_manager"] = r
     cands = [("winget", ["winget", "--version"])] if IS_WIN else \
             [("brew", ["brew", "--version"]), ("apt-get", ["apt-get", "--version"])]
-    found = []
     for name, cmd in cands:
         rc, out, _ = run(cmd, 20)
         if rc == 0 and out:
-            found.append({"name": name, "version": out.splitlines()[0]})
-    res["pkg_manager"] = {"ok": bool(found), "found": found,
-                          "recovery": None if found else "Windows: 從 Microsoft Store 裝 App Installer"}
+            r["found"].append({"name": name, "version": out.splitlines()[0]})
+    r["ok"] = bool(r["found"])
+    if not r["ok"]:
+        r["recovery"] = "Windows: 從 Microsoft Store 裝 App Installer；macOS: 裝 Homebrew"
 
 def detect_browsers(res):
-    paths = []
-    if IS_WIN:
-        la = os.environ.get("LOCALAPPDATA", "")
-        cands = [
-            ("chrome", os.path.join(la, "Google", "Chrome", "Application", "chrome.exe")),
-            ("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-            ("edge", r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
-            ("brave", os.path.join(la, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
-            ("brave", r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"),
-        ]
-    else:
-        cands = [("chrome", "/usr/bin/google-chrome"), ("chromium", "/usr/bin/chromium"),
-                 ("chromium", "/snap/bin/chromium"),
-                 ("chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")]
+    r = {"ok": False, "found": []}
+    res["browsers"] = r
+    la = os.environ.get("LOCALAPPDATA", "")
+    cands = [
+        ("chrome", os.path.join(la, "Google", "Chrome", "Application", "chrome.exe")),
+        ("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+        ("edge", r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+        ("edge", r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+        ("brave", os.path.join(la, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
+        ("brave", r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"),
+    ] if IS_WIN else [
+        ("chrome", "/usr/bin/google-chrome"), ("chrome", "/usr/bin/google-chrome-stable"),
+        ("chromium", "/usr/bin/chromium"), ("chromium", "/usr/bin/chromium-browser"),
+        ("chromium", "/snap/bin/chromium"), ("edge", "/usr/bin/microsoft-edge"),
+        ("chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        ("edge", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+        ("brave", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+    ]
     seen = set()
     for name, p in cands:
         if os.path.exists(p) and name not in seen:
             seen.add(name)
-            paths.append({"name": name, "path": p})
-    res["browsers"] = {"ok": bool(paths), "found": paths,
-                       "recovery": None if paths else "需要任一 Chromium 系瀏覽器；Windows 11 內建 Edge，請確認路徑"}
+            r["found"].append({"name": name, "path": p})
+    r["ok"] = bool(r["found"])
+    if not r["ok"]:
+        r["note"] = "沒有系統瀏覽器；agent-browser 可用 `install` 自帶一份（doctor 的瀏覽器測試會自動用它）"
+        r["ok"] = True  # 不是硬失敗：agent-browser install 是合法備援
+
+# ── 桌面：spawn 專屬測試視窗（WinForms，唯一標題），只操作它、只殺自己的 PID ──
+PS_FORM = r"""
+Add-Type -AssemblyName System.Windows.Forms
+$f = New-Object System.Windows.Forms.Form
+$f.Text = '{TITLE}'
+$f.Width = 420; $f.Height = 180; $f.StartPosition = 'Manual'
+$f.Left = 40; $f.Top = 40
+$t = New-Object System.Windows.Forms.TextBox
+$t.Name = 'neInput'; $t.AccessibleName = 'neInput'; $t.Width = 300; $t.Top = 20; $t.Left = 20
+$b = New-Object System.Windows.Forms.Button
+$b.Text = 'NE-OK'; $b.AccessibleName = 'NE-OK'; $b.Top = 60; $b.Left = 20
+$b.Add_Click({ $t.Text = 'CLICKED:' + $t.Text })
+$f.Controls.Add($t); $f.Controls.Add($b)
+[System.Windows.Forms.Application]::Run($f)
+"""
 
 def check_desktop(res, home):
     ad = os.path.join(home, "bin", ne.exe_name("agent-desktop"))
     r = {"ok": False, "tool": ad}
+    res["desktop"] = r
     if not os.path.exists(ad):
         r["error"], r["recovery"] = "binary missing", "先跑 setup.py"
-        res["desktop"] = r; return
+        return
     if not IS_WIN:
         rc, out, _ = run([ad, "status"], 20)
-        r.update(ok=(rc == 0), note="非 Windows：僅驗 status（M1 範圍）", status_rc=rc)
-        res["desktop"] = r; return
-    token = "ne-doctor-%d" % int(time.time())
-    launched = False
-    ref = None
-    try:
-        # notepad.exe 是跳板程序（啟動新版記事本後即退出），launch 的「等程序」會等好等滿
-        # 預設 30 秒——用 --timeout 壓短；真正的就緒確認交給後面的 snapshot。
-        rc, j = jrun([ad, "launch", "notepad", "--timeout", "5000"], 20)
+        r.update(ok=(rc == 0), note="非 Windows：M2 僅驗 status 與權限狀態，完整寫入測試待 M3", status_rc=rc)
         if rc != 0:
-            r["error"] = "launch failed: %s" % j
-            res["desktop"] = r; return
-        launched = True
-        time.sleep(2.5)
-        rc, j = jrun([ad, "snapshot", "--app", "Notepad.exe", "-i", "--compact"], 30)
-        ref = None
+            r["error"] = "agent-desktop status failed"
+            r["recovery"] = "macOS 需在系統設定授予輔助使用權限（agent-desktop permissions --guide）；Linux 需 AT-SPI"
+        return
+    title = "NE-DOCTOR-%d" % os.getpid()
+    proc = subprocess.Popen(
+        ["powershell", "-NoProfile", "-STA", "-WindowStyle", "Normal", "-Command",
+         PS_FORM.replace("{TITLE}", title)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        win_id = None
+        for _ in range(20):
+            time.sleep(0.5)
+            rc, j = jrun([ad, "list-windows"], 20)
+            data = j.get("data")
+            wins = data if isinstance(data, list) else (data or {}).get("windows", [])
+            for w in wins:
+                if isinstance(w, dict) and w.get("title") == title and w.get("pid") == proc.pid:
+                    win_id = w.get("id") or w.get("window_id")
+                    break
+            if win_id:
+                break
+        if not win_id:
+            r["error"] = "spawned test window not found via list-windows"
+            r["recovery"] = "確認 powershell/WinForms 可用；或看 agent-desktop list-windows 輸出格式是否變了"
+            return
+        rc, j = jrun([ad, "snapshot", "--window-id", str(win_id), "-i", "--compact"], 30)
+        refs = {"edit": None, "btn": None}
         def walk(n):
-            nonlocal ref
             if isinstance(n, dict):
-                if n.get("role") == "textfield" and "SetValue" in (n.get("available_actions") or []):
-                    ref = ref or n.get("ref_id")
+                acts = n.get("available_actions") or []
+                if n.get("role") == "textfield" and "SetValue" in acts and not refs["edit"]:
+                    refs["edit"] = n.get("ref_id")
+                if n.get("role") == "button" and n.get("name") == "NE-OK" and not refs["btn"]:
+                    refs["btn"] = n.get("ref_id")
                 for c in n.get("children", []) or []:
                     walk(c)
         walk(j.get("data", {}).get("tree", {}))
-        if not ref:
-            r["error"] = "no editable textfield in a11y tree"
-            r["recovery"] = "確認 Windows 記事本可啟動；或換一個有文字框的 app 重試"
-            res["desktop"] = r; return
-        rc, j = jrun([ad, "set-value", ref, token], 30)
-        rc, j = jrun([ad, "get", ref, "--property", "value"], 30)
+        if not refs["edit"] or not refs["btn"]:
+            r["error"] = "test window a11y tree missing textbox/button (refs=%s)" % refs
+            return
+        token = "ne-%d" % int(time.time())
+        jrun([ad, "set-value", refs["edit"], token], 30)
+        jrun([ad, "click", refs["btn"]], 30)
+        rc, j = jrun([ad, "get", refs["edit"], "--property", "value"], 30)
         got = j.get("data", {}).get("value")
-        r["roundtrip"] = {"wrote": token, "read": got}
-        if got == token:
-            r["ok"] = True
-        else:
-            r["error"] = "write/read mismatch"
+        r["roundtrip"] = {"wrote": token, "after_click": got}
+        r["ok"] = (got == "CLICKED:" + token)
+        if not r["ok"]:
+            r["error"] = "write→click→read mismatch"
     finally:
-        if launched:
-            if ref:
-                run([ad, "set-value", ref, ""], 20)
-            run([ad, "close-app", "Notepad.exe"], 20)
-    res["desktop"] = r
+        proc.kill()   # 只殺 doctor 自己 spawn 的 PID
+        proc.wait(timeout=10)
 
 def ab_cmd(home, session, extra):
     ab = os.path.join(home, "bin", ne.exe_name("agent-browser"))
@@ -127,16 +166,17 @@ def ab_cmd(home, session, extra):
 def check_browser(res, home):
     ab = os.path.join(home, "bin", ne.exe_name("agent-browser"))
     r = {"ok": False, "tool": ab}
+    res["browser"] = r
     if not os.path.exists(ab):
         r["error"], r["recovery"] = "binary missing", "先跑 setup.py"
-        res["browser"] = r; return
+        return
     page = "file:///" + os.path.join(REPO, "doctor-assets", "testpage.html").replace("\\", "/")
     S = "ne-doctor"
     try:
-        rc, out, err = run(ab_cmd(home, S, ["open", page]), 60)
+        rc, out, err = run(ab_cmd(home, S, ["open", page]), 90)
         if rc != 0:
             r["error"] = "open failed: %s %s" % (out[-200:], err[-200:])
-            r["recovery"] = "確認系統有 Chromium 系瀏覽器；或 config.json 指定 executable"
+            r["recovery"] = "沒有系統瀏覽器時先跑 `agent-browser install`；或在 config.json 指定 executable"
             return
         run(ab_cmd(home, S, ["click", "#doctorBtn"]), 30)
         rc, out, _ = run(ab_cmd(home, S, ["get", "text", "#result"]), 30)
@@ -154,27 +194,28 @@ def check_browser(res, home):
             r["error"] = "click/read or screenshot failed"
     finally:
         run(ab_cmd(home, S, ["close"]), 20)
-    res["browser"] = r
 
 def check_profile(res, home):
-    prof = os.path.join(home, "browser-profile")
+    prof = os.path.join(home, ".doctor-profile")  # 不碰正式 browser-profile（可能正被使用/避免殘渣）
     page = "file:///" + os.path.join(REPO, "doctor-assets", "testpage.html").replace("\\", "/")
     val = "ne-%d" % int(time.time())
-    r = {"ok": False, "profile": prof}
+    r = {"ok": False, "profile_mechanism": "persistent --profile（以暫存 .doctor-profile 驗證機制）"}
+    res["profile"] = r
     try:
-        run(ab_cmd(home, "ne-key-a", ["--profile", prof, "open", page]), 60)
+        run(ab_cmd(home, "ne-key-a", ["--profile", prof, "open", page]), 90)
         run(ab_cmd(home, "ne-key-a", ["eval", "localStorage.setItem('ne-doctor','%s'); 'set'" % val]), 30)
         run(ab_cmd(home, "ne-key-a", ["close"]), 20)
         time.sleep(1)
-        run(ab_cmd(home, "ne-key-b", ["--profile", prof, "open", page]), 60)
+        run(ab_cmd(home, "ne-key-b", ["--profile", prof, "open", page]), 90)
         rc, out, _ = run(ab_cmd(home, "ne-key-b", ["eval", "localStorage.getItem('ne-doctor')"]), 30)
         r["read_back"] = out
         r["ok"] = val in out
         if not r["ok"]:
-            r["recovery"] = "file:// 的 localStorage 可能被鎖；改用 https 測試頁或檢查 profile 目錄權限"
+            r["error"] = "state did not survive a browser restart"
+            r["recovery"] = "檢查 profile 目錄可寫；或 file:// localStorage 被鎖 → 改 http 測試頁"
     finally:
         run(ab_cmd(home, "ne-key-b", ["close"]), 20)
-    res["profile"] = r
+        shutil.rmtree(prof, ignore_errors=True)  # 測試殘渣不留
 
 def write_outputs(res, home, dur):
     lines = ["# no-errands 本機能力圖（doctor 實測，%s，%.1fs）" % (time.strftime("%Y-%m-%d %H:%M"), dur), ""]
@@ -183,16 +224,17 @@ def write_outputs(res, home, dur):
         extra = ""
         if k == "python": extra = "%s @ %s" % (v["version"], v["path"])
         if k == "pkg_manager": extra = ", ".join(f["name"] + " " + f["version"] for f in v["found"]) or "無"
-        if k == "browsers": extra = ", ".join(f["name"] + " = " + f["path"] for f in v["found"]) or "無"
-        if k == "desktop": extra = "a11y 寫入→讀回 %s（%s）" % ("一致" if v.get("ok") else "失敗", v.get("tool"))
+        if k == "browsers": extra = ", ".join(f["name"] + " = " + f["path"] for f in v["found"]) or v.get("note", "無")
+        if k == "desktop": extra = "專屬測試視窗 寫入→點擊→讀回 %s（%s）" % ("一致" if v.get("ok") else "失敗", v.get("tool"))
         if k == "browser": extra = "click→DOM 變化→截圖 %s（%s）" % ("通過" if v.get("ok") else "失敗", v.get("tool"))
-        if k == "profile": extra = "跨程序登入狀態 %s（%s）" % ("持久" if v.get("ok") else "失敗", v.get("profile"))
+        if k == "profile": extra = "跨程序持久 %s" % ("通過" if v.get("ok") else "失敗")
         lines.append("- %s %s：%s" % (mark, k, extra))
+        if v.get("error"):
+            lines.append("  - error: %s" % v["error"])
         if v.get("recovery"):
             lines.append("  - recovery: %s" % v["recovery"])
     cap = os.path.join(home, "capabilities.md")
     open(cap, "w", encoding="utf-8", newline="\n").write("\n".join(lines) + "\n")
-    # 刷新所有安裝目標的受管區塊
     cfg_p = os.path.join(home, "config.json")
     refreshed = []
     if os.path.exists(cfg_p):
@@ -200,7 +242,7 @@ def write_outputs(res, home, dur):
         paths = {"agent-desktop": os.path.join(home, "bin", ne.exe_name("agent-desktop")),
                  "agent-browser": os.path.join(home, "bin", ne.exe_name("agent-browser"))}
         for inst in cfg.get("installs", []):
-            ne.upsert_block(inst["target"], ne.managed_block(home, paths))
+            ne.upsert_block(inst["target"], ne.managed_block(home, paths, checks=res, repo=cfg.get("repo")))
             refreshed.append(inst["target"])
     return cap, refreshed
 

@@ -12,11 +12,11 @@ description: >-
 # no-errands：人負責決定，agent 負責動手
 
 你正要把一件事丟回給使用者嗎？先走完這座階梯。寫一份「操作教學」給人照做，
-就是最大宗的跑腿（本機稽核 25 個 session 出現 51 次）——除非使用者明說想自己學。
+正是最常見、也最容易被忽略的跑腿型態——除非使用者明說想自己學。
 
 ## 能力階梯（由上往下試，每階最多 2–3 次嘗試，失敗記下原因再升階）
 
-0. **查 playbook**：`playbook/`（repo）與 `~/.no-errands/playbook-local/`。有人走過就照走。
+0. **查 playbook**：位置見 CLAUDE.md 的 no-errands 受管區塊（repo 共享 + 私人兩處）。有人走過就照走。
 1. **檔案 / CLI / API**：多數 GUI 工具有隱藏 CLI（`quartus_sh`、`soffice --headless`、COM）。
    包含跨環境借力：host 缺的工具，WSL / 其他機器可能有（例：`wsl -e gh ...`）。
 2. **眼**：圖片/PDF 直接 Read（多模態）；網頁截圖；視窗截圖用
@@ -76,4 +76,4 @@ description: >-
 
 把路寫進 playbook（四段：走得通的路／走不通的路與原因／驗收方式／交人點），
 記 automation_id / selector，不記顯示名稱（a11y 名稱跟系統語言走）。含私人資訊的放
-`~/.no-errands/playbook-local/`，其餘放 repo `playbook/` 分享給全實驗室。
+私人 playbook，其餘放 repo 的共享 playbook（兩者路徑見受管區塊）分享給全實驗室。
