@@ -20,7 +20,7 @@
 政策（policy.json）：app 必須在 granted_apps；白名單對話直接開；不在白名單且未讀保護 on →
   需要 --expect 指紋且狀態沒變，有未讀就拒開。
 """
-import hashlib, json, os, re, subprocess, sys, time
+import hashlib, json, os, re, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import policy  # noqa: E402
@@ -101,6 +101,14 @@ def out(obj, code=0):
     if FG_EVENTS:
         obj["foreground_taken"] = True
         obj["foreground_taken_by"] = FG_EVENTS[:5]
+        # 交還：背景模式下把目標視窗縮小，前景會回到使用者原本的視窗（實測），再確認有沒有回去
+        if HANDBACK.get("enabled") and WATCH.get("win") and FG0.get("h"):
+            try:
+                subprocess.run([ad_path(), "minimize", "--window-id", WATCH["win"]["id"]], capture_output=True, timeout=15)
+                time.sleep(0.6)
+                obj["foreground_returned"] = _fg() == FG0["h"]
+            except Exception:
+                obj["foreground_returned"] = False
     print(json.dumps(obj, ensure_ascii=False, indent=1))
     sys.exit(code)
 
@@ -118,6 +126,14 @@ def find_window(prof, title=None):
     if len(wins) != 1:
         raise Refused("找不到唯一的目標視窗（符合 %d 個）" % len(wins))
     WATCH["win"] = wins[0]
+    if wins[0].get("minimized") and HANDBACK.get("may_restore"):
+        # 上一個指令交還前景時把它縮小了；縮小的視窗無法語意操作 → 先還原（記下還原前的前景，之後交還到那裡）
+        if FG0["h"] is None:
+            FG0["h"] = _fg()
+        ad("restore", "--window-id", wins[0]["id"])
+        time.sleep(0.6)
+        if _fg() != FG0["h"]:
+            FG_EVENTS.append("restore")
     return wins[0]
 
 
@@ -185,6 +201,8 @@ def find_node(snap, pred):
 
 
 FG_EVENTS = []   # 每次操作後前景是否被換走（只記 handle 是否改變，不記標題）
+FG0 = {"h": None}          # 第一次操作前的前景視窗（交還的目標）
+HANDBACK = {"enabled": False}
 WATCH = {"watch": None, "win": None}   # 閒置閘門：操作中監看使用者輸入
 
 
@@ -251,6 +269,8 @@ def _fg():
 def guarded(prof, action, node, parents, ctx, text=None):
     assert_allowed(prof, action, node, parents, ctx)
     before = _fg()
+    if FG0["h"] is None:
+        FG0["h"] = before
     try:
         if action == "click":
             ad("click", node["ref_id"])
@@ -401,6 +421,7 @@ def cmd_export(app, prof, dest, chat=None):
         readback = None
     if readback != target:
         cancel_and_refuse("檔名欄寫入後讀回不符，不存檔（已按取消）")
+    t_save = time.time()
     guarded(prof, "click", save, sparents, {"zone": "dialog"})
     # 不覆寫：若跳出「確認另存新檔」（檔案已存在），按「否」並停手
     time.sleep(0.6)
@@ -445,6 +466,26 @@ def cmd_export(app, prof, dest, chat=None):
         time.sleep(0.2)
         if os.path.exists(target) and os.path.getsize(target) > 0:
             break
+    moved_from = None
+    if not os.path.exists(target) and prof.get("verify_export_filename_contains_chat") and default_name:
+        # 有些 Windows 版本的對話框（CI 的 Windows Server 實測）不採用無障礙寫入的檔名，照預設檔名存到預設資料夾。
+        # 預設檔名已驗證含對話名稱 → 到常見資料夾找「剛剛建立、檔名等於預設檔名」的檔案，搬到目標位置。
+        base = os.path.basename(default_name.replace("\\", "/"))
+        stem = os.path.splitext(base)[0]
+        home_dir = os.path.expanduser("~")
+        for d in (dest, os.path.join(home_dir, "Documents"), os.path.join(home_dir, "Downloads"),
+                  os.path.join(home_dir, "Desktop"), os.path.join(home_dir, "OneDrive", "Documents")):
+            try:
+                for fn in os.listdir(d):
+                    fp = os.path.join(d, fn)
+                    if os.path.splitext(fn)[0] == stem and os.path.getmtime(fp) >= t_save - 2:
+                        shutil.move(fp, target)
+                        moved_from = "default-folder"
+                        break
+            except OSError:
+                continue
+            if moved_from:
+                break
     if not os.path.exists(target):
         # 診斷（只含系統對話框的 UI 字串）：對話框還在嗎？上面有哪些按鈕？
         diag = {"dialog_still_open": False}
@@ -477,7 +518,8 @@ def cmd_export(app, prof, dest, chat=None):
         n = sum(1 for _ in f)
     ledger(app, "export", True, chat=chat)
     out({"ok": True, "path": target, "bytes": os.path.getsize(target), "lines": n,
-         "verified": {"default_filename": True, "first_line": True}})
+         "verified": {"default_filename": True, "first_line": True},
+         "saved_via": "default-folder-then-moved" if moved_from else "typed-path"})
 
 
 def cmd_close(app, prof):
@@ -522,8 +564,10 @@ def main():
         pol = policy.load(HOME)
         if not policy.is_granted(pol, app):
             raise Refused("使用者尚未授權這個 app（同意閘門）：先在對話中取得指名同意")
-        if sub in ("open", "export", "close", "act"):
+        if sub in ("open", "export", "close", "act") or (sub == "read" and not arg(a, "--file")):
             idle_gate(prof, pol, a)
+            HANDBACK["may_restore"] = True   # 只有過了閒置閘門的指令可以把縮小的視窗還原
+        HANDBACK["enabled"] = pol.get("visibility") != "watch" and bool(prof.get("raises_foreground"))
         if sub == "locate":
             cmd_locate(app, prof, arg(a, "--chat") or "")
         elif sub == "open":

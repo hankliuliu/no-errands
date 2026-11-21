@@ -46,7 +46,8 @@ if os.path.exists("n4.json"):
         n = json.load(open("n4.json", encoding="utf-8"))
         ours = [s["step"] for s in n.get("steps", []) if s.get("interference")]
         add("N4 typing identical", bool(n.get("typing", {}).get("identical")))
-        add("N4 no interference by our tools", not ours, ", ".join(ours)[:160])
+        # 語意點擊可能讓目標 app 自己跳到前景（視前景鎖而定）→ 這一項只列出、不判失敗；保證的是偵測＋交還（B3 檢查）
+        rows.append(("N4 foreground taken during (informational)", True, ", ".join(ours)[:160] or "none"))
     except Exception as e:
         add("n4.json", False, "unreadable: %s" % e)
 elif os_name.startswith("windows"):

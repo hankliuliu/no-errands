@@ -18,7 +18,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SC = os.path.join(REPO, "skills", "no-errands", "scripts")
 FAKE = os.path.join(REPO, "scenarios", "fake-chat", "fakechat.ps1")
 FG = os.path.join(REPO, "scenarios", "fake-chat", "fg.ps1")
-RESULTS, STEPS = [], []
+RESULTS, STEPS, HANDBACKS = [], [], []
 
 
 def check(name, cond, detail=""):
@@ -60,6 +60,8 @@ def main():
             o = json.loads(p.stdout)
         except Exception:
             o = {"raw": p.stdout[-300:], "err": p.stderr[-300:]}
+        if o.get("foreground_taken"):
+            HANDBACKS.append(o.get("foreground_returned"))
         STEPS.append({"step": " ".join(args[:3]), "ok": o.get("ok"), "secs": round(time.time() - t0, 1),
                       "fg_changed": before["hwnd"] != after["hwnd"], "fg_after_ours": after["ours"],
                       "cursor_moved": (before["x"], before["y"]) != (after["x"], after["y"])})
@@ -181,6 +183,7 @@ def main():
         o = cg("send", "--chat", "Alpha Team")
         check("沒有送出子指令", o.get("refused") is True, o)
         check("全程違規偵測器為空", violations() == [], violations())
+        check("每次搶前景都已交還（%d 次）" % len(HANDBACKS), all(HANDBACKS), HANDBACKS)
     finally:
         if pid:
             subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
