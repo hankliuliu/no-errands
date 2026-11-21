@@ -63,7 +63,7 @@ def main():
             if it["role"] == "radio" and re.search(r"true", it["name"], re.I):
                 tgt = it   # 第一組 true 不一定是 PAT；改用文字定位
         snap_txt = a.run("snapshot").stdout
-        m = re.search(r'Enable Personal Access Tokens.*?radio "true" \[ref=(e\d+)\]', snap_txt, re.S | re.I)
+        m = re.search(r'group "Enable Personal Access Tokens:?".*?radio "True"[^\n]*?\bref=(e\d+)', snap_txt, re.S | re.I)
         if m:
             a.run("click", "@" + m.group(1))
         else:   # 診斷：印出「Enable Personal Access Tokens」這個設定本身的結構（測試伺服器）
