@@ -257,9 +257,16 @@ def main():
         proc.kill()
     LOG["finished_clicked"] = finished
     LOG["installed"] = os.path.exists(spec["target"])
+    # 完成頁的「啟動程式」勾選框在 Inno 是 TNewCheckListBox（不是按鈕，取消不了）→ 程式被啟動會鎖住檔案、移除失敗。
+    # 只關「從剛裝好的路徑啟動」的程序（依路徑找 PID，不按程序名關）。
+    inst_dir = os.path.dirname(spec["target"])
+    ps = ("Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith('%s', 'OrdinalIgnoreCase') } | "
+          "ForEach-Object { $_.Id; Stop-Process -Id $_.Id -Force }" % inst_dir.replace("'", "''"))
+    killed = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=60).stdout.split()
+    LOG["launched_after_finish_pids_closed"] = len(killed)
     if os.path.exists(spec["uninstall"][0]):
         subprocess.run(spec["uninstall"], timeout=240)
-        for _ in range(40):
+        for _ in range(120):   # Inno 的移除程式會把自己複製到暫存再跑、立即返回 → 等久一點
             time.sleep(1)
             if not os.path.exists(spec["target"]):
                 break

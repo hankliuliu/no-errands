@@ -620,13 +620,21 @@ def _export_menu_popup(prof, win, snap, chat):
         time.sleep(0.4)
         pops = popup_menu.popup_windows(pid, exclude=before) or pops
     pop = pop or pops[0]
+    def _item_like(i):
+        # 選單項目的 UIA 型別不一定是 MenuItem：WinForms 平面按鈕經 FromHandle 讀成 Pane（CI 實測）；自繪選單也常是 Pane。
+        # Pane 只在「項目大小」時才算（避免名稱剛好相同的整塊容器）。
+        if i.get("type") in ("MenuItem", "ListItem", "Button"):
+            return True
+        r = i.get("rect") or [0, 0, 0, 0]
+        return i.get("type") == "Pane" and 0 < r[3] - r[1] <= 60 and 0 < r[2] - r[0] <= 600
+
     def _center_in(a, b):   # a 的中心落在 b 裡
         ra, rb = a.get("rect") or [0, 0, 0, 0], b.get("rect") or [0, 0, 0, 0]
         cx, cy = (ra[0] + ra[2]) / 2, (ra[1] + ra[3]) / 2
         return rb[0] <= cx <= rb[2] and rb[1] <= cy <= rb[3]
     want = []
     for i in items:   # 同一個項目可能被 UIA 以兩層元素露出（Win32 代理＋MSAA，位置可能差幾像素）→ 中心互相包含就算同一個
-        if i["name"] in prof["popup_export_items"] and i.get("type") in ("MenuItem", "ListItem", "Button"):
+        if i["name"] in prof["popup_export_items"] and _item_like(i):
             if not any(i["name"] == w["name"] and (_center_in(i, w) or _center_in(w, i)) for w in want):
                 want.append(i)
     if len(want) != 1:
