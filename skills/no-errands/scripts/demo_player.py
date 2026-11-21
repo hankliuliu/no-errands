@@ -269,32 +269,53 @@ WEB = r"""<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><title>示�
 #c{flex:1}#s{color:#9aa0a6;font-size:13px}button{font:inherit;font-size:16px;background:#2a2d35;color:#f2f2f2;border:0;padding:6px 12px;border-radius:6px}</style>
 <div id="b"></div><div class="r"><div id="l"></div><div id="c"><div id="t"></div><div id="s"></div></div>
 <button onclick="c('pause')">暫停／繼續</button><button onclick="c('next')">下一步</button><button onclick="c('mode')">自動／逐步</button><button onclick="c('stop')">停止</button></div>
-<script>async function c(a){await fetch('control',{method:'POST',body:a})}
-async function t(){try{const n=await (await fetch('now',{cache:'no-store'})).json();
+<script>const K=__KEY__;async function c(a){await fetch('control',{method:'POST',headers:{'X-Player-Key':K},body:a})}
+async function t(){try{const n=await (await fetch('now',{cache:'no-store',headers:{'X-Player-Key':K}})).json();
 document.getElementById('l').innerText=(n.step_index||0)+'/'+(n.steps_total||0)+'\n'+(n.role||'');
 document.getElementById('t').innerText=((n.captions||[{}])[0]||{}).text||'';document.getElementById('s').innerText=n.status||'';
 document.getElementById('b').style.width=(n.steps_total?100*n.step_index/n.steps_total:0)+'%'}catch(e){}}setInterval(t,500);t()</script></html>"""
 
 
 def web_player(run_dir):
-    """沒有 tk 的環境：本機網頁版（只綁 127.0.0.1）。"""
+    """沒有 tk 的環境：本機網頁版（只綁 127.0.0.1）。頁面網址帶隨機碼；讀狀態與送控制都要帶同一個碼
+    （X-Player-Key），並檢查 Host——本機其他網頁不能替講者按「下一步」。"""
     from http.server import BaseHTTPRequestHandler, HTTPServer
-    import webbrowser
+    import secrets, webbrowser
+    key = secrets.token_urlsafe(18)
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
 
+        def _ok(self):
+            port = self.server.server_address[1]
+            if self.headers.get("Host", "") not in ("127.0.0.1:%d" % port, "localhost:%d" % port):
+                return False
+            return True
+
+        def _deny(self):
+            self.send_response(403); self.end_headers()
+
         def do_GET(self):
-            body = (json.dumps(read_json(os.path.join(run_dir, "now.json")), ensure_ascii=False) if self.path == "/now"
-                    else WEB).encode("utf-8")
+            if not self._ok():
+                return self._deny()
+            if self.path in ("/now", "/p/now"):
+                if not secrets.compare_digest(self.headers.get("X-Player-Key", ""), key):
+                    return self._deny()
+                body, ctype = json.dumps(read_json(os.path.join(run_dir, "now.json")), ensure_ascii=False), "application/json"
+            elif self.path == "/p/" + key:
+                body, ctype = WEB.replace("__KEY__", json.dumps(key)), "text/html; charset=utf-8"
+            else:
+                return self._deny()
             self.send_response(200)
-            self.send_header("Content-Type", "application/json" if self.path == "/now" else "text/html; charset=utf-8")
+            self.send_header("Content-Type", ctype)
             self.end_headers()
-            self.wfile.write(body)
+            self.wfile.write(body.encode("utf-8"))
 
         def do_POST(self):
-            a = self.rfile.read(int(self.headers.get("Content-Length", "0") or 0)).decode()
+            if not self._ok() or self.path != "/p/control" and self.path != "/control" or                     not secrets.compare_digest(self.headers.get("X-Player-Key", ""), key):
+                return self._deny()
+            a = self.rfile.read(min(64, int(self.headers.get("Content-Length", "0") or 0))).decode()
             c = read_json(os.path.join(run_dir, "control.json"))
             m = {"pause": {"state": "playing" if c.get("state") == "paused" else "paused"}, "next": {"next": True},
                  "mode": {"advance": "auto" if c.get("advance") == "step" else "step"}, "stop": {"state": "stopped"}}
@@ -303,9 +324,10 @@ def web_player(run_dir):
             self.send_response(204)
             self.end_headers()
     srv = HTTPServer(("127.0.0.1", 0), H)
-    url = "http://127.0.0.1:%d/" % srv.server_address[1]
+    url = "http://127.0.0.1:%d/p/%s" % (srv.server_address[1], key)
     print(json.dumps({"ok": True, "web_player": url}), flush=True)
-    webbrowser.open(url)
+    if not os.environ.get("NE_PLAYER_NO_BROWSER"):
+        webbrowser.open(url)
     srv.serve_forever()
 
 

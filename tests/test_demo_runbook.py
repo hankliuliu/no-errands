@@ -595,6 +595,36 @@ def main():
         rc, o, txt = rbj("rehearse", rxp, "--approval", rx_aid)
         check("wait_text regex：狀態文字不在同一段 → 逾時失敗", rc == 1, txt[-200:])
 
+        # ---------- 網頁版播放器（沒有 tk 的退路）：控制端點要帶頁面裡的隨機碼
+        wr = os.path.join(home, "wrun"); os.makedirs(wr)
+        json.dump({"state": "playing", "advance": "auto", "next_seq": 0}, open(os.path.join(wr, "control.json"), "w"))
+        json.dump({"step_index": 1, "steps_total": 3}, open(os.path.join(wr, "now.json"), "w"))
+        wp = subprocess.Popen([sys.executable, os.path.join(S, "demo_player.py"), wr, "--web"], stdout=subprocess.PIPE,
+                              text=True, env=dict(env, NE_PLAYER_NO_BROWSER="1"))
+        try:
+            wurl = json.loads(wp.stdout.readline())["web_player"]
+            wbase = wurl.split("/p/")[0]
+            wkey = wurl.split("/p/")[1]
+
+            def wreq(path, data=None, key_=None, host=None):
+                h = {"X-Player-Key": key_} if key_ else {}
+                if host:
+                    h["Host"] = host
+                req = urllib.request.Request(wbase + path, data=data, headers=h, method="POST" if data else "GET")
+                try:
+                    with urllib.request.urlopen(req, timeout=5) as r:
+                        return r.status
+                except urllib.error.HTTPError as e:
+                    return e.code
+            check("網頁版播放器：沒帶碼的「下一步」→ 403", wreq("/p/control", b"next") == 403)
+            check("網頁版播放器：猜錯碼 → 403", wreq("/p/control", b"next", "guess") == 403)
+            check("網頁版播放器：別的 Host（DNS rebinding）→ 403", wreq("/p/control", b"next", wkey, "evil.example:80") == 403)
+            check("網頁版播放器：頁面只在帶碼的網址", wreq("/") == 403 and wreq("/p/" + wkey) == 200)
+            check("網頁版播放器：帶碼才生效", wreq("/p/control", b"next", wkey) == 204 and
+                  json.load(open(os.path.join(wr, "control.json"), encoding="utf-8"))["next_seq"] == 1)
+        finally:
+            wp.kill()
+
         # ---------- learn / freeze / apply
         rc, o, txt = rbj("learn", rbp, "--runs", "50")
         check("learn 產生提案（等待預算依觀測值調整）", rc == 0 and o.get("n_changes", 0) >= 1
