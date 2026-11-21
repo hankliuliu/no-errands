@@ -163,6 +163,8 @@ def skill_tree_hash(d):
     h = hashlib.sha256()
     for root, _, files in sorted(os.walk(d)):
         for fn in sorted(files):
+            if fn == OWN_MARK:   # 安裝標記不算 skill 內容
+                continue
             p = os.path.join(root, fn)
             h.update(fn.encode())
             h.update(open(p, "rb").read())
