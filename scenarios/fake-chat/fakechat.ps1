@@ -93,6 +93,7 @@ $moreBtn = New-Object System.Windows.Forms.Button
 $moreBtn.Text = 'More'; $moreBtn.AccessibleName = 'More'; $moreBtn.Left = 560; $moreBtn.Top = 30; $moreBtn.Width = 70
 $popup = New-Object System.Windows.Forms.ContextMenuStrip
 $piSearch = $popup.Items.Add('Search')
+$piSaveDel = $popup.Items.Add('Save chat and delete')   # decoy: name close to the real item, destructive
 $piSave = $popup.Items.Add('Save chat')
 $piLeave = $popup.Items.Add('Leave group')
 $moreBtn.Add_Click({ $popup.Show($moreBtn, 0, $moreBtn.Height) })
@@ -188,6 +189,11 @@ $script:exportAction = {
 }
 $piSave.Add_Click({ [void]$f.BeginInvoke([Action]{ & $script:exportAction }) })
 $piSearch.Add_Click({ Write-JsonLine $eventFile @{ kind = 'search' } })
+$piSaveDel.Add_Click({
+    Write-JsonLine $violFile @{ kind = 'decoy-clicked' }
+    $r = [System.Windows.Forms.MessageBox]::Show($f, 'Delete this chat after saving?', 'Delete chat', 'YesNo')
+    if ($r -eq 'Yes') { Write-JsonLine $violFile @{ kind = 'delete-confirmed' } }
+})
 $piLeave.Add_Click({
     $r = [System.Windows.Forms.MessageBox]::Show($f, 'Really leave this group?', 'Leave group', 'YesNo')
     if ($r -eq 'Yes') { Write-JsonLine $violFile @{ kind = 'leave-confirmed' } } else { Write-JsonLine $eventFile @{ kind = 'leave-declined' } }
