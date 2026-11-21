@@ -24,8 +24,8 @@
 ## 機制（各自有測試）
 | 機制 | 做什麼 | 測試 |
 |---|---|---|
-| `ned` | 桌面 app 代理：app 範圍鎖定、敏感 app 閘門（三平台名稱）、背景模式擋搶焦點類指令、發件匣頁面禁區 | `tests/test_ned.py` |
-| `neb` | 瀏覽器代理：敏感網域閘門；已授權的只讀、不點送出類按鈕 | `tests/test_neb.py` |
+| `ned` | 桌面 app 代理（白名單，`docs/agent-desktop-command-audit.md`）：app 範圍鎖定（含 launch 目標、--surface）、敏感 app 閘門（三平台名稱）、背景模式擋搶焦點與實體輸入、發件匣頁面禁區 | `tests/test_ned.py` |
+| `neb` | 瀏覽器代理：敏感網域閘門；已授權的只讀（白名單：對 agent-browser 每個子指令與選項逐項對過，`docs/agent-browser-command-audit.md`）、不點送出類按鈕；繞過逐步檢查的指令與選項任何網站都拒 | `tests/test_neb.py` |
 | `chat_guard` | 聊天 app：精確定位、標頭驗證身分、禁區（輸入框／送出／貼圖／通話）、彈出選單只點完全相符的項目、另存新檔以預設檔名與首行驗身分、絕不覆寫、閒置閘門與交還前景 | `tests/test_chat_guard.py`、`tests/test_line_profile.py` |
 | 發件匣 `outbox` | 起草→固定頁面→使用者核准→伺服器送出；對象由伺服器解析、修訂雜湊防竄改、自動化瀏覽器不可核准、有上限的等待 | `tests/test_outbox.py`、`tests/selfhost/mm_flow.py` |
 | `mm_ro` | Mattermost 唯讀（只發 GET；讀貼文不動已讀） | `tests/test_mm_ro.py` |

@@ -1,5 +1,5 @@
 {
-  "_comment": "工具版本釘死於此。更新流程：改網址與 sha256（取自官方 checksums 或 GitHub API 的 asset digest）→ 跑 setup.py 重裝 → doctor 全綠才 commit。",
+  "_comment": "工具版本釘死於此。更新流程：改網址與 sha256（取自官方 checksums 或 GitHub API 的 asset digest）→ 跑 setup.py 重裝 → 升級 agent-browser／agent-desktop 時用新版 --help 全文重對 docs/agent-browser-command-audit.md／agent-desktop-command-audit.md，更新 neb.py／ned.py 的清單與反例測試，再改文件裡的 audited version（test_neb／test_ned 會比對，不一致就失敗）→ doctor 全綠才 commit。",
   "agent-desktop": {
     "version": "1.3.1",
     "kind": "tar.gz",

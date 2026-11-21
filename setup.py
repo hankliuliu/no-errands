@@ -207,7 +207,9 @@ def managed_block(home, paths, checks=None, repo=None):
         status("desktop", "- 看桌面視窗：`%s <App.exe> screenshot <絕對路徑.png>`" % ned_cmd(home)),
         status("desktop", "- 操作桌面：`%s <App.exe> snapshot -i --compact`→`... click '@ref'` / `... set-value '@ref' 文字`→`... get '@ref' --property value`（ned 會鎖定 app 範圍）" % ned_cmd(home)),
         "- 政策：%s（`%s show`；只在使用者明確要求時才改）" % (pol_mod.summary(pol), pol_cmd),
-        "- 通訊/郵件/金融類 app 與網站：未授權就不讀不碰（ned 會拒絕）；要碰先在對話中取得使用者指名同意。",
+        "- 通訊/郵件/金融類 app 與網站：未授權就不讀不碰；要碰先在對話中取得使用者指名同意。桌面 app 經 ned，"
+        "**網站（郵件、聊天、社群）一律經 neb，不直接呼叫 agent-browser**：`%s --profile \"%s\" open <url>`→`... snapshot -i`→`... click @ref`"
+        "（未授權的拒絕；授權了也只讀，不輸入、不執行腳本、不點送出類按鈕）。" % (ned_cmd(home).replace("ned.py", "neb.py"), prof),
         "- **你不能自己送出任何訊息**：要傳給別人的內容寫進一個文字檔，起草到核准發件匣："
         "`%s \"%s\" draft --service <fake|mattermost> --to <對象> --body-file <檔> --why \"<來由>\"`，"
         "回傳有 id 且 `... status <id>` 為 pending 才可說草稿已在發件匣；把網址告訴使用者，最多 `... wait <id>` 一次（上限 120 秒），沒結果就**結束回合**，不要自己寫迴圈查詢。發件匣頁面是你的禁區，不要開。"

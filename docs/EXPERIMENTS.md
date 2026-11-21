@@ -1,5 +1,13 @@
 # EXPERIMENTS.md — no-errands 實驗紀錄（新到舊；沿用實驗室規約：失敗必記、附根因）
 
+## 2026-11-22 · 守門代理的洞：審查抓到、測試沒抓到
+- **怎麼發現的**：主腦審查另一位執行手的分支時讀到 neb 的放行清單，對照 agent-browser 0.43.0 的說明：`find` 被當成唯讀，但它的預設動作就是 click，也能 fill；`wait --fn` 會在頁面上執行 JS（等同被擋掉的 eval）；`javascript:`／`data:` 網址被當成「https://javascript…」放行。原本 14 項 neb 測試沒有任何一項測到 `find` 或 `--fn`。
+- **逐項對照後又找到**：`batch` 從一般網站出發、中途換到敏感網站再輸入，neb 只檢查起點；全域選項寫在子指令**後面**時 neb 沒解析（`--init-script`、`--headers`、`--user-agent`——最後一個還能騙過發件匣的自動化檢查）；`chat`（AI 代理）、`mcp`、`flow run`、`connect`、`auth login`、`get cdp-url` 等控制面指令完全繞過逐步檢查。ned：`launch` 不檢查目標（`ned Notepad.exe launch …LINE.exe` 會過——正是事故一的模式）、背景模式沒擋 `--headed`、`--surface notification-center/desktop/focused` 會讀到別的 app、`wait --notification` 讀所有通知。
+- **更大的一個**：neb 根本沒有寫進受管區塊或 skill——agent 不會知道要用它；受管區塊的「看網頁」指令是直接呼叫 agent-browser。
+- **修法**：neb 改成敏感網站白名單＋控制面指令與危險選項任何網站都拒＋每個導覽網址檢查 scheme 與網域＋`batch` 拆開逐一檢查；ned 補 launch 目標、`--headed`、`--surface`、`wait`；受管區塊寫明敏感網站一律經 neb。對照表存成 `docs/agent-browser-command-audit.md`、`docs/agent-desktop-command-audit.md`，標註對過的版本；`test_neb`／`test_ned` 比對 `versions.json`，換版本沒重對就失敗。
+- **驗證**：每個洞一個反例；新測試對舊的 neb 跑會失敗 23 項、對舊的 ned 失敗 9 項，修好後 neb 57/57、ned 56/56。
+- **教訓**：白名單只有在「每一項都知道它會做什麼」時才是白名單——讀完上游工具的說明全文、逐項分類，比憑名字猜（`find` 聽起來是讀）可靠；而守門工具要寫進 agent 每次都會看到的地方，否則再嚴也沒人經過它。
+
 ## 2026-11-22 · UAC 真機實測（閒置閘門）
 - **方法**：獨立程序等使用者閒置滿 300 秒（實際等了 96 分鐘）→ 發出一次無害的提權請求（提權後只會寫一個標記檔）→ 每秒用 `uac.py` 偵測。
 - **結果**：提示 1.2 秒內偵測到（consent.exe）、交接訊息產生；沒人按 → **122.7 秒後 Windows 自動取消**，請求端收到「操作已被使用者取消」，標記檔不存在（提權指令沒有執行）；測試期間使用者沒有輸入。
