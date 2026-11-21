@@ -101,6 +101,7 @@ jobs:
           python tests/n4_noninterference.py --home "$NE_HOME" --out n4.json --standin | tee n4.txt
           python tests/n4_positive_control.py --i-am-ci | tee n4pos.txt
           python tests/test_idle.py --i-am-ci | tee idle.txt
+          python tests/test_player_ci.py --i-am-ci | tee player.txt
 
       - name: uninstall
         if: always()
@@ -140,6 +141,7 @@ jobs:
             coexist.txt
             uac.txt
             nowin.txt
+            player.txt
             nowin-pos.txt
             audit.txt
             codex.txt
