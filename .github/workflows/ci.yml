@@ -63,6 +63,8 @@ jobs:
           "$PY" tests/test_ned.py | tee ned.txt
           "$PY" tests/test_mm_ro.py | tee mm.txt
           "$PY" tests/test_office.py | tee office.txt
+          AB="$NE_HOME/bin/agent-browser"; [ -f "$AB.exe" ] && AB="$AB.exe"
+          "$PY" tests/test_token_flow.py --ab "$AB" | tee token.txt
 
       - name: chat_guard B3 on fake chat window [Windows]
         id: b3
@@ -111,6 +113,7 @@ jobs:
             ned.txt
             mm.txt
             office.txt
+            token.txt
             b3.*
             n4*
             idle.txt
