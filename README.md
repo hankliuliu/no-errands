@@ -169,3 +169,19 @@ agent 走通一條路（某個網站怎麼登、某個程式的隱藏指令列�
 ## 和 context-gather 的關係
 
 context-gather 讓 agent 知道脈絡；不求人讓 agent 有手腳，而且是你管得住的手腳。前者記成 `denied`、或寫著「請手動」的步驟，就是後者要接的地方。
+
+## 授權與第三方工具
+
+本 repo 以 [Apache License 2.0](LICENSE) 授權。
+
+repo 裡**不含**任何第三方程式碼或執行檔。下面這些工具是安裝時（`setup.ps1`／`setup.sh`）從官方發行頁下載到你的電腦，版本與 sha256 釘在 `versions.json`，各自依原授權使用：
+
+| 工具 | 用途 | 授權 |
+|---|---|---|
+| [agent-desktop](https://github.com/vercel-labs/agent-desktop) | 桌面無障礙操作 | Apache-2.0 |
+| [agent-browser](https://github.com/vercel-labs/agent-browser) | 瀏覽器操作（會再下載 Chrome for Testing） | Apache-2.0 |
+| [uv](https://github.com/astral-sh/uv) | 沒有可用 Python 時用來取得 Python | Apache-2.0／MIT |
+
+只在 CI 測試裡安裝、不隨本工具包散布的：PySide6（LGPL，彈出選單實驗室）、Gitea（MIT）、Mattermost preview 映像、LibreOffice、Notepad++ 與 WinMerge（GPL，安裝精靈測試用，裝完即移除）。
+
+文件裡提到的 LINE、Mattermost、Slack 等名稱只用來說明相容對象，各為其所有者的商標；本專案與它們沒有關係。
