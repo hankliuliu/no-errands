@@ -41,7 +41,7 @@ jobs:
 
       - name: Linux desktop deps (xvfb + at-spi)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb at-spi2-core libreoffice-calc libreoffice-writer zenity dbus-x11 > /dev/null
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb at-spi2-core libreoffice-calc libreoffice-writer zenity dbus-x11 openbox > /dev/null
 
       - name: doctor
         id: doctor
@@ -49,7 +49,7 @@ jobs:
         run: |
           PY=$(python3 -c 'import sys;print(sys.executable)' 2>/dev/null || python -c 'import sys;print(sys.executable)')
           if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a dbus-run-session -- bash -c "/usr/libexec/at-spi-bus-launcher --launch-immediately & sleep 2; '$PY' doctor.py --home '$NE_HOME'" > doctor.json
+            xvfb-run -a dbus-run-session -- bash -c "/usr/libexec/at-spi-bus-launcher --launch-immediately >/dev/null 2>&1 & openbox >/dev/null 2>&1 & sleep 2; '$PY' doctor.py --home '$NE_HOME'" > doctor.json
           else
             "$PY" doctor.py --home "$NE_HOME" > doctor.json
           fi

@@ -102,6 +102,15 @@ def check_desktop_posix(r, ad):
     r["status_rc"] = rc
     rc2, perm, _ = run([ad, "permissions"], 20)
     r["permissions_raw"] = (perm or "")[:600]          # 存原文：status ✅ 到底代表有權限、還是只代表 binary 能跑
+    try:
+        acc = (json.loads(perm).get("data") or {}).get("accessibility", {}).get("state")
+    except Exception:
+        acc = None
+    r["accessibility"] = acc
+    if sys.platform == "darwin" and acc not in (None, "granted", "not_required"):
+        r.update(ok=False, needs_permission=True, error="需授權：輔助使用（Accessibility）權限狀態為 %s" % acc,
+                 recovery="agent-desktop permissions --guide，把啟動 agent 的 app 加進輔助使用清單")
+        return
     title = "NE-DOCTOR-%d" % os.getpid()
     token = "ne%d" % int(time.time())
     if sys.platform == "darwin":
@@ -118,7 +127,7 @@ def check_desktop_posix(r, ad):
         win_id = None
         for _ in range(30):
             time.sleep(0.5)
-            rc3, j = jrun([ad, "list-windows"], 20)
+            rc3, j = jrun([ad, "list-windows", "--app", app], 20)   # 只列測試對話框的 app（全域清單在 macOS runner 會逾時）
             for w in (j.get("data") or []):
                 if isinstance(w, dict) and (w.get("title") == title or (w.get("pid") == proc.pid and w.get("title"))):
                     win_id = w.get("id"); break
@@ -133,7 +142,8 @@ def check_desktop_posix(r, ad):
                          recovery="agent-desktop permissions --guide，把啟動 agent 的 app 加進輔助使用清單")
             else:
                 r.update(ok=False, error="找不到自有測試對話框（%s）" % app, list_windows=msg,
-                         recovery="Linux：確認 AT-SPI 匯流排在跑（dbus session + at-spi-bus-launcher）")
+                         recovery=("macOS：看 agent-desktop list-windows --app osascript 的輸出" if sys.platform == "darwin"
+                                   else "Linux：確認 AT-SPI 匯流排在跑（dbus session + at-spi-bus-launcher）"))
             return
         rc4, j = jrun([ad, "snapshot", "--window-id", str(win_id), "-i", "--compact"], 30)
         refs = {"edit": None, "btn": None}
