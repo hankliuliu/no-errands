@@ -95,6 +95,78 @@ $f.Controls.Add($t); $f.Controls.Add($b)
 [System.Windows.Forms.Application]::Run($f)
 """
 
+def check_desktop_posix(r, ad):
+    """macOS / Linux：自有對話框把輸入印到 stdout，doctor 用 agent-desktop 填值、按 OK，
+    再比對**對話框程序自己印出的值**（驗證獨立於 agent-desktop）。"""
+    rc, out, _ = run([ad, "status"], 20)
+    r["status_rc"] = rc
+    rc2, perm, _ = run([ad, "permissions"], 20)
+    r["permissions_raw"] = (perm or "")[:600]          # 存原文：status ✅ 到底代表有權限、還是只代表 binary 能跑
+    title = "NE-DOCTOR-%d" % os.getpid()
+    token = "ne%d" % int(time.time())
+    if sys.platform == "darwin":
+        script = ('text returned of (display dialog "no-errands doctor" default answer "" buttons {"OK"} '
+                  'default button "OK" with title "%s")' % title)
+        cmd, app = ["osascript", "-e", script], "osascript"
+    elif shutil.which("zenity"):
+        cmd, app = ["zenity", "--entry", "--title", title, "--text", "no-errands doctor"], "zenity"
+    else:
+        r.update(ok=(rc == 0), roundtrip="skipped", note="Linux 無測試靶（未安裝 zenity）：只驗了 status，沒有驗寫入→讀回")
+        return
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        win_id = None
+        for _ in range(30):
+            time.sleep(0.5)
+            rc3, j = jrun([ad, "list-windows"], 20)
+            for w in (j.get("data") or []):
+                if isinstance(w, dict) and (w.get("title") == title or (w.get("pid") == proc.pid and w.get("title"))):
+                    win_id = w.get("id"); break
+            if win_id:
+                break
+            if not j.get("ok") and "ermission" in json.dumps(j):
+                break
+        if not win_id:
+            msg = json.dumps(j)[:300] if isinstance(j, dict) else ""
+            if "ermission" in msg or "PERMISSION" in msg or "not trusted" in msg.lower():
+                r.update(ok=False, needs_permission=True, error="需授權：輔助使用（Accessibility）權限未開",
+                         recovery="agent-desktop permissions --guide，把啟動 agent 的 app 加進輔助使用清單")
+            else:
+                r.update(ok=False, error="找不到自有測試對話框（%s）" % app, list_windows=msg,
+                         recovery="Linux：確認 AT-SPI 匯流排在跑（dbus session + at-spi-bus-launcher）")
+            return
+        rc4, j = jrun([ad, "snapshot", "--window-id", str(win_id), "-i", "--compact"], 30)
+        refs = {"edit": None, "btn": None}
+
+        def walk(n):
+            if isinstance(n, dict):
+                acts = n.get("available_actions") or []
+                if n.get("role") in ("textfield", "text") and "SetValue" in acts and not refs["edit"]:
+                    refs["edit"] = n.get("ref_id")
+                if n.get("role") == "button" and (n.get("name") or "").replace("_", "") in ("OK", "確定", "好") and not refs["btn"]:
+                    refs["btn"] = n.get("ref_id")
+                for c in n.get("children", []) or []:
+                    walk(c)
+        walk(j.get("data", {}).get("tree", {}))
+        if not refs["edit"] or not refs["btn"]:
+            r.update(ok=False, error="測試對話框的無障礙樹缺文字框或 OK 鈕（refs=%s）" % refs)
+            return
+        jrun([ad, "set-value", refs["edit"], token], 30)
+        jrun([ad, "click", refs["btn"]], 30)
+        try:
+            printed, _ = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            printed = ""
+        r["roundtrip"] = {"wrote": token, "dialog_printed": (printed or "").strip()}
+        r["ok"] = (printed or "").strip() == token
+        r["tool_note"] = "驗證值來自對話框程序（%s）自己的輸出，不是 agent-desktop 讀回" % app
+        if not r["ok"]:
+            r["error"] = "寫入→按 OK→對話框印出的值不一致"
+    finally:
+        if proc.poll() is None:
+            proc.kill()   # 只殺 doctor 自己 spawn 的 PID
+
+
 def check_desktop(res, home):
     ad = os.path.join(home, "bin", ne.exe_name("agent-desktop"))
     r = {"ok": False, "tool": ad}
@@ -103,12 +175,7 @@ def check_desktop(res, home):
         r["error"], r["recovery"] = "binary missing", "先跑 setup.py"
         return
     if not IS_WIN:
-        rc, out, _ = run([ad, "status"], 20)
-        r.update(ok=(rc == 0), note="非 Windows：M2 僅驗 status 與權限狀態，完整寫入測試待 M3", status_rc=rc)
-        if rc != 0:
-            r["error"] = "agent-desktop status failed"
-            r["recovery"] = "macOS 需在系統設定授予輔助使用權限（agent-desktop permissions --guide）；Linux 需 AT-SPI"
-        return
+        return check_desktop_posix(r, ad)
     title = "NE-DOCTOR-%d" % os.getpid()
     proc = subprocess.Popen(
         ["powershell", "-NoProfile", "-STA", "-WindowStyle", "Normal", "-Command",

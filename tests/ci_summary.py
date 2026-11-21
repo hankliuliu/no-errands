@@ -22,7 +22,13 @@ if os.path.exists("doctor.json"):
         for k, v in d.get("checks", {}).items():
             note = ""
             if k == "desktop" and not os_name.startswith("windows"):
-                note = "僅驗 status（尚無寫入→讀回）"
+                rt = v.get("roundtrip")
+                if isinstance(rt, dict):
+                    note = "寫入→讀回（對話框自己印出）：%s" % ("一致" if v.get("ok") else "不一致")
+                elif v.get("needs_permission"):
+                    note = "需授權（輔助使用）"
+                else:
+                    note = v.get("note") or "僅驗 status（尚無寫入→讀回）"
             add("doctor:" + k, bool(v.get("ok")), ((v.get("error") or "") + " " + note).strip()[:160])
     except Exception as e:
         add("doctor.json", False, "unreadable: %s" % e)
