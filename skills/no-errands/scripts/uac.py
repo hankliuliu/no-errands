@@ -19,7 +19,7 @@ def uac_prompt():
     if os.name != "nt":
         return False
     try:
-        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq consent.exe", "/NH"], capture_output=True, text=True,
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq consent.exe", "/NH"], capture_output=True, text=True, errors="replace",
                              timeout=10).stdout
         return "consent.exe" in out.lower()
     except Exception:
