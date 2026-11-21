@@ -561,6 +561,8 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
                   else act.get("regex", act.get("text"))):
             x = resubst(x, vars_) if is_re else subst(x, vars_)
             marks[x] = max(count_of(br.text(acct, sc), x, is_re) for sc in (act.get("scopes") or [None]))
+            if act.get("keep"):                            # 跨步驟保存（例：通知牆在後面的步驟才會出現新的一則）
+                vars_.setdefault("__marks", {})[x] = marks[x]
         ok = True
     elif d == "press":
         rc, o, e = br.neb(acct, "press", act["key"], approval=approval, step=st["id"])
@@ -577,7 +579,7 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
         raw = act["regex"] if is_re else act["text"]
         texts = [(resubst(x, vars_) if is_re else subst(x, vars_)) for x in ([raw] if isinstance(raw, str) else raw)]
         ok, hit = False, None
-        marks = rec.get("_marks", {})
+        marks = dict(vars_.get("__marks") or {}, **rec.get("_marks", {}))
         while True:
             for sc in scopes:
                 body = br.text(acct, sc)
@@ -828,6 +830,7 @@ def execute(rb, mode, a):
             br.close_all()
         state["ended"] = now_s()
         state["stopped"] = stopped
+        state["vars"].pop("__marks", None)
         state["vars_seen"] = sorted(state["vars"])           # 變數名；值（例如案件編號）也留在本機紀錄
         with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=1)
