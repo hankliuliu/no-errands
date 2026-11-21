@@ -37,7 +37,7 @@ else:
 
 for f, label in (("outbox.txt", "outbox tests"), ("ned.txt", "ned tests"), ("mm.txt", "mm_ro tests"), ("neb.txt", "neb tests"), ("lineprof.txt", "LINE profile (offline)"), ("guard.txt", "guard rules"), ("coexist.txt", "coexistence (P0.8)"), ("uac.txt", "UAC detection (unit)"), ("audit.txt", "errand audit (synthetic)"), ("codex.txt", "Codex install locations"), ("office.txt", "office tests"), ("token.txt", "token flow (headless)"), ("b3.txt", "chat_guard B3"),
                  ("n4pos.txt", "N4 positive control"), ("idle.txt", "idle gate"),
-                 ("nowin.txt", "no console popups from a windowless parent"),
+                 ("nowin.txt", "no console popups from a windowless parent"), ("gather.txt", "chat gather (synthetic)"),
                  ("nowin-pos.txt", "no-popup positive control (fix disabled must pop)")):
     if not os.path.exists(f):
         if f in ("b3.txt", "n4pos.txt", "idle.txt", "nowin-pos.txt") and not os_name.startswith("windows"):
