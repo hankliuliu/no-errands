@@ -158,3 +158,34 @@ jobs:
             lab-*.json
             popup-*.png
           if-no-files-found: ignore
+
+  wizard-lab:
+    # B3: a real GUI installer wizard end to end + common dialogs (CI only; installs software, opens windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: agent-desktop (temp home)
+        run: mkdir -p ../wiz-proj && python setup.py --project ../wiz-proj --home ../wiz-home > wiz-setup.json
+      - name: installer wizard end to end
+        continue-on-error: true
+        run: python tests/wizard/run_installer.py --ad ../wiz-home/bin/agent-desktop.exe --out wizard.json --i-am-ci | tee wizard.txt
+      - name: common dialogs
+        continue-on-error: true
+        run: python tests/wizard/run_dialogs.py --ad ../wiz-home/bin/agent-desktop.exe --i-am-ci | tee dialogs.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wizard-lab
+          path: |
+            wizard.*
+            dialogs.txt
+          if-no-files-found: ignore
