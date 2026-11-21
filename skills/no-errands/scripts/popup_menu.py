@@ -72,20 +72,42 @@ def popup_items(hwnd, timeout=20):
         return {"ok": False, "error": (p.stderr or p.stdout)[-200:]}
 
 
+def _deepest_child(hwnd, sx, sy):
+    """螢幕座標 (sx, sy) 底下最深的可見子視窗（Qt 這類自繪選單沒有子視窗 → 回傳 hwnd 本身）。"""
+    import ctypes.wintypes as wt
+    u32 = _u32()
+    cur = hwnd
+    for _ in range(8):
+        pt = wt.POINT(sx, sy)
+        u32.ScreenToClient(cur, ctypes.byref(pt))
+        nxt = u32.ChildWindowFromPointEx(cur, pt, 0x0001 | 0x0004)   # CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT
+        if not nxt or nxt == cur:
+            break
+        cur = nxt
+    return cur
+
+
 def click_item(hwnd, item):
-    """投遞滑鼠訊息到彈出視窗（client 座標）；不移動實體游標。"""
+    """點彈出選單的項目，不移動實體游標：
+    項目是按鈕子視窗（Win32 / WinForms）→ 對它投遞 BM_CLICK；否則（Qt 等自繪）→ 對最深的視窗投遞滑鼠訊息。"""
     import ctypes.wintypes as wt
     u32 = _u32()
     l, t, r, b = item["rect"]
-    pt = wt.POINT((l + r) // 2, (t + b) // 2)
-    u32.ScreenToClient(hwnd, ctypes.byref(pt))
+    sx, sy = (l + r) // 2, (t + b) // 2
+    target = _deepest_child(hwnd, sx, sy)
+    cls = ctypes.create_unicode_buffer(128); u32.GetClassNameW(target, cls, 128)
+    if target != hwnd and "button" in cls.value.lower():
+        u32.PostMessageW(target, 0x00F5, 0, 0)     # BM_CLICK
+        return {"via": "BM_CLICK", "class": cls.value}
+    pt = wt.POINT(sx, sy)
+    u32.ScreenToClient(target, ctypes.byref(pt))
     lp = ((pt.y & 0xFFFF) << 16) | (pt.x & 0xFFFF)
-    u32.PostMessageW(hwnd, 0x0200, 0, lp)          # WM_MOUSEMOVE（給該視窗，不是游標）
+    u32.PostMessageW(target, 0x0200, 0, lp)          # WM_MOUSEMOVE（給該視窗，不是游標）
     time.sleep(0.05)
-    u32.PostMessageW(hwnd, 0x0201, 0x0001, lp)     # WM_LBUTTONDOWN
+    u32.PostMessageW(target, 0x0201, 0x0001, lp)     # WM_LBUTTONDOWN
     time.sleep(0.05)
-    u32.PostMessageW(hwnd, 0x0202, 0, lp)          # WM_LBUTTONUP
-    return {"client_xy": [pt.x, pt.y]}
+    u32.PostMessageW(target, 0x0202, 0, lp)          # WM_LBUTTONUP
+    return {"via": "posted-mouse", "client_xy": [pt.x, pt.y], "class": cls.value}
 
 
 def close_popup(hwnd):

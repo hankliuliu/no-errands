@@ -71,9 +71,9 @@ def main():
         proj4 = os.path.join(td, "proj4"); os.makedirs(proj4)
         if os.name == "nt":
             p = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", os.path.join(REPO, "setup.ps1"),
-                                "--project", proj4, "--home", home4], capture_output=True, text=True)
+                                "--project", proj4, "--home", home4], capture_output=True, text=True, errors="replace")
         else:
-            p = subprocess.run(["sh", os.path.join(REPO, "setup.sh"), "--project", proj4, "--home", home4], capture_output=True, text=True)
+            p = subprocess.run(["sh", os.path.join(REPO, "setup.sh"), "--project", proj4, "--home", home4], capture_output=True, text=True, errors="replace")
         bins = os.listdir(os.path.join(home4, "bin"))
         check("4 stage-0 安裝成功", p.returncode == 0, (p.stdout[-200:], p.stderr[-200:]))
 
