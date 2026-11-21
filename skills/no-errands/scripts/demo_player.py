@@ -123,8 +123,10 @@ class Player:
             g[name] = [w.winfo_rootx() + w.winfo_width() // 2, w.winfo_rooty() + w.winfo_height() // 2]
         g["window"] = [self.root.winfo_rootx(), self.root.winfo_rooty(), self.root.winfo_width(), self.root.winfo_height()]
         g["caption_text"] = self.cap.cget("text")
-        with open(os.environ["NE_PLAYER_GEOM"], "w", encoding="utf-8") as f:
+        tmp = os.environ["NE_PLAYER_GEOM"] + ".tmp"          # 先寫暫存再替換：讀的一方不會讀到一半
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(g, f, ensure_ascii=False)
+        os.replace(tmp, os.environ["NE_PLAYER_GEOM"])
         self.root.after(500, self.dump_geom)
 
     # ---------- 視窗位置
