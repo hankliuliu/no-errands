@@ -71,7 +71,7 @@
 - **權限規則**：Windows 的 Claude Code 規則路徑必須寫 `//c/Users/...`（`//C:/...` 比對不到）；寫對之後巢狀 agent 用 Read 或 `cat`
   讀 token 檔都被拒絕。
 - **共存**：測試抓到兩個真 bug——已有同名 skill 會被直接覆蓋；受管區塊會吃掉原檔最後一行的行尾空白、改掉 CRLF。都已修、有測試。
-- **CI 上的 B3 彈出選單匯出一路踩到的**：WinForms 平面按鈕經 UIA FromHandle 讀成 Pane（不是 Button）→ 接受「項目大小的 Pane」；存檔對話框不採用寫進去的完整路徑、照預設檔名存到它自己的資料夾 → 存檔前從網址列讀資料夾，找不到時去那裡找；慢的 runner 上對話框剛出現時控制項還沒建好 → 重試 snapshot，拒絕前一定先按取消（否則留著的對話框會擋住之後每一步）。
+- **CI 上的 B3 彈出選單匯出一路踩到的**：WinForms 平面按鈕經 UIA FromHandle 讀成 Pane（不是 Button）→ 接受「項目大小的 Pane」；存檔對話框不採用寫進去的完整路徑、照預設檔名存到它自己的資料夾 → 存檔前從網址列讀資料夾，找不到時去那裡找（CI 實證：`saved_via=default-name-in-dialog-folder-then-moved`）；慢的 runner 上對話框剛出現時控制項還沒建好 → 重試 snapshot，拒絕前一定先按取消（否則留著的對話框會擋住之後每一步）。
 - **教訓**：CI 的 bash 預設 `-e -o pipefail`，一支測試失敗會讓同一步後面全部不跑；Windows runner 預設 cp1252，寫含中文的檔案要指定編碼；
   互動式 snapshot（`-i`）會漏掉標籤類靜態文字。
 - **數字出處**：`journal/evidence/`、CI artifacts（results-*、popup-lab、wizard-lab、demo-guide）
