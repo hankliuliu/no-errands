@@ -163,16 +163,25 @@ class Player:
         self.place()
 
     def drag_start(self, e):
+        # 根視窗的綁定也會套到按鈕上（tk 的 bindtags）：從按鈕開始的不是拖動——否則按「歸位」放開時又把位置存回去
+        self._dragging = not isinstance(e.widget, self.tk.Button)
+        if not self._dragging:
+            return
         self._dx, self._dy = e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y()
         self._moved, self._homed = True, False
 
     def drag_move(self, e):
+        if not getattr(self, "_dragging", False):
+            return
         self.root.geometry("+%d+%d" % (e.x_root - self._dx, e.y_root - self._dy))
         if time.time() - getattr(self, "_last_save", 0) > 0.3:      # 拖動途中也存（放開事件可能沒送到）
             self._last_save = time.time()
             self.save_pos()
 
     def drag_end(self, e):
+        if not getattr(self, "_dragging", False):
+            return
+        self._dragging = False
         self.save_pos()
 
     def keep_pos(self):
