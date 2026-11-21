@@ -341,7 +341,8 @@ def sync_one(tid, t, load_hist=False):
         res = {"mode": mi["mode"], "added": mi["added"]}
     else:
         since_ms = st.get("cursor_ms")
-        rows = _mm_posts(t, since_ms)
+        all_rows = _mm_posts(t, since_ms)
+        rows = since_filter(all_rows, t["since"])   # 先套起始時間再計數（第一次會抓回起始時間之前的頁）
         by_id = {m["id"]: m for m in stored}
         added = updated = 0
         for r in rows:
@@ -351,8 +352,8 @@ def sync_one(tid, t, load_hist=False):
             else:
                 by_id[r["id"]] = r; added += 1
         merged = since_filter(sorted(by_id.values(), key=lambda m: m.get("create_at", 0)), t["since"])
-        if rows:
-            st["cursor_ms"] = max(max(r["update_at"], r["create_at"]) for r in rows)
+        if all_rows:   # 游標用全部抓回的列：即使都早於起始時間也要前進，下次才不會從頭翻頁
+            st["cursor_ms"] = max(max(r["update_at"], r["create_at"]) for r in all_rows)
         res = {"mode": "api", "added": added, "updated": updated}
     save_msgs(d, merged)
     st["last_sync"] = time.strftime("%Y-%m-%dT%H:%M:%S")
