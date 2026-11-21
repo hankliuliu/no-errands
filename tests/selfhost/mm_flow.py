@@ -49,6 +49,9 @@ def main():
         a = AB(ab_bin, "ne-mm", os.path.join(td, "profile"))
         a.run("open", "about:blank")
         a.run("open", base + "/login")
+        a.run("wait", "--load", "networkidle")
+        if a.find("button|link", r"view in browser", tries=3):   # 「要在哪裡開？」的中繼頁
+            a.click("button|link", r"view in browser")
         a.fill("textbox", r"email|user", adm)
         a.fill("textbox", r"password", admpw)
         a.click("button", r"log in|sign in")

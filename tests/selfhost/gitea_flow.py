@@ -33,6 +33,7 @@ def main():
         a.run("open", base + "/user/login")
         a.fill("textbox", r"user ?name|email", user)
         a.fill("textbox", r"password", pw)
+        a.check("checkbox", r"remember")      # 使用者替 agent 登入時勾「記住這台裝置」，關掉瀏覽器後才仍是登入狀態
         a.click("button", r"sign in")
         check("1 登入後離開登入頁", "/user/login" not in a.url(), a.url())
         a.close()

@@ -37,6 +37,7 @@ class AB:
     def fill(self, role_re, name_re, text):
         it = self.find(role_re, name_re)
         if not it:
+            self.dump()
             raise RuntimeError("找不到欄位 %s / %s" % (role_re, name_re))
         self.run("fill", it["ref"], text)
         return it
@@ -44,9 +45,22 @@ class AB:
     def click(self, role_re, name_re):
         it = self.find(role_re, name_re)
         if not it:
+            self.dump()
             raise RuntimeError("找不到按鈕 %s / %s" % (role_re, name_re))
         self.run("click", it["ref"])
         self.run("wait", "--load", "networkidle")
+        return it
+
+    def dump(self):
+        """找不到元素時印出這一頁有哪些互動元素（測試頁的 UI 字串）。"""
+        print("page:", self.url())
+        for it in self.snapshot()[:30]:
+            print("   ", it["role"], repr(it["name"])[:60])
+
+    def check(self, role_re, name_re):
+        it = self.find(role_re, name_re, tries=2)
+        if it:
+            self.run("check", it["ref"])
         return it
 
     def text(self, selector="body"):

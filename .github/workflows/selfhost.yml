@@ -37,7 +37,7 @@ jobs:
           curl -fs -u "$GITEA_USER:$GITEA_PASS" -H 'Content-Type: application/json' -d '{"name":"secret-repo","private":true,"auto_init":true}' "$GITEA_URL/api/v1/user/repos" > /dev/null
           curl -fs -u "$GITEA_USER:$GITEA_PASS" -H 'Content-Type: application/json' -d "{\"content\":\"$(printf %s "$MARKER" | base64)\",\"message\":\"add\"}" "$GITEA_URL/api/v1/repos/$GITEA_USER/secret-repo/contents/secret.txt" > /dev/null
       - name: gitea end-to-end (keys + private content + token via web UI)
-        run: python3 tests/selfhost/gitea_flow.py --ab ../h/bin/agent-browser | tee gitea.txt
+        run: set -o pipefail; python3 tests/selfhost/gitea_flow.py --ab ../h/bin/agent-browser | tee gitea.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -64,7 +64,7 @@ jobs:
       - name: prepare server (API)
         run: python3 tests/selfhost/mm_setup.py
       - name: mattermost end-to-end (PAT via UI, read-only tool, outbox real send, read state)
-        run: python3 tests/selfhost/mm_flow.py --ab ../h/bin/agent-browser | tee mm.txt
+        run: set -o pipefail; python3 tests/selfhost/mm_flow.py --ab ../h/bin/agent-browser | tee mm.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

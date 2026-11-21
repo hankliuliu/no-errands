@@ -279,6 +279,41 @@ def _write_raw(path, text):
 CRLF, LF = chr(13) + chr(10), chr(10)
 
 
+def codex_targets(a):
+    """Codex 的安裝位置（官方文件兩種說法都裝）：skill 在 <CODEX_HOME>/skills/ 與 ~/.agents/skills/；
+    全域指示在 <CODEX_HOME>/AGENTS.md 的受管區塊。"""
+    agents_home = os.path.join(os.path.dirname(os.path.abspath(a.codex_home)), ".agents")         if os.path.basename(os.path.abspath(a.codex_home)) == ".codex" else os.path.join(os.path.expanduser("~"), ".agents")
+    return ([os.path.join(a.codex_home, "skills", "no-errands"), os.path.join(agents_home, "skills", "no-errands")],
+            os.path.join(a.codex_home, "AGENTS.md"))
+
+
+def codex_install(a, home, paths):
+    skills, agents_md = codex_targets(a)
+    out = []
+    for sk in skills:
+        if skill_is_ours(sk, home):
+            install_skill(sk)
+            out.append({"step": "install:codex-skill", "ok": True, "path": sk})
+        else:
+            out.append({"step": "install:codex-skill", "ok": True, "skipped": "已有別人的同名 skill，保留不動", "path": sk})
+    os.makedirs(a.codex_home, exist_ok=True)
+    upsert_block(agents_md, managed_block(home, paths, checks=None, repo=REPO))
+    out.append({"step": "install:codex-agents-md-block", "ok": True, "path": agents_md,
+                "note": "安裝位置依 Codex 官方文件；未以實際 Codex 對話驗證"})
+    return out
+
+
+def codex_uninstall(a, home):
+    skills, agents_md = codex_targets(a)
+    out = []
+    for sk in skills:
+        if os.path.isdir(sk) and os.path.exists(os.path.join(sk, OWN_MARK)):
+            shutil.rmtree(sk); out.append({"step": "uninstall:codex-skill", "ok": True, "path": sk})
+    if remove_block(agents_md):
+        out.append({"step": "uninstall:codex-agents-md-block", "ok": True, "path": agents_md})
+    return out
+
+
 def upsert_block(md_path, block):
     """只動受管區塊；區塊以外逐位元組保留（含行尾空白與 CRLF）。新加時在原文後面接「空行 + 區塊 + 換行」。"""
     text = _read_raw(md_path) if os.path.exists(md_path) else ""
@@ -330,6 +365,9 @@ def main():
     ap.add_argument("--uninstall", action="store_true")
     ap.add_argument("--sync", action="store_true",
                     help="repo 規則變更後：重新同步所有已安裝目標的 skill 與受管區塊")
+    ap.add_argument("--codex", action="store_true",
+                    help="也裝給 Codex（預設：--user 且偵測到 Codex 主目錄時自動裝）")
+    ap.add_argument("--codex-home", default=os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex"))
     ap.add_argument("--guard-rules", action="store_true",
                     help="把建議的 Claude Code 權限規則加進 settings.json（只增刪自己這幾筆；搭配 --uninstall 移除）")
     a = ap.parse_args()
@@ -375,6 +413,8 @@ def main():
 
     if a.uninstall:
         s1 = remove_block(md_path)
+        if a.user:
+            steps.extend(codex_uninstall(a, home))
         s2 = os.path.isdir(skill_dst) and skill_is_ours(skill_dst, home)
         if s2:
             shutil.rmtree(skill_dst)
@@ -414,6 +454,8 @@ def main():
                           "path": audit_dst})
         upsert_block(md_path, managed_block(home, paths, checks=None, repo=REPO))
         steps.append({"step": "install:claude-md-block", "ok": True, "path": md_path})
+        if a.user and (a.codex or os.path.isdir(a.codex_home)):
+            steps.extend(codex_install(a, home, paths))
         cfg_p = os.path.join(home, "config.json")
         cfg = json.load(open(cfg_p, encoding="utf-8")) if os.path.exists(cfg_p) else {"installs": []}
         entry = {"type": "project" if a.project else "user", "target": md_path, "skill": skill_dst}
