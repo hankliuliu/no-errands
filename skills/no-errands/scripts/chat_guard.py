@@ -209,11 +209,27 @@ def idle_gate(prof, pol, a):
             if not ok:
                 raise Refused("等不到使用者閒置（%s），沒有操作" % info)
     WATCH["watch"] = idle.IdleWatch()
+    # 背景守衛：會搶前景的 app 跳到前景時，鍵盤焦點常落在訊息輸入框——使用者這時若在別處打字，
+    # 字會進輸入框、按 Enter 就送出。每 100ms 檢查一次，使用者一有輸入就立刻把目標視窗縮小（不等下一步）。
+    import threading
+
+    def guard():
+        while WATCH.get("watch") is not None and not WATCH.get("tripped"):
+            if WATCH["watch"].interrupted(slack=0.3) and WATCH.get("win"):
+                WATCH["tripped"] = True
+                try:
+                    subprocess.run([ad_path(), "minimize", "--window-id", WATCH["win"]["id"]],
+                                   capture_output=True, timeout=10)
+                except Exception:
+                    pass
+                return
+            time.sleep(0.1)
+    threading.Thread(target=guard, daemon=True).start()
 
 
 def check_interrupt():
     w = WATCH["watch"]
-    if w and w.interrupted():
+    if WATCH.get("tripped") or (w and w.interrupted()):
         if WATCH["win"]:
             try:
                 ad("minimize", "--window-id", WATCH["win"]["id"])

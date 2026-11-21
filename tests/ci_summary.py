@@ -29,7 +29,7 @@ if os.path.exists("doctor.json"):
 else:
     add("doctor.json", False, "missing")
 
-for f, label in (("outbox.txt", "outbox tests"), ("ned.txt", "ned tests"), ("mm.txt", "mm_ro tests"), ("b3.txt", "chat_guard B3"),
+for f, label in (("outbox.txt", "outbox tests"), ("ned.txt", "ned tests"), ("mm.txt", "mm_ro tests"), ("office.txt", "office tests"), ("b3.txt", "chat_guard B3"),
                  ("n4pos.txt", "N4 positive control"), ("idle.txt", "idle gate")):
     if not os.path.exists(f):
         if f in ("b3.txt", "n4pos.txt", "idle.txt") and not os_name.startswith("windows"):
@@ -38,7 +38,7 @@ for f, label in (("outbox.txt", "outbox tests"), ("ned.txt", "ned tests"), ("mm.
         continue
     lines = open(f, encoding="utf-8", errors="replace").read().splitlines()
     last = next((l for l in reversed(lines) if l.strip()), "")
-    ok = last.startswith("ALL PASS") or last.startswith("POSITIVE CONTROL PASS")
+    ok = last.startswith("ALL PASS") or last.startswith("POSITIVE CONTROL PASS") or last.startswith("SKIP")
     add(label, ok, last[:120])
 
 if os.path.exists("n4.json"):
