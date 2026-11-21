@@ -47,6 +47,21 @@ check("header_members：沒開對話 → None", cg.header_members(P, s, "Group A
 check("header_members：別的對話的標頭不算 → None", cg.header_members(P, snap("Group A Ops, 3人"), "Group A") is None)
 check("LINE profile 不再要求首行含名稱、改用發言者數", not P.get("verify_export_first_line_contains_chat")
       and P.get("verify_export_senders_within_members"))
+
+# 靜態檢查：chat_guard 用 prof["k"]（缺了會 KeyError）讀的鍵，每個 profile 都要有，或前 8 行內有 prof.get("k") 守著。
+# 為什麼：真機 LINE 匯出存檔後因 prof["dialog_title"]（假聊天才有的鍵）當掉；CI 只跑假聊天所以抓不到。
+import inspect, re as _re
+_src = inspect.getsource(cg).splitlines()
+_ALLOWED = {"menu_path": "只在 export_via 不是 popup 時才走到"}
+_bad = []
+for _i, _line in enumerate(_src):
+    for _k in _re.findall(r'prof\["(\w+)"\]', _line):
+        if all(_k in _p for _p in cg.PROFILES.values()) or _k in _ALLOWED:
+            continue
+        if any('prof.get("%s")' % _k in _l for _l in _src[max(0, _i - 8): _i + 1]):
+            continue
+        _bad.append((_i + 1, _k, [n for n, _p in cg.PROFILES.items() if _k not in _p]))
+check("chat_guard 沒有未守護的 profile 鍵（所有 profile 都走得到的路徑不會 KeyError）", not _bad, _bad)
 check("has_unread 解析「名稱, N人, 未讀數, …」", P["has_unread"]("Group A, 4人, 5, x, d") and not P["has_unread"]("Group A, 4人, hi, d"))
 s2 = snap("Group A, 4人")
 

@@ -276,7 +276,7 @@ def assert_allowed(prof, action, node, parents, ctx):
         if ctx.get("allow") == "list-target" and prof["chat_name"](name) == ctx.get("target_chat"):
             return
         raise Refused("清單中非目標項目：不可點")
-    if ctx.get("allow") == "menu" and role == "menuitem" and name in prof["menu_path"]:
+    if ctx.get("allow") == "menu" and role == "menuitem" and name in prof.get("menu_path", ()):
         return
     if ctx.get("allow") == "close" and role == "button" and name == prof.get("close_button"):
         return
@@ -423,11 +423,12 @@ def cmd_read(app, prof, chat, file_):
         out({"ok": True, "source": "file", "lines": lines})
     if not chat:
         raise Refused("read 需要 --chat <名稱>（先確認目前開啟的就是這個對話）")
+    if not prof.get("messages"):
+        # LINE 的訊息區在 UIA 裡沒有可靠的容器名稱 → 讀取一律走匯出檔
+        raise Refused("這個 app 不從畫面讀訊息：先 export --chat <名稱> --to <資料夾>，再 read --file <匯出檔>")
     win = find_window(prof)
     snap = snapshot(win, interactive=False)
-    want = prof["header_name"](chat)
-    hdr, _ = find_node(snap, lambda n: n.get("name") == want)
-    if not hdr:
+    if not header_ok(prof, snap, chat):
         raise Refused("目前開啟的對話不是指名的對話（標頭不符），不讀")
     box, _ = find_node(snap, lambda n: n.get("name") == prof["messages"])
     if not box:
@@ -549,7 +550,7 @@ def cmd_export(app, prof, dest, chat=None):
             and w.get("title") in prof.get("overwrite_confirm_titles", ())]
     if not conf:
         # 有些版本的確認框長在另存新檔對話框的樹裡：對話框還開著、而且出現「否」鈕 → 同樣處理
-        still = [w for w in ad("list-windows") if w.get("title") == prof["dialog_title"] and w.get("pid") == win.get("pid")]
+        still = [w for w in ad("list-windows") if w.get("title") in titles and w.get("pid") == win.get("pid")]
         if still:
             try:
                 if find_node(snapshot(still[0]), lambda n: n.get("role") == "button"
@@ -564,7 +565,7 @@ def cmd_export(app, prof, dest, chat=None):
                 return n.get("role") == "button" and (str((n.get("native_id") or {}).get("value", ""))
                                                       in prof.get("confirm_no_ids", set()) or n.get("name") in NO_NAMES)
             no_btn = None
-            for w in conf + [x for x in ad("list-windows") if x.get("title") == prof["dialog_title"]
+            for w in conf + [x for x in ad("list-windows") if x.get("title") in titles
                              and x.get("pid") == win.get("pid")]:
                 no_btn, _ = find_node(snapshot(w), is_no)
                 if no_btn:
@@ -572,7 +573,7 @@ def cmd_export(app, prof, dest, chat=None):
             if no_btn:
                 ad("click", no_btn["ref_id"])
                 time.sleep(0.4)
-            d2 = [w for w in ad("list-windows") if w.get("title") == prof["dialog_title"] and w.get("pid") == win.get("pid")]
+            d2 = [w for w in ad("list-windows") if w.get("title") in titles and w.get("pid") == win.get("pid")]
             if d2:
                 s2 = snapshot(d2[0])
                 c2, _ = find_node(s2, lambda n: n.get("role") == "button" and str(
@@ -612,11 +613,11 @@ def cmd_export(app, prof, dest, chat=None):
                 "default_name_in_dialog_folder": bool(dialog_folder and default_name and os.path.exists(
                     os.path.join(dialog_folder, os.path.basename(default_name.replace("\\", "/")))))}
         try:
-            still = [w for w in ad("list-windows") if w.get("title") == prof["dialog_title"]
+            still = [w for w in ad("list-windows") if w.get("title") in titles
                      and w.get("pid") == win.get("pid")]
             diag["dialog_still_open"] = bool(still)
             other = [w.get("title") for w in ad("list-windows") if w.get("pid") == win.get("pid")
-                     and w.get("title") not in (prof["dialog_title"], prof["window_title"])]
+                     and w.get("title") not in titles + (prof["window_title"],)]
             diag["other_windows_same_pid"] = other[:3]
             if still:
                 s2 = snapshot(still[0])
