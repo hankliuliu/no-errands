@@ -113,3 +113,37 @@ jobs:
             uninstall.json
             ci-summary.md
           if-no-files-found: ignore
+
+  popup-lab:
+    # A1: reach popup-menu items that are not in agent-desktop's tree (CI only; opens windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install PySide6 + agent-desktop (temp home)
+        run: |
+          python -m pip install -q PySide6
+          mkdir -p ../lab-proj
+          python setup.py --project ../lab-proj --home ../lab-home > lab-setup.json
+      - name: probe (Qt accessibility on)
+        continue-on-error: true
+        run: python tests/popup_lab/probe.py --ad ../lab-home/bin/agent-desktop.exe --out lab-a11y.json
+      - name: probe (Qt accessibility off, like apps whose menus are not in the tree)
+        continue-on-error: true
+        run: python tests/popup_lab/probe.py --ad ../lab-home/bin/agent-desktop.exe --out lab-no-a11y.json --no-a11y
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: popup-lab
+          path: |
+            lab-*.json
+            popup-*.png
+          if-no-files-found: ignore
