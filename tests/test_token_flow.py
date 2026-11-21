@@ -23,7 +23,8 @@ def main():
     issued = os.path.join(td, "issued.txt")
     srv = subprocess.Popen([sys.executable, SRV, "--port", str(port), "--issued", issued])
     base = "http://127.0.0.1:%d" % port
-    sess = ["--session", "ne-token-test", "--profile", os.path.join(td, "profile").replace("\\", "/")]   # agent-browser 會吃掉反斜線
+    # session 名稱每次不同：固定名稱會沿用同名 session 的舊狀態，點擊後表單沒送出（2026-11-22 本機與 CI 都重現）
+    sess = ["--session", "ne-token-%d" % os.getpid(), "--profile", os.path.join(td, "profile").replace("\\", "/")]   # agent-browser 會吃掉反斜線
     outputs, steps = [], []
 
     def b(*a):
@@ -72,7 +73,7 @@ def main():
         check("過程輸出不含 token 值", got and not any(got[0] in o for o in outputs))
         print("steps:", "; ".join(steps))
     finally:
-        subprocess.run([ab, "--session", "ne-token-test", "close"], capture_output=True, timeout=30)
+        subprocess.run([ab, "--session", "ne-token-%d" % os.getpid(), "close"], capture_output=True, timeout=30)
         srv.kill()
         time.sleep(0.5)
         shutil.rmtree(td, ignore_errors=True)
