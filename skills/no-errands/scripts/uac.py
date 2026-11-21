@@ -9,6 +9,7 @@ UAC 對話框在「安全桌面」上：任何自動化（UIA、訊息、截圖�
   uac.py wait [--timeout 300]  # 等到 UAC 對話框消失（使用者按了是/否），回 {"cleared": bool}
 """
 import json, os, subprocess, sys, time
+import nowin  # noqa: E402,F401  Windows：子程序不開主控台視窗（使用者回報視窗一直彈出）
 
 HANDOFF = ("Windows 跳出了「使用者帳戶控制」確認視窗（螢幕會變暗、中間一個對話框）。這一步只有你能按："
            "確認上面寫的程式是我剛剛要安裝/執行的那一個，再按「是」；不認得就按「否」。"

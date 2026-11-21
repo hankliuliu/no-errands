@@ -12,6 +12,8 @@
 import argparse, hashlib, io, json, os, platform, shutil, stat, sys, tarfile, tempfile, time, urllib.request, zipfile
 
 REPO = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(REPO, "skills", "no-errands", "scripts"))
+import nowin  # noqa: E402,F401  Windows：子程序不開主控台視窗
 MARK_S, MARK_E = "<!-- no-errands:start -->", "<!-- no-errands:end -->"
 UA = {"User-Agent": "no-errands-setup"}
 

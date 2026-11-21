@@ -12,6 +12,7 @@
 - 每次呼叫寫 ledger（~/.no-errands/neb-ledger.jsonl；不含頁面內容）。
 """
 import json, os, re, subprocess, sys, time, urllib.parse
+import nowin  # noqa: E402,F401  Windows：子程序不開主控台視窗（使用者回報視窗一直彈出）
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import policy  # noqa: E402

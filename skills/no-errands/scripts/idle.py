@@ -11,6 +11,7 @@
 Linux 有 `xprintidle` 才支援（X11），否則回 None → 呼叫端改為詢問使用者。
 """
 import json, os, re, shutil, subprocess, sys, time
+import nowin  # noqa: E402,F401  Windows：子程序不開主控台視窗（使用者回報視窗一直彈出）
 
 
 def idle_seconds():

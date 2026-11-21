@@ -10,6 +10,7 @@
 否則 LibreOffice `soffice --headless`（三平台）。都沒有 → 回錯誤與安裝建議。
 """
 import json, os, shutil, subprocess, sys, tempfile
+import nowin  # noqa: E402,F401  Windows：子程序不開主控台視窗（使用者回報視窗一直彈出）
 
 COM_PS = r"""
 param([string]$Kind, [string]$In, [string]$Out)

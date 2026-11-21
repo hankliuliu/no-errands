@@ -97,7 +97,7 @@ def main():
         # home 解析：從 <home>/bin 執行、沒有 NO_ERRANDS_HOME
         h2 = tempfile.mkdtemp(prefix="ne-ned-home2-")
         os.makedirs(os.path.join(h2, "bin"))
-        for f in ("ned.py", "policy.py"):
+        for f in ("ned.py", "policy.py", "nowin.py"):
             shutil.copyfile(os.path.join(SC, f), os.path.join(h2, "bin", f))
         open(os.path.join(h2, "config.json"), "w").write("{}")
         e2 = {k: v for k, v in env.items() if k != "NO_ERRANDS_HOME"}

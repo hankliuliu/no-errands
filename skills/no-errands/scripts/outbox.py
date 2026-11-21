@@ -26,6 +26,7 @@ Host/Origin，並擋下自動化瀏覽器。這擋得住「過度熱心」的 ag
 惡意程式的安全邊界——能在你電腦上任意執行程式的東西，本來就能做任何事。
 """
 import hashlib, json, os, secrets, socket, subprocess, sys, threading, time, urllib.error
+import nowin  # noqa: E402,F401  Windows：子程序不開主控台視窗（使用者回報視窗一直彈出）
 import urllib.parse, urllib.request, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 

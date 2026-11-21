@@ -1,5 +1,13 @@
 # EXPERIMENTS.md — no-errands 實驗紀錄（新到舊；沿用實驗室規約：失敗必記、附根因）
 
+## 2026-11-22 · 「視窗一直彈出」：不干擾測試的盲點
+- **回報**：使用者說畫面有東西一直閃、是視窗反覆彈出、不定時出現。
+- **量測**：每 0.1 秒列頂層視窗（只看類別與所屬程序，不讀標題），同時每 0.2 秒拍程序樹。抓到 Windows Terminal 視窗（`CASCADIA_HOSTING_WINDOW_CLASS`）與 `PseudoConsoleWindow` 反覆出現；主腦另外量到另一位執行手的測試跑的時候 20 秒 15 個、每個 0.2–0.36 秒、每次都搶前景。
+- **原因**：沒有主控台的父程序（分離啟動的伺服器、背景測試、排程工作）再啟動主控台程式時，每個子程序都會拿到新的主控台；預設終端機是 Windows Terminal 的機器上，那就是一個看得見、會搶前景的視窗。我們的 neb／ned／chat_guard／popup_menu／uac／idle／demo／office 共 9 支腳本 17 處、加上 setup／doctor，都沒帶 `CREATE_NO_WINDOW`。之前的不干擾測試都從有主控台的程序跑，所以看不到。
+- **修法**：`scripts/nowin.py`——在 Windows 上，沒有自己指定 creationflags 的子程序一律加 `CREATE_NO_WINDOW`（只影響主控台程式，GUI 視窗照常）；所有會開子程序的腳本與 setup／doctor 都 import 它。發件匣伺服器本來就自己帶了旗標。
+- **驗證**：`tests/test_nowin.py`——以 DETACHED_PROCESS 啟動 neb×5、ned×5（父程序沒有主控台），20 毫秒取樣：彈窗 0、前景不變；靜態檢查每個會開子程序的腳本都有 import nowin。CI 加正對照：`NE_NOWIN_DISABLE=1` 關掉修正時必須抓得到彈窗。
+- **教訓**：「不干擾」的測試要從使用者真實會遇到的父程序環境跑（背景、排程、分離），不能只從開發者的終端機跑。
+
 ## 2026-11-22 · 守門代理的洞：審查抓到、測試沒抓到
 - **怎麼發現的**：主腦審查另一位執行手的分支時讀到 neb 的放行清單，對照 agent-browser 0.43.0 的說明：`find` 被當成唯讀，但它的預設動作就是 click，也能 fill；`wait --fn` 會在頁面上執行 JS（等同被擋掉的 eval）；`javascript:`／`data:` 網址被當成「https://javascript…」放行。原本 14 項 neb 測試沒有任何一項測到 `find` 或 `--fn`。
 - **逐項對照後又找到**：`batch` 從一般網站出發、中途換到敏感網站再輸入，neb 只檢查起點；全域選項寫在子指令**後面**時 neb 沒解析（`--init-script`、`--headers`、`--user-agent`——最後一個還能騙過發件匣的自動化檢查）；`chat`（AI 代理）、`mcp`、`flow run`、`connect`、`auth login`、`get cdp-url` 等控制面指令完全繞過逐步檢查。ned：`launch` 不檢查目標（`ned Notepad.exe launch …LINE.exe` 會過——正是事故一的模式）、背景模式沒擋 `--headed`、`--surface notification-center/desktop/focused` 會讀到別的 app、`wait --notification` 讀所有通知。

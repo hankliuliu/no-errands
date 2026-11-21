@@ -18,6 +18,7 @@
 - 每次呼叫寫 ledger（~/.no-errands/ned-ledger.jsonl；不含任何 app 內容字串）。
 """
 import json, os, re, subprocess, sys, time
+import nowin  # noqa: E402,F401  Windows：子程序不開主控台視窗（使用者回報視窗一直彈出）
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import policy  # noqa: E402  同目錄（setup 一起複製到 ~/.no-errands/bin/）
