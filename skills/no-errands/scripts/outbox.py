@@ -246,13 +246,14 @@ pre{white-space:pre-wrap;margin:6px 0 0;font:inherit;background:var(--bg);border
 <div id="view"></div>
 </main>
 <script>
-const KEY=__KEY__;const ROBOT=!!navigator.webdriver;if(ROBOT)document.getElementById("robot").hidden=false;
+const KEY=__KEY__;const INST=__INST__;const ROBOT=!!navigator.webdriver;if(ROBOT)document.getElementById("robot").hidden=false;
 let data={pending:[],sent:[],rejected:[]};let sig="";
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function tab(){return location.hash==="#history"?"history":"pending"}
 async function load(){
   try{const r=await fetch("api/state",{cache:"no-store"});data=await r.json();}catch(e){return}
+  if(data.instance&&data.instance!==INST){location.reload();return}  // 伺服器換了：舊頁面的密鑰已失效，重新載入
   $("#cnt").textContent=data.pending.length;
   document.title=(data.pending.length?"("+data.pending.length+") ":"")+"NE-OUTBOX 不求人發件匣";
   const s=tab()+JSON.stringify(data.pending.map(d=>d.id+d.rev+d.resolved))+JSON.stringify([...data.sent,...data.rejected].map(d=>d.id+d.state));
@@ -291,6 +292,7 @@ function render(){
       </div>`).join("");
   }
 }
+function banner(msg){let b=document.getElementById("ne-banner");if(!b){b=document.createElement("div");b.id="ne-banner";b.setAttribute("role","alert");b.style.cssText="position:sticky;top:0;z-index:9;background:#b3261e;color:#fff;padding:12px 16px;font-weight:600;border-radius:8px;margin:8px 0";document.body.prepend(b)}b.textContent="沒有送出："+msg}
 async function decide(c,d,a){
   const ta=c.querySelector("textarea"),text=ta.value,err=c.querySelector(".err");
   if(a==="approve"&&!text.trim()){err.textContent="內文是空的";return}
@@ -298,7 +300,7 @@ async function decide(c,d,a){
   const body={id:d.id,action:a==="approve"?(text!==d.body?"edit":"approve"):"reject",text,reason:c.querySelector(".reason").value,rev:d.rev,key:KEY};
   try{const r=await fetch("api/decide",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     const j=await r.json();
-    if(!j.ok){err.textContent=j.error||"失敗";if(j.stale){sig="";setTimeout(load,1500)}else btns.forEach(b=>b.disabled=false);return}
+    if(!j.ok){banner(j.error||"失敗");if(j.code==="bad_key"){setTimeout(()=>location.reload(),2500);return}err.textContent=j.error||"失敗";if(j.stale){sig="";setTimeout(load,1500)}else btns.forEach(b=>b.disabled=false);return}
   }catch(e){err.textContent="連不上發件匣伺服器";btns.forEach(b=>b.disabled=false);return}
   sig="";load();
 }
@@ -326,6 +328,16 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code, obj):
         self._send(code, json.dumps(obj, ensure_ascii=False))
 
+    def _decided(self, code, obj, cat, rid=""):
+        """回覆決定請求，並在 decide-log.jsonl 記一行：時間、草稿 id、狀態碼、原因類別（不記內容與密鑰）。"""
+        try:
+            with open(os.path.join(BOX, "decide-log.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "id": rid, "status": code, "code": cat}) + "\n")
+        except OSError:
+            pass
+        obj["code"] = cat
+        return self._json(code, obj)
+
     def _host_ok(self):
         port = self.server.server_address[1]
         allowed = {"127.0.0.1:%d" % port, "localhost:%d" % port}
@@ -339,7 +351,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(403, {"ok": False, "error": "host not allowed"})
         path = self.path.split("?")[0]
         if path == "/":
-            return self._send(200, PAGE.replace("__KEY__", json.dumps(self.server.key)),
+            return self._send(200, PAGE.replace("__KEY__", json.dumps(self.server.key))
+                              .replace("__INST__", json.dumps(self.server.instance)),
                               "text/html; charset=utf-8")
         if path == "/api/ping":
             return self._json(200, {"app": "ne-outbox"})
@@ -355,6 +368,7 @@ class Handler(BaseHTTPRequestHandler):
                         r.update(rev=rev_of(r), **resolve(r, pol))
                     rows.append(r)
                 out[st] = rows
+            out["instance"] = self.server.instance
             return self._json(200, out)
         self._json(404, {"ok": False, "error": "not found"})
 
@@ -367,35 +381,36 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length", "0"))
             req = json.loads(self.rfile.read(min(n, 200000)).decode("utf-8"))
         except Exception:
-            return self._json(400, {"ok": False, "error": "bad request"})
+            return self._decided(400, {"ok": False, "error": "bad request"}, "bad_request")
         if not secrets.compare_digest(str(req.get("key", "")), self.server.key):
-            return self._json(403, {"ok": False, "error": "核准只能在發件匣頁面由使用者操作（缺少頁面密鑰）"})
+            return self._decided(403, {"ok": False, "error": "頁面已過期（發件匣伺服器重啟過）：頁面會自動重新載入，請再按一次"},
+                                 "bad_key", str(req.get("id", "")))
         action = req.get("action")
         ua = self.headers.get("User-Agent", "")[:300]
         if action != "reject" and any(m in ua.lower() for m in AUTOMATION_UA):
-            return self._json(403, {"ok": False, "error": "自動化瀏覽器不可核准（請用你平常的瀏覽器）"})
+            return self._decided(403, {"ok": False, "error": "自動化瀏覽器不可核准（請用你平常的瀏覽器）"}, "automation", str(req.get("id", "")))
         with LOCK:
             st, rec = find(str(req.get("id", "")))
             if st != "pending":
-                return self._json(409, {"ok": False, "error": "這則草稿已經不在待核准清單"})
+                return self._decided(409, {"ok": False, "error": "這則草稿已經不在待核准清單"}, "not_pending", str(req.get("id", "")))
             if str(req.get("rev", "")) != rev_of(rec):
-                return self._json(409, {"ok": False, "stale": True,
-                                        "error": "這則草稿在你打開頁面之後被改過（對象或內容），已重新載入，請再確認一次"})
+                return self._decided(409, {"ok": False, "stale": True,
+                                        "error": "這則草稿在你打開頁面之後被改過（對象或內容），已重新載入，請再確認一次"}, "stale", rec["id"])
             now = time.strftime("%Y-%m-%d %H:%M:%S")
             if action == "reject":
                 rec.update(decided=now, decided_via=ua, reject_reason=str(req.get("reason", ""))[:1000])
                 move(rec, "pending", "rejected")
-                return self._json(200, {"ok": True, "state": "rejected"})
+                return self._decided(200, {"ok": True, "state": "rejected"}, "rejected", rec["id"])
             if action not in ("approve", "edit"):
-                return self._json(400, {"ok": False, "error": "unknown action"})
+                return self._decided(400, {"ok": False, "error": "unknown action"}, "bad_request", rec["id"])
             text = str(req.get("text", ""))
             if not text.strip() or len(text) > MAX_BODY:
-                return self._json(400, {"ok": False, "error": "內文是空的或太長"})
+                return self._decided(400, {"ok": False, "error": "內文是空的或太長"}, "bad_body", rec["id"])
             edited = text != rec["body"]
             pol = policy.load(HOME)
             who = resolve(rec, pol, fresh=True)
             if not who.get("resolved"):
-                return self._json(409, {"ok": False, "error": "無法確認對象，不能送出：" + who.get("resolve_error", "")})
+                return self._decided(409, {"ok": False, "error": "無法確認對象，不能送出：" + who.get("resolve_error", "")}, "unresolved", rec["id"])
             try:
                 result, err = ADAPTERS[rec["service"]](rec, text, pol), None
             except urllib.error.HTTPError as e:
@@ -405,12 +420,12 @@ class Handler(BaseHTTPRequestHandler):
             if err:
                 rec["last_error"] = err
                 _write("pending", rec)  # 留在待核准，讓使用者看到錯誤、可重試
-                return self._json(502, {"ok": False, "error": "送出失敗：" + err})
+                return self._decided(502, {"ok": False, "error": "送出失敗：" + err}, "send_failed", rec["id"])
             rec.pop("last_error", None)
             rec.update(decided=now, decided_via=ua, sent_text=text, edited=edited, result=result,
                        label=who["label"])
             move(rec, "pending", "sent")
-            return self._json(200, {"ok": True, "state": "sent", "edited": edited})
+            return self._decided(200, {"ok": True, "state": "sent", "edited": edited}, "sent", rec["id"])
 
 
 class Server(ThreadingHTTPServer):
@@ -429,6 +444,7 @@ def serve():
     port = port_of(pol)
     srv = Server(("127.0.0.1", port), Handler)
     srv.key = secrets.token_urlsafe(24)   # 只存在記憶體與頁面裡
+    srv.instance = secrets.token_hex(6)   # 每次啟動不同：頁面發現換了伺服器就自動重新載入（舊分頁的密鑰會失效）
     for st in STATES:
         _dir(st)
     print(json.dumps({"ok": True, "url": url_of(pol), "pid": os.getpid()}), flush=True)
