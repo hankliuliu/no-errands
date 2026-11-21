@@ -114,9 +114,10 @@ def check_desktop_posix(r, ad):
     title = "NE-DOCTOR-%d" % os.getpid()
     token = "ne%d" % int(time.time())
     if sys.platform == "darwin":
-        script = ('text returned of (display dialog "no-errands doctor" default answer "" buttons {"OK"} '
-                  'default button "OK" with title "%s")' % title)
-        cmd, app = ["osascript", "-e", script], "osascript"
+        # 直接由 osascript 顯示的對話框不歸屬於一般 app（list-windows --app osascript 是空的，CI 實測）→ 交給 System Events 顯示
+        script = ('tell application "System Events" to text returned of (display dialog "no-errands doctor" '
+                  'default answer "" buttons {"OK"} default button "OK" with title "%s")' % title)
+        cmd, app = ["osascript", "-e", script], "System Events"
     elif shutil.which("zenity"):
         cmd, app = ["zenity", "--entry", "--title", title, "--text", "no-errands doctor"], "zenity"
     else:

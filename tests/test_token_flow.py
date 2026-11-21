@@ -35,7 +35,9 @@ def main():
     try:
         time.sleep(1.0)
         # 1) 使用者在 agent 專用 profile 登入一次（測試裡由腳本代勞；真實情境是人在有頭視窗登入）
-        b("open", base + "/login"); b("fill", "#user", "demo"); b("fill", "#pass", "demo123"); b("click", "#signin")
+        if b("open", base + "/login").returncode != 0:     # macOS：第一次 open 時 daemon 可能還在啟動 → 重試一次
+            time.sleep(2); b("open", base + "/login")
+        b("fill", "#user", "demo"); b("fill", "#pass", "demo123"); b("click", "#signin")
         b("wait", "#tokens")                      # 登入成功的證據：首頁的連結出現
         # 2) agent 接手：開 token 頁、填描述、建立
         b("open", base + "/tokens"); b("fill", "#desc", "no-errands")

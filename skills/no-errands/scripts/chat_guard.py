@@ -153,6 +153,11 @@ def out(obj, code=0):
             try:
                 subprocess.run([ad_path(), "minimize", "--window-id", WATCH["win"]["id"]], capture_output=True, timeout=15)
                 time.sleep(0.6)
+                if _fg() != FG0["h"] and os.name == "nt":
+                    # 系統把前景交給 z-order 下一個視窗、不是原本那個 → 把前景還給原本的視窗（是交還，不是搶）
+                    import ctypes
+                    ctypes.windll.user32.SetForegroundWindow(FG0["h"])
+                    time.sleep(0.3)
                 obj["foreground_returned"] = _fg() == FG0["h"]
             except Exception:
                 obj["foreground_returned"] = False
@@ -599,13 +604,22 @@ def _export_menu_popup(prof, win, snap, chat):
         pops = popup_menu.popup_windows(pid, exclude=before)
         if pops:
             break
-    if len(pops) != 1:
-        for p_ in pops:
-            popup_menu.close_popup(p_["hwnd"])
-        raise Refused("點了選單按鈕，但沒有出現唯一的彈出選單（%d 個）" % len(pops))
-    pop = pops[0]
-    res = popup_menu.popup_items(pop["hwnd"])
-    items = [i for i in res.get("items", []) if i.get("name")]
+    if not pops:
+        raise Refused("點了選單按鈕，但沒有出現彈出選單")
+    # 新出現的頂層視窗可能不只選單本身（陰影、提示框…）→ 逐一讀，取真的有項目的那個；項目可能還沒建好 → 重試
+    pop, items = None, []
+    for _ in range(4):
+        for cand in pops:
+            res = popup_menu.popup_items(cand["hwnd"])
+            its = [i for i in res.get("items", []) if i.get("name")]
+            if its:
+                pop, items = cand, its
+                break
+        if pop:
+            break
+        time.sleep(0.4)
+        pops = popup_menu.popup_windows(pid, exclude=before) or pops
+    pop = pop or pops[0]
     want = [i for i in items if i["name"] in prof["popup_export_items"] and i.get("type") in ("MenuItem", "ListItem", "Button")]
     if len(want) != 1:
         popup_menu.close_popup(pop["hwnd"])
