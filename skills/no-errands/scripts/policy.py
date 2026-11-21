@@ -46,6 +46,9 @@ DEFAULTS = {
         "whitelist": [],                     # 使用者指名、不受未讀保護限制的對話（私人資訊，不進 repo）
     },
     "visibility": "background",              # background：headless、語意操作、不搶焦點｜watch：讓使用者看
+    # 會搶前景的步驟何時可以做：wait_idle（預設：使用者閒置滿 idle_min_s 秒才做，途中他一動就中止交還）｜ask（先問）
+    "busy_behavior": "wait_idle",
+    "idle_min_s": 180,
     "outbox": {"port": 8765},
 }
 

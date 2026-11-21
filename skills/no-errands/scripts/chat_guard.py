@@ -24,6 +24,7 @@ import hashlib, json, os, re, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import policy  # noqa: E402
+import idle  # noqa: E402
 
 HOME = policy.HOME
 LEDGER = os.path.join(HOME, "chat-guard-ledger.jsonl")
@@ -35,6 +36,7 @@ PROFILES = {
         "list_container": "chat list",
         "item_role": "button",
         "chat_name": lambda packed: packed.split(" | ", 1)[0],
+        "raises_foreground": True,   # 實測：語意點擊可能讓視窗跳到前景（視前景鎖而定）
         "has_unread": lambda packed: bool(re.search(r"\| \d+ unread \|", packed)),
         "unread_format_known": True,
         "messages": "messages",
@@ -115,6 +117,7 @@ def find_window(prof, title=None):
     wins = [w for w in ad("list-windows") if w.get("title") == (title or prof["window_title"])]
     if len(wins) != 1:
         raise Refused("找不到唯一的目標視窗（符合 %d 個）" % len(wins))
+    WATCH["win"] = wins[0]
     return wins[0]
 
 
@@ -182,6 +185,41 @@ def find_node(snap, pred):
 
 
 FG_EVENTS = []   # 每次操作後前景是否被換走（只記 handle 是否改變，不記標題）
+WATCH = {"watch": None, "win": None}   # 閒置閘門：操作中監看使用者輸入
+
+
+def idle_gate(prof, pol, a):
+    """會搶前景的 app：只在使用者閒置時做（或使用者已同意）。回傳後開始監看。"""
+    if not prof.get("raises_foreground") or pol.get("visibility") == "watch":
+        return
+    mode = pol.get("busy_behavior", "wait_idle")
+    if mode == "ask":
+        if "--user-ok" not in a:
+            raise Refused("這個 app 操作時可能跳到前景：先問使用者現在方便嗎，同意後加 --user-ok")
+    else:
+        need = float(pol.get("idle_min_s", 180))
+        s = idle.idle_seconds()
+        if s is None:
+            raise Refused("這個平台無法判斷使用者是否在用電腦：先問使用者現在方便嗎（或把政策 busy_behavior 設為 ask）")
+        if s < need:
+            if "--wait-idle" not in a:
+                raise Refused("使用者正在用電腦（%d 秒前還有輸入）：等他離開（閒置滿 %d 秒）再做，可加 --wait-idle 讓工具等"
+                              % (s, need))
+            ok, info = idle.wait_idle(need, timeout=float(arg(a, "--wait-timeout", "3600")))
+            if not ok:
+                raise Refused("等不到使用者閒置（%s），沒有操作" % info)
+    WATCH["watch"] = idle.IdleWatch()
+
+
+def check_interrupt():
+    w = WATCH["watch"]
+    if w and w.interrupted():
+        if WATCH["win"]:
+            try:
+                ad("minimize", "--window-id", WATCH["win"]["id"])
+            except Exception:
+                pass
+        raise Refused("使用者回來用電腦了：已中止並把視窗縮小交還，下次他離開再做")
 
 
 def _fg():
@@ -206,6 +244,7 @@ def guarded(prof, action, node, parents, ctx, text=None):
         after = _fg()
         if before is not None and after is not None and before != after:
             FG_EVENTS.append(action)
+    check_interrupt()
 
 
 # ---------------------------------------------------------------- 子指令
@@ -467,6 +506,8 @@ def main():
         pol = policy.load(HOME)
         if not policy.is_granted(pol, app):
             raise Refused("使用者尚未授權這個 app（同意閘門）：先在對話中取得指名同意")
+        if sub in ("open", "export", "close", "act"):
+            idle_gate(prof, pol, a)
         if sub == "locate":
             cmd_locate(app, prof, arg(a, "--chat") or "")
         elif sub == "open":

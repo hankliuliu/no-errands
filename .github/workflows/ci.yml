@@ -76,6 +76,7 @@ jobs:
         run: |
           python tests/n4_noninterference.py --home "$NE_HOME" --out n4.json --standin | tee n4.txt
           python tests/n4_positive_control.py --i-am-ci | tee n4pos.txt
+          python tests/test_idle.py --i-am-ci | tee idle.txt
 
       - name: uninstall
         if: always()
@@ -110,6 +111,7 @@ jobs:
             mm.txt
             b3.*
             n4*
+            idle.txt
             uninstall.json
             ci-summary.md
           if-no-files-found: ignore
