@@ -24,22 +24,24 @@ def main():
     srv = subprocess.Popen([sys.executable, SRV, "--port", str(port), "--issued", issued])
     base = "http://127.0.0.1:%d" % port
     sess = ["--session", "ne-token-test", "--profile", os.path.join(td, "profile").replace("\\", "/")]   # agent-browser 會吃掉反斜線
-    outputs = []
+    outputs, steps = [], []
 
     def b(*a):
         p = subprocess.run([ab] + sess + list(a), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
         outputs.append(p.stdout + p.stderr)
+        steps.append("%s rc=%d" % (a[0] if a[0] != "fill" else "fill " + a[1], p.returncode))
         return p
 
     try:
         time.sleep(1.0)
         # 1) 使用者在 agent 專用 profile 登入一次（測試裡由腳本代勞；真實情境是人在有頭視窗登入）
         b("open", base + "/login"); b("fill", "#user", "demo"); b("fill", "#pass", "demo123"); b("click", "#signin")
-        b("wait", "--load", "networkidle")
-        time.sleep(1.0)
+        b("wait", "#tokens")                      # 登入成功的證據：首頁的連結出現
         # 2) agent 接手：開 token 頁、填描述、建立
         b("open", base + "/tokens"); b("fill", "#desc", "no-errands")
-        b("click", "#create"); b("wait", "--load", "networkidle")
+        b("click", "#create")
+        if b("wait", "#new-token").returncode != 0:   # 有些平台（macOS headless）第一次點擊沒送出 → 重試一次
+            b("fill", "#desc", "no-errands"); b("click", "#create"); b("wait", "#new-token")
         # 3) 讀一次 token，直接寫進設定檔；不印出、不經過對話
         cfg = os.path.join(td, ".env")
         open(cfg, "w").write("OTHER=keep\n")
@@ -54,6 +56,7 @@ def main():
         check("設定檔裡的值 = 伺服器發出的 token（比對雜湊）", got and hashlib.sha256(got[0].encode()).hexdigest() in issued_hashes)
         check("設定檔原有內容保留", "OTHER=keep" in open(cfg).read())
         check("過程輸出不含 token 值", got and not any(got[0] in o for o in outputs))
+        print("steps:", "; ".join(steps))
     finally:
         subprocess.run([ab, "--session", "ne-token-test", "close"], capture_output=True, timeout=30)
         srv.kill()
