@@ -192,6 +192,56 @@ def managed_block(home, paths, checks=None, repo=None):
     ]
     return "\n".join(lines)
 
+GUARD_TAG = "no-errands"
+
+
+def rule_path(path):
+    """Claude Code 權限規則的絕對路徑寫法：//<路徑>。Windows 要寫成 //c/Users/...（小寫磁碟代號、沒有冒號）——
+    //C:/Users/... 實測比對不到（2026-11-21，巢狀 claude -p 驗證）。"""
+    ap_ = os.path.abspath(path).replace("\\", "/")
+    if len(ap_) > 1 and ap_[1] == ":":
+        ap_ = ap_[0].lower() + ap_[2:]
+    return "//" + ap_.lstrip("/")
+
+
+def guard_rules(home):
+    """建議的權限規則（Claude Code settings.json 的 permissions）。"""
+    sys.path.insert(0, SCRIPTS)
+    import policy
+    pol = policy.load(home)
+    py_bin = ned_cmd(home).rsplit(" ", 1)[0]
+    deny, ask = [], []
+    tf = (pol.get("mattermost") or {}).get("token_file")
+    if tf:
+        deny.append("Read(%s)" % rule_path(tf))
+    for app in ("line", "mattermost", "teams", "slack", "outlook", "messages", "mail"):
+        ask.append("Bash(%s \"%s\" %s:*)" % (py_bin, os.path.join(home, "bin", "chat_guard.py"), app))
+    ask.append("Bash(%s \"%s\" grant:*)" % (py_bin, os.path.join(home, "bin", "policy.py")))
+    ask.append("Bash(%s \"%s\" set:*)" % (py_bin, os.path.join(home, "bin", "policy.py")))
+    return {"deny": deny, "ask": ask}
+
+
+def apply_rules(path, rules, remove=False):
+    """只增刪自己這幾筆；其餘內容原樣保留。"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cfg = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
+    perms = cfg.setdefault("permissions", {})
+    changed = 0
+    for kind in ("deny", "ask"):
+        cur = perms.setdefault(kind, [])
+        for r in rules[kind]:
+            if remove and r in cur:
+                cur.remove(r); changed += 1
+            elif not remove and r not in cur:
+                cur.append(r); changed += 1
+        if not cur:
+            perms.pop(kind)
+    if not perms:
+        cfg.pop("permissions")
+    json.dump(cfg, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    return {"ok": True, "changed": changed, "removed" if remove else "added": changed}
+
+
 def upsert_block(md_path, block):
     text = open(md_path, encoding="utf-8").read() if os.path.exists(md_path) else ""
     if MARK_S in text and MARK_E in text:
@@ -228,7 +278,20 @@ def main():
     ap.add_argument("--uninstall", action="store_true")
     ap.add_argument("--sync", action="store_true",
                     help="repo 規則變更後：重新同步所有已安裝目標的 skill 與受管區塊")
+    ap.add_argument("--guard-rules", action="store_true",
+                    help="把建議的 Claude Code 權限規則加進 settings.json（只增刪自己這幾筆；搭配 --uninstall 移除）")
     a = ap.parse_args()
+
+    if a.guard_rules:
+        home = os.path.abspath(a.home)
+        target = (os.path.join(os.path.abspath(a.project), ".claude", "settings.json") if a.project
+                  else os.path.join(a.claude_dir, "settings.json"))
+        rules = guard_rules(home)
+        res = apply_rules(target, rules, remove=a.uninstall)
+        print(json.dumps(dict(res, target=target, rules=rules,
+                              limits="Bash 規則是前綴比對：擋得住工具直接讀 token 檔，擋不住刻意用別的 shell 指令讀；"
+                                     "這組規則防的是過度熱心，不是安全邊界"), ensure_ascii=False, indent=1))
+        sys.exit(0)
 
     if a.sync:
         home = os.path.abspath(a.home)
