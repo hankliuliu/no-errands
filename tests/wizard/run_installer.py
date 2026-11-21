@@ -69,6 +69,27 @@ def main():
                 break
             nxt = [n for n in nodes if n.get("role") == "button" and n.get("name") in NEXT_NAMES
                    and "disabled" not in str(n.get("states") or []).lower()]
+            same = [x for x in LOG["steps"][-3:] if x.get("click") == (nxt[0].get("name") if nxt else None)]
+            if nxt and len(same) == 3 and not LOG.get("stall_diag"):
+                # 同一頁按了 3 次都沒換頁：留證據（單一視窗截圖、按鈕狀態、頁面文字），再試一次直接對該按鈕送 BM_CLICK
+                shot = os.path.join(os.path.dirname(os.path.abspath(arg("--out") or ".")), "wizard-stall.png")
+                ad("screenshot", shot, "--window-id", w["id"])
+                full = ad("snapshot", "--window-id", w["id"], "--compact")
+                texts = [n.get("name") for n in walk(full.get("data", {}).get("tree", {}))
+                         if n.get("role") in ("statictext", "text", "label") and n.get("name")][:12]
+                LOG["stall_diag"] = {"button_states": nxt[0].get("states"), "actions": nxt[0].get("available_actions"),
+                                     "page_texts": texts, "screenshot": os.path.basename(shot)}
+                import ctypes
+                u = ctypes.windll.user32
+                top = u.FindWindowW(None, w.get("title"))
+                btn = u.FindWindowExW(top, 0, "Button", nxt[0].get("name")) if top else 0
+                if btn:
+                    u.SendMessageW(btn, 0x00F5, 0, 0)   # BM_CLICK 直接送到按鈕 HWND
+                    LOG["steps"].append({"title": w.get("title"), "bm_click": nxt[0].get("name"), "hwnd_found": True})
+                else:
+                    LOG["steps"].append({"title": w.get("title"), "bm_click": nxt[0].get("name"), "hwnd_found": False})
+                acted = True
+                break
             if nxt:
                 r = ad("click", nxt[0]["ref_id"])
                 LOG["steps"].append({"title": w.get("title"), "click": nxt[0].get("name"), "ok": r.get("ok"),

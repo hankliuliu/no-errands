@@ -192,6 +192,7 @@ jobs:
           name: wizard-lab
           path: |
             wizard.*
+            wizard-stall.png
             dialogs.txt
           if-no-files-found: ignore
       - name: B5 demo mode (headed browser + desktop, step screenshots -> guide.md)
