@@ -48,5 +48,5 @@ CDP：`--remote-debugging-port=9222` **必須**配非預設 `--user-data-dir`
 - Git Bash 下 `--screenshot=` 要給**絕對 Windows 路徑**（MSYS 會吃掉相對路徑）。
 - PowerShell 下 ref 要單引號：`ab click '@e12'`（`@` 是 splatting）。
 - `--headed` 會搶前景焦點（實測）：只用在首次登入交接與 demo。
-- 收尾：`ab close`；大掃除 `ab close --all`。它有背景 daemon 與 `~/.agent-browser` 狀態目錄。
+- 收尾：`ab --session <自己的> close`，只關自己開的工作階段。**不要用 `close --all`**：會連使用者自己的 agent-browser 工作階段一起關掉。它有背景 daemon 與 `~/.agent-browser` 狀態目錄。
 - 殺殘留瀏覽器程序：用命令列指紋（profile 路徑）過濾 PID，絕不用 `taskkill /IM`。
