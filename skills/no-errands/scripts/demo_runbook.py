@@ -73,6 +73,13 @@ def rb_sha(rb):
                                      separators=(",", ":")).encode()).hexdigest()
 
 
+def struct_sha(rb):
+    """劇本結構（步驟 id 與每個動作的種類）：learn 只用結構相同的紀錄，否則動作索引會對錯位置。"""
+    st = [(s["id"], [a.get("do") for a in s.get("actions") or []], [a.get("do") for a in s.get("fallback") or []])
+          for s in rb.get("steps", [])]
+    return hashlib.sha256(json.dumps(st, ensure_ascii=False).encode()).hexdigest()[:16]
+
+
 def sends_sha(sends):
     return hashlib.sha256(json.dumps(sends, ensure_ascii=False, sort_keys=True,
                                      separators=(",", ":")).encode()).hexdigest()
@@ -183,7 +190,7 @@ def validate(rb):
             errs.append("%s：advance 只能是 auto|cue" % st.get("id"))
         for act in (st.get("actions") or []) + (st.get("fallback") or []):
             if act.get("do") not in ("open", "fill", "press", "click", "check", "wait_text", "capture", "pause",
-                                     "snapshot_ok", "expect_absent", "scroll"):
+                                     "snapshot_ok", "expect_absent", "scroll", "mark"):
                 errs.append("%s：未知動作 %s" % (st.get("id"), act.get("do")))
             for v in VAR_RE.findall(json.dumps({k: x for k, x in act.items() if k != "regex"}, ensure_ascii=False)):
                 if not ((rb.get("vars") or {}).get(v) or {}).get("pattern"):
@@ -191,6 +198,26 @@ def validate(rb):
         if st.get("resume_at") is not None and not 0 <= int(st["resume_at"]) <= len(st.get("actions") or []):
             errs.append("%s：resume_at 超出範圍" % st.get("id"))
     return errs
+
+
+def loose_waits(rb):
+    """「等某段文字出現」的斷言，若頁面會累積歷史（聊天、通知），必須 new_only（配 mark）或帶本次才有的識別（變數）。
+    例外：static=true（頁面固定內容），或範圍全是對話框（[role=dialog]）。回傳警告清單。"""
+    warn = []
+    for st in rb.get("steps", []):
+        for phase in ("actions", "fallback"):
+            for i, act in enumerate(st.get(phase) or []):
+                if act.get("do") != "wait_text" or act.get("new_only") or act.get("static"):
+                    continue
+                texts = [act["text"]] if isinstance(act["text"], str) else act["text"]
+                if all(VAR_RE.search(t) for t in texts):
+                    continue
+                scopes = act.get("scopes") or [None]
+                if all(s and "dialog" in s for s in scopes):
+                    continue
+                warn.append("%s.%s[%d]：等「%s」可能比對到以前留下的內容；加 new_only（前面放 mark）或帶本次識別，"
+                            "頁面固定內容就標 static" % (st["id"], phase, i, texts[0][:20]))
+    return warn
 
 
 def shell_commands(rb):
@@ -373,7 +400,7 @@ class Browser:
             x, y, w, h = self.layout["windows"][acct]
             g += ["--args", "--window-position=%d,%d\n--window-size=%d,%d" % (x, y, w, h)]
         extra = ["--runbook-approval", approval, "--step", str(step)] if approval else []
-        p = subprocess.run([sys.executable, NEB] + g + list(cmd) + extra, capture_output=True, text=True,
+        p = policy.run([sys.executable, NEB] + g + list(cmd) + extra, capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=timeout,
                            env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8"))
         return p.returncode, p.stdout, p.stderr
@@ -493,16 +520,35 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
             paused += ctl.gate(on_resume=resume)
         ok = True
     elif d in ("fill", "click", "check"):
-        ref, used = br.find(acct, act["target"])
-        if not ref:
-            ok, info["error"], info["tried"] = False, "找不到目標", used
-        else:
-            info["used"] = used
-            cmd = [d, "@" + ref] + ([subst(act["text"], vars_)] if d == "fill" else [])
-            rc, o, e = br.neb(acct, *cmd, approval=approval, step=st["id"])
-            ok = rc == 0
-            if not ok:
-                info["error"] = err_of(rc, o)
+        settle = float(act.get("settle_s", 0))           # 先等目標出現／可操作（learn 依「就地重試才成功」的紀錄提出）
+        while True:
+            ref, used = br.find(acct, act["target"])
+            info.pop("error", None)
+            if ref:
+                info["used"] = used
+                cmd = [d, "@" + ref] + ([subst(act["text"], vars_)] if d == "fill" else [])
+                rc, o, e = br.neb(acct, *cmd, approval=approval, step=st["id"])
+                ok = rc == 0
+                if not ok:
+                    info["error"] = err_of(rc, o)
+                    if info["error"].startswith("neb："):   # 守門拒絕不重試
+                        break
+            else:
+                ok, info["error"], info["tried"] = False, "找不到目標", used
+            if ok or time.time() - t0 - paused >= settle:
+                break
+            time.sleep(0.5)
+            paused += ctl.gate(on_resume=resume)
+            info["settled"] = True
+        if ok:
+            info.pop("tried", None)
+    elif d == "mark":
+        # 記下這幾段文字目前出現幾次（給後面的 wait_text new_only 比較）：聊天、通知這種會累積歷史的頁面必用
+        marks = rec.setdefault("_marks", {})
+        for x in ([act["text"]] if isinstance(act["text"], str) else act["text"]):
+            x = subst(x, vars_)
+            marks[x] = max(br.text(acct, sc).count(x) for sc in (act.get("scopes") or [None]))
+        ok = True
     elif d == "press":
         rc, o, e = br.neb(acct, "press", act["key"], approval=approval, step=st["id"])
         ok = rc == 0
@@ -516,10 +562,14 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
         scopes = act.get("scopes") or [None]
         texts = [subst(x, vars_) for x in ([act["text"]] if isinstance(act["text"], str) else act["text"])]
         ok, hit = False, None
+        marks = rec.get("_marks", {})
         while True:
             for sc in scopes:
                 body = br.text(acct, sc)
-                found = [x for x in texts if x in body]
+                if act.get("new_only"):                     # 只認本次新出現的（比 mark 時多）
+                    found = [x for x in texts if body.count(x) > marks.get(x, 0)]
+                else:
+                    found = [x for x in texts if x in body]
                 if (d == "wait_text" and found) or (d == "expect_absent" and not found and body):
                     ok, hit = True, {"scope": sc, "text_index": texts.index(found[0]) if found else None}
                     break
@@ -633,6 +683,7 @@ def run_step(br, rb, st, vars_, approval, shots_dir, ctl=None):
                 off = failed_at if st.get("retry_from_failed", True) else 0
             ok, _ = attempt(acts[off:], "after_fallback", off)
             rec["recovered"] = ok
+    rec.pop("_marks", None)
     rec["ok"] = ok
     rec["paused_s"] = round(sum(x.get("paused_ms", 0) for x in rec["actions"]) / 1000.0, 1)
     rec["dur_s"] = round(time.time() - t0 - rec["paused_s"], 1)      # 不含暫停
@@ -686,20 +737,14 @@ def execute(rb, mode, a):
         write_control(run_dir, state="playing", advance=advance, next_seq=0)
         passthru = [x for k in ("--from", "--to") if arg(a, k) for x in (k, arg(a, k))]
         kw = {"stdin": subprocess.DEVNULL, "env": dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8")}
-        if os.name == "nt":
-            kw["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000      # DETACHED|NEW_GROUP|NO_WINDOW
-        else:
-            kw["start_new_session"] = True
         log = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")
-        eng = subprocess.Popen([sys.executable, os.path.abspath(__file__), "live", rb["_path"], "--approval", aid,
-                                "--foreground", "--run-dir", run_dir] + passthru, stdout=log, stderr=log, **kw)
+        # 不用 DETACHED_PROCESS：沒有主控台的引擎每啟動一個 neb／agent-browser 都會冒出一個終端機視窗
+        eng = policy.popen_background([sys.executable, os.path.abspath(__file__), "live", rb["_path"], "--approval", aid,
+                                       "--foreground", "--run-dir", run_dir] + passthru, stdout=log, stderr=log, **kw)
         pl = None
-        if "--no-player" not in a:
-            pk = dict(kw)
-            if os.name == "nt":
-                pk["creationflags"] = 0x00000008 | 0x00000200              # 播放器要有視窗
-            pl = subprocess.Popen([sys.executable, os.path.join(HERE, "demo_player.py"), run_dir], stdout=log,
-                                  stderr=log, **pk)
+        if "--no-player" not in a:          # 播放器的 tk 視窗照常顯示；主控台不顯示
+            pl = policy.popen_background([sys.executable, os.path.join(HERE, "demo_player.py"), run_dir],
+                                         stdout=log, stderr=log, **kw)
         out({"ok": True, "mode": "live", "run_dir": run_dir, "engine_pid": eng.pid,
              "player_pid": pl.pid if pl else None,
              "control": "demo_runbook.py control %s pause|resume|next|stop|auto|step" % run_dir,
@@ -715,7 +760,7 @@ def execute(rb, mode, a):
             root = runs_root(rb, persist)
             run_dir = os.path.join(root, time.strftime("%Y%m%d-%H%M%S-") + mode)
         os.makedirs(run_dir, exist_ok=True)
-        state = {"mode": mode, "runbook_sha256": rb_sha(rb), "approval": aid, "started": now_s(),
+        state = {"mode": mode, "runbook_sha256": rb_sha(rb), "struct_sha": struct_sha(rb), "approval": aid, "started": now_s(),
                  "persist": persist, "vars": {}, "steps": [], "next": 0}
     shots = os.path.join(run_dir, "shots")
     os.makedirs(shots, exist_ok=True)
@@ -819,7 +864,7 @@ def preflight(rb, a):
 
     for chk in rb.get("preflight") or []:
         try:
-            p = subprocess.run(chk["cmd"], shell=True, capture_output=True, text=True, encoding="utf-8",
+            p = policy.run(chk["cmd"], shell=True, capture_output=True, text=True, encoding="utf-8",
                                errors="replace", timeout=chk.get("timeout_s", 60))
             o = p.stdout.strip()
             ok = p.returncode == 0 and (not chk.get("expect") or re.search(chk["expect"], o, re.M))
@@ -894,12 +939,19 @@ def learn(rb, a):
         out({"ok": False, "error": "還沒有紀錄"}, 1)
     obs = {}   # (step, phase, i) -> {"ms": [...], "used": [...], "fail": n, "near": set()}
     issues = []
+    used_runs, skipped = [], []
     for r in runs:
         st_ = json.load(open(os.path.join(root, r, "run.json"), encoding="utf-8"))
+        if st_.get("struct_sha") != struct_sha(rb) and not (st_.get("struct_sha") is None and "--allow-unverified" in a):
+            skipped.append(r)
+            continue
+        used_runs.append(r)
         for s in st_["steps"]:
             for act in s["actions"]:
                 k = (s["id"], "fallback" if act["phase"] == "fallback" or act.get("of") == "fallback" else "actions", act["i"])
                 o = obs.setdefault(k, {"ms": [], "used": [], "fail": 0, "ok": 0, "near": []})
+                if act.get("retry") and act["ok"]:
+                    o["retried"] = o.get("retried", 0) + 1
                 if act["ok"]:
                     o["ok"] += 1
                     o["ms"].append(act["ms"])
@@ -944,6 +996,10 @@ def learn(rb, a):
                 changes.append({"path": base + ".target.names", "old": names, "new": found + names,
                                 "why": "排練中找不到目標；頁面上相近的元素：%s" % "、".join(found),
                                 "needs_reapproval": act["do"] != "snapshot_ok"})
+        if act["do"] in ("fill", "click", "check") and o.get("retried") and not act.get("settle_s"):
+            changes.append({"path": base + ".settle_s", "old": None, "new": 5,
+                            "why": "有 %d 次第一下失敗、就地重試才成功（重試會讓畫面停 2 秒）；改成先等目標出現最多 5 秒" % o["retried"],
+                            "needs_reapproval": False})
         if act["do"] in ("fill", "click", "check", "snapshot_ok") and o["used"]:
             t = act["target"]
             # 名稱順序：最常成功的放前面
@@ -964,7 +1020,8 @@ def learn(rb, a):
                 changes.append({"path": base + ".target.scopes", "old": sc, "new": news,
                                 "why": "依成功次數排序選取範圍", "needs_reapproval": False})
     known = [{"step": i["step"], "seen": i["run"], "recovered": i["recovered"], "errors": i["errors"]} for i in issues]
-    prop = {"runbook": rb["_path"], "runbook_sha256": rb_sha(rb), "made": now_s(), "from_runs": runs,
+    prop = {"runbook": rb["_path"], "runbook_sha256": rb_sha(rb), "made": now_s(), "from_runs": used_runs,
+            "skipped_runs_other_structure": skipped,
             "changes": changes, "known_issues": known, "frozen": bool(rb.get("frozen"))}
     pdir = os.path.join(rb["_dir"], "proposals")
     os.makedirs(pdir, exist_ok=True)
@@ -1028,7 +1085,7 @@ def login(rb, a):
     dent = policy.sensitive_domain_entry(pol, host, port) or {}
     if acct not in (dent.get("agent_login") or []):
         out({"ok": False, "error": "使用者沒有在政策檔同意 agent 代為登入這個帳號（policy.py domain add … --agent-login …）"}, 3)
-    pw = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    pw = policy.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
     if not pw:
         out({"ok": False, "error": "取不到密碼（secret-cmd 沒有輸出）"}, 1)
     br = Browser(rb, headed=False, log=None)
@@ -1037,7 +1094,7 @@ def login(rb, a):
         br.neb(acct, "open", rb["target"]["base_url"].rstrip("/") + "/login")
         time.sleep(2)
         g = ["--session", br.sess(acct), "--profile", br.prof(acct)]
-        p = subprocess.run([sys.executable, NEB] + g + ["login"], input=pw + "\n", capture_output=True, text=True,
+        p = policy.run([sys.executable, NEB] + g + ["login"], input=pw + "\n", capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
                            env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8"))
         pw = None
@@ -1060,7 +1117,7 @@ def reset(rb, a):
              "next": "把指令給使用者看；他同意後：policy.py set demo.reset_consent <sha256> --reason \"<原話>\""}, 3)
     res = []
     for c in r.get("commands") or []:
-        p = subprocess.run(c, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        p = policy.run(c, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=300)
         res.append({"rc": p.returncode, "tail": (p.stdout or p.stderr).strip().splitlines()[-1:] })
     ok = all(x["rc"] == 0 for x in res)
@@ -1087,6 +1144,7 @@ def main():
             n = len(sends_of(rb))
         except ValueError as ex:
             e.append(str(ex)); n = 0
+        warn += loose_waits(rb)
         out({"ok": not e, "errors": e, "warnings": warn, "steps": len(rb.get("steps", [])), "sends": n,
              "runbook_sha256": rb_sha(rb)[:16] if not e else None,
              "shell_commands": shell_commands(rb),
@@ -1103,7 +1161,7 @@ def main():
         doc = sends_doc(rb)
         p = os.path.join(rb["_dir"], "sends.json")
         json.dump(doc, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-        r = subprocess.run([sys.executable, OUTBOX, "draft", "--service", "runbook", "--to", doc["target"],
+        r = policy.run([sys.executable, OUTBOX, "draft", "--service", "runbook", "--to", doc["target"],
                             "--body-file", p, "--why", rb.get("approval_why", "示範劇本：整份一次核准")],
                            capture_output=True, text=True, encoding="utf-8", errors="replace",
                            env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME))

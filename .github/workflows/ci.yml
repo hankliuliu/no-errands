@@ -99,6 +99,7 @@ jobs:
           python tests/n4_noninterference.py --home "$NE_HOME" --out n4.json --standin | tee n4.txt
           python tests/n4_positive_control.py --i-am-ci | tee n4pos.txt
           python tests/test_idle.py --i-am-ci | tee idle.txt
+          python tests/test_nowindow.py --i-am-ci | tee nowindow.txt
 
       - name: uninstall
         if: always()
@@ -133,6 +134,7 @@ jobs:
             mm.txt
             neb.txt
             runbook.txt
+            nowindow.txt
             lineprof.txt
             guard.txt
             coexist.txt

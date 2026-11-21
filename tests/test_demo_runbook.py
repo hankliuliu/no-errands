@@ -40,8 +40,9 @@ elif sub == "get" and a[1:2] == ["text"]:
     else:
         print(open(os.path.join(d, "page.txt"), encoding="utf-8").read())
 elif sub == "snapshot":
+    extra = os.path.join(d, "snap-extra.txt")
     print('- textbox "訊息" [ref=e1]\n- button "核准（Gate 1）" [ref=e2]\n- button "Send" [ref=e3]\n'
-          '- button "核准（Gate 1）" [ref=e4]')
+          '- button "核准（Gate 1）" [ref=e4]' + (open(extra, encoding="utf-8").read() if os.path.exists(extra) else ""))
 elif sub == "eval":
     js = a[1]
     obj = rd("login.json", None) if "password" in js and "querySelectorAll" in js else rd("focus.json", None)
@@ -191,7 +192,7 @@ def main():
               and o["shell_commands"] == [{"where": "reset", "cmd": "echo reset-ok"}], o)
         os.makedirs(os.path.join(home, ".git"))
         rc, o, _ = rbj("validate", rbp)
-        check("劇本／紀錄資料夾在 git 工作目錄裡 → 警告", len(o.get("warnings", [])) == 2, o)
+        check("劇本／紀錄資料夾在 git 工作目錄裡 → 警告", len([w for w in o.get("warnings", []) if "git 工作目錄" in w]) == 2, o)
         os.rmdir(os.path.join(home, ".git"))
         rc, o, _ = rbj("sends", rbp)
         doc = json.load(open(o["file"], encoding="utf-8"))
@@ -447,80 +448,142 @@ def main():
         rc, o, _ = rbj("request-approval", sgp)
         check("建議值超出 1–10 → 發件匣拒收", rc == 2, o)
 
-        # ---------- live：引擎在背景跑、播放器／control 指令控制（暫停、繼續、下一步、走開後回到正確頁面、停止）
-        def now_of(rd):
-            try:
-                return json.load(open(os.path.join(rd, "now.json"), encoding="utf-8"))
-            except Exception:
-                return {}
+        bg_ok = os.name != "nt" or os.environ.get("GITHUB_ACTIONS") or "--allow-background" in sys.argv
+        if not bg_ok:
+            print("SKIP live 背景執行段落：Windows 本機不跑會分離啟動行程的測試（CI 跑；本機要跑加 --allow-background）")
+        else:
+            # ---------- live：引擎在背景跑、播放器／control 指令控制（暫停、繼續、下一步、走開後回到正確頁面、停止）
+            def now_of(rd):
+                try:
+                    return json.load(open(os.path.join(rd, "now.json"), encoding="utf-8"))
+                except Exception:
+                    return {}
 
-        def wait_for(rd, cond, t=30):
+            def wait_for(rd, cond, t=30):
+                t0 = time.time()
+                while time.time() - t0 < t:
+                    n = now_of(rd)
+                    if cond(n):
+                        return n
+                    time.sleep(0.2)
+                return now_of(rd)
+
+            lb = json.loads(json.dumps(RUNBOOK))
+            lb["steps"][0]["actions"].append({"do": "pause", "s": 3})
+            lb["steps"][0]["caption"] = [{"text": "第一句", "s": 2}, {"text": "第二句", "s": 3}]
+            lbp = os.path.join(rbdir, "live.json"); json.dump(lb, open(lbp, "w", encoding="utf-8"), ensure_ascii=False)
+            rc, o, txt = rbj("live", lbp, "--approval", aid, "--no-player")
+            rd = o.get("run_dir") or ""
+            check("live 立刻返回、引擎在背景", rc == 0 and o.get("engine_pid") and os.path.isdir(rd), txt)
+            n = wait_for(rd, lambda n: n.get("step_id") == "s1" and n.get("status") == "running")
+            check("now.json：進度、角色、字幕（多句＋秒數）", n.get("steps_total") == 3 and n.get("captions", [{}])[0].get("text") == "第一句", n)
+            t0 = time.time()                     # 等 s1 送出（Enter）之後、在它的 3 秒停頓裡暫停
+            while time.time() - t0 < 20 and '"Enter"' not in "".join(
+                    open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines()[-6:]):
+                time.sleep(0.1)
+            rbj("control", rd, "pause")
+            n = wait_for(rd, lambda n: n.get("status") == "paused", 10)
+            open(os.path.join(home, "url-rb-demo_a.txt"), "w").write("http://localhost:8065/t/channels/elsewhere")
+            c0 = len(open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines())
+            time.sleep(4)
+            c1 = len(open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines())
+            check("暫停期間不再呼叫瀏覽器", n.get("status") == "paused" and c1 == c0, (n.get("status"), c0, c1))
+            rc, o, _ = rbj("status", rd)
+            check("status 指令看得到暫停", o.get("now", {}).get("status") == "paused", o)
+            rbj("control", rd, "resume")
+            n = wait_for(rd, lambda n: n.get("status") == "waiting_next", 30)
+            check("advance=cue 的 s2 在播放器上等「下一步」", n.get("step_id") == "s2" and n.get("status") == "waiting_next", n)
+            tail = open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines()[c1:]
+            check("講者暫停時點走 → 繼續前先回到這一步的網址", any(json.loads(c)[:2] == ["open", "http://localhost:8065/t/messages/@bot"]
+                                                         for c in tail), tail[:6])
+            rbj("control", rd, "next")
+            n = wait_for(rd, lambda n: n.get("status") in ("done", "failed"), 40)
+            time.sleep(1)
+            rj = json.load(open(os.path.join(rd, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rd, "run.json")) else {}
+            s1 = (rj.get("steps") or [{}])[0]
+            check("按下一步後跑完；暫停時間另記、不算進耗時", n.get("status") == "done" and len(rj.get("steps", [])) == 3
+                  and s1.get("paused_s", 0) >= 3 and s1.get("dur_s", 99) < 9 and s1.get("returned_after_pause") == 1,
+                  (n.get("status"), s1.get("paused_s"), s1.get("dur_s"), s1.get("returned_after_pause")))
+            rc, o, txt = rbj("live", lbp, "--approval", aid, "--no-player", "--step-mode")
+            rd2 = o.get("run_dir") or ""
+            n = wait_for(rd2, lambda n: n.get("status") == "waiting_next", 20)
+            check("逐步模式：第一步就等「下一步」", n.get("step_id") == "s1", n)
+            rbj("control", rd2, "stop")
             t0 = time.time()
-            while time.time() - t0 < t:
-                n = now_of(rd)
-                if cond(n):
-                    return n
-                time.sleep(0.2)
-            return now_of(rd)
+            while time.time() - t0 < 20 and not os.path.exists(os.path.join(rd2, "run.json")):
+                time.sleep(0.3)
+            rj2 = json.load(open(os.path.join(rd2, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rd2, "run.json")) else {}
+            check("停止：乾淨結束並存檔", (rj2.get("stopped") or {}).get("user_stop") == "s1" and now_of(rd2).get("status") == "stopped", rj2.get("stopped"))
+            open(os.path.join(rbdir, "captions.txt"), "w", encoding="utf-8").write("s1 | 用文字檔改的字幕 | 4\n")
+            rc, o, txt = rbj("live", lbp, "--approval", aid, "--no-player", "--step-mode")
+            rd3 = o.get("run_dir") or ""
+            n = wait_for(rd3, lambda n: n.get("status") == "waiting_next", 20)
+            log3 = open(os.path.join(rd3, "engine.log"), encoding="utf-8", errors="replace").read()[-600:] if rd3 and os.path.exists(os.path.join(rd3, "engine.log")) else txt
+            check("字幕可用 captions.txt 覆寫（不用重新核准）", n.get("captions") == [{"text": "用文字檔改的字幕", "s": 4.0}], (n, log3))
+            rbj("control", rd3, "stop")
+            os.remove(os.path.join(rbdir, "captions.txt"))
+            time.sleep(2)
 
-        lb = json.loads(json.dumps(RUNBOOK))
-        lb["steps"][0]["actions"].append({"do": "pause", "s": 3})
-        lb["steps"][0]["caption"] = [{"text": "第一句", "s": 2}, {"text": "第二句", "s": 3}]
-        lbp = os.path.join(rbdir, "live.json"); json.dump(lb, open(lbp, "w", encoding="utf-8"), ensure_ascii=False)
-        rc, o, txt = rbj("live", lbp, "--approval", aid, "--no-player")
-        rd = o.get("run_dir") or ""
-        check("live 立刻返回、引擎在背景", rc == 0 and o.get("engine_pid") and os.path.isdir(rd), txt)
-        n = wait_for(rd, lambda n: n.get("step_id") == "s1" and n.get("status") == "running")
-        check("now.json：進度、角色、字幕（多句＋秒數）", n.get("steps_total") == 3 and n.get("captions", [{}])[0].get("text") == "第一句", n)
-        t0 = time.time()                     # 等 s1 送出（Enter）之後、在它的 3 秒停頓裡暫停
-        while time.time() - t0 < 20 and '"Enter"' not in "".join(
-                open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines()[-6:]):
-            time.sleep(0.1)
-        rbj("control", rd, "pause")
-        n = wait_for(rd, lambda n: n.get("status") == "paused", 10)
-        open(os.path.join(home, "url-rb-demo_a.txt"), "w").write("http://localhost:8065/t/channels/elsewhere")
-        c0 = len(open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines())
-        time.sleep(4)
-        c1 = len(open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines())
-        check("暫停期間不再呼叫瀏覽器", n.get("status") == "paused" and c1 == c0, (n.get("status"), c0, c1))
-        rc, o, _ = rbj("status", rd)
-        check("status 指令看得到暫停", o.get("now", {}).get("status") == "paused", o)
-        rbj("control", rd, "resume")
-        n = wait_for(rd, lambda n: n.get("status") == "waiting_next", 30)
-        check("advance=cue 的 s2 在播放器上等「下一步」", n.get("step_id") == "s2" and n.get("status") == "waiting_next", n)
-        tail = open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines()[c1:]
-        check("講者暫停時點走 → 繼續前先回到這一步的網址", any(json.loads(c)[:2] == ["open", "http://localhost:8065/t/messages/@bot"]
-                                                     for c in tail), tail[:6])
-        rbj("control", rd, "next")
-        n = wait_for(rd, lambda n: n.get("status") in ("done", "failed"), 40)
-        time.sleep(1)
-        rj = json.load(open(os.path.join(rd, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rd, "run.json")) else {}
-        s1 = (rj.get("steps") or [{}])[0]
-        check("按下一步後跑完；暫停時間另記、不算進耗時", n.get("status") == "done" and len(rj.get("steps", [])) == 3
-              and s1.get("paused_s", 0) >= 3 and s1.get("dur_s", 99) < 9 and s1.get("returned_after_pause") == 1,
-              (n.get("status"), s1.get("paused_s"), s1.get("dur_s"), s1.get("returned_after_pause")))
-        rc, o, txt = rbj("live", lbp, "--approval", aid, "--no-player", "--step-mode")
-        rd2 = o.get("run_dir") or ""
-        n = wait_for(rd2, lambda n: n.get("status") == "waiting_next", 20)
-        check("逐步模式：第一步就等「下一步」", n.get("step_id") == "s1", n)
-        rbj("control", rd2, "stop")
-        t0 = time.time()
-        while time.time() - t0 < 20 and not os.path.exists(os.path.join(rd2, "run.json")):
-            time.sleep(0.3)
-        rj2 = json.load(open(os.path.join(rd2, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rd2, "run.json")) else {}
-        check("停止：乾淨結束並存檔", (rj2.get("stopped") or {}).get("user_stop") == "s1" and now_of(rd2).get("status") == "stopped", rj2.get("stopped"))
-        open(os.path.join(rbdir, "captions.txt"), "w", encoding="utf-8").write("s1 | 用文字檔改的字幕 | 4\n")
-        rc, o, txt = rbj("live", lbp, "--approval", aid, "--no-player", "--step-mode")
-        rd3 = o.get("run_dir") or ""
-        n = wait_for(rd3, lambda n: n.get("status") == "waiting_next", 20)
-        log3 = open(os.path.join(rd3, "engine.log"), encoding="utf-8", errors="replace").read()[-600:] if rd3 and os.path.exists(os.path.join(rd3, "engine.log")) else txt
-        check("字幕可用 captions.txt 覆寫（不用重新核准）", n.get("captions") == [{"text": "用文字檔改的字幕", "s": 4.0}], (n, log3))
-        rbj("control", rd3, "stop")
-        os.remove(os.path.join(rbdir, "captions.txt"))
-        time.sleep(2)
+        # ---------- mark＋new_only、settle_s、寬鬆斷言警告、learn 的 settle 提議與結構過濾
+        import threading
+        rc, o, _ = rbj("validate", rbp)
+        check("validate 警告：會累積歷史的頁面上沒有 new_only 的 wait_text", any("new_only" in w for w in o["warnings"]), o["warnings"])
+        mk = json.loads(json.dumps(RUNBOOK))
+        mk["steps"] = [mk["steps"][0]]
+        mk["steps"][0]["actions"] = [{"do": "open", "url": "/t/messages/@bot"},
+                                     {"do": "mark", "text": "說明"},
+                                     {"do": "fill", "target": {"role": "textbox", "names": ["訊息"]}, "text": "/case help"},
+                                     {"do": "click", "target": {"role": "button", "names": ["延遲按鈕"]}, "settle_s": 12},
+                                     {"do": "wait_text", "text": "說明", "new_only": True, "budget_s": 6}]
+        mkp = os.path.join(rbdir, "mk.json"); json.dump(mk, open(mkp, "w", encoding="utf-8"), ensure_ascii=False)
+        rc, o, _ = rbj("validate", mkp)
+        check("有 mark＋new_only → 不再警告", rc == 0 and not [w for w in o["warnings"] if "new_only" in w], o["warnings"])
+        rc, o, _ = rbj("request-approval", mkp); approve(o["id"]); mk_aid = o["id"]
+
+        def later():
+            t_ = time.time()                 # 等到 fill 送出後再讓按鈕出現，確定點擊時一開始找不到
+            while time.time() - t_ < 30 and '"/case help"' not in open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read()[-3000:]:
+                time.sleep(0.1)
+            time.sleep(2.5)
+            open(os.path.join(home, "snap-extra.txt"), "w", encoding="utf-8").write('\n- button "延遲按鈕" [ref=e9]')
+            time.sleep(1.5)
+            open(os.path.join(home, "page.txt"), "w", encoding="utf-8").write("使用說明 C-1234abcd 其他 新的說明")
+        th = threading.Thread(target=later); th.start()
+        rc, o, txt = rbj("rehearse", mkp, "--approval", mk_aid)
+        th.join()
+        rj = json.load(open(os.path.join(o["run_dir"], "run.json"), encoding="utf-8")) if o.get("run_dir") else {}
+        acts = (rj.get("steps") or [{}])[0].get("actions", [])
+        clk = [x for x in acts if x["do"] == "click"]
+        wt = [x for x in acts if x["do"] == "wait_text"]
+        check("settle_s：目標晚出現 → 等到再點，不靠就地重試", rc == 0 and len(clk) == 1 and clk[0]["ok"] and clk[0].get("settled"), (clk, txt[-300:]))
+        check("new_only：舊的「說明」不算，等到新出現的才過", wt and wt[0]["ok"] and wt[0]["ms"] >= 1000, wt)
+        raw = open(os.path.join(o["run_dir"], "run.json"), encoding="utf-8").read() if o.get("run_dir") else ""
+        check("mark 的計數不寫進紀錄", raw and "_marks" not in raw)
+        open(os.path.join(home, "page.txt"), "w", encoding="utf-8").write("使用說明 C-1234abcd 其他")
+        rc, o, txt = rbj("rehearse", mkp, "--approval", mk_aid)
+        check("new_only：頁面上只有舊的 → 逾時失敗（不會假陽性）", rc == 1, txt[-200:])
+        os.remove(os.path.join(home, "snap-extra.txt"))
+        lr = os.path.join(home, "lr"); os.makedirs(os.path.join(lr, "runs", "r1"))
+        lrb = json.loads(json.dumps(RUNBOOK)); lrb["runs_dir"] = "runs"
+        json.dump(lrb, open(os.path.join(lr, "runbook.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        sys.path.insert(0, S)
+        import demo_runbook as drm
+        good = {"struct_sha": drm.struct_sha(lrb), "steps": [{"id": "s2", "ok": True, "recovered": True, "actions": [
+            {"do": "click", "phase": "main", "i": 1, "ok": False, "ms": 300, "error": "agent-browser rc=1"},
+            {"do": "click", "phase": "main", "i": 1, "ok": True, "ms": 300, "retry": True,
+             "used": {"scope": None, "name": "核准（Gate 1）"}}]}]}
+        json.dump(good, open(os.path.join(lr, "runs", "r1", "run.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        os.makedirs(os.path.join(lr, "runs", "r0"))
+        json.dump(dict(good, struct_sha="0000"), open(os.path.join(lr, "runs", "r0", "run.json"), "w", encoding="utf-8"),
+                  ensure_ascii=False)
+        rc, o, txt = rbj("learn", os.path.join(lr, "runbook.json"))
+        prop_ = json.load(open(o["proposal"], encoding="utf-8")) if o.get("proposal") else {}
+        check("learn：就地重試才成功 → 提議 settle_s（不需重新核准）",
+              any(c["path"].endswith(".settle_s") and not c["needs_reapproval"] for c in prop_.get("changes", [])), txt[-300:])
+        check("learn：結構不同的紀錄不採用", prop_.get("skipped_runs_other_structure") == ["r0"], prop_.get("skipped_runs_other_structure"))
 
         # ---------- learn / freeze / apply
-        rc, o, txt = rbj("learn", rbp)
+        rc, o, txt = rbj("learn", rbp, "--runs", "50")
         check("learn 產生提案（等待預算依觀測值調整）", rc == 0 and o.get("n_changes", 0) >= 1
               and any("budget_s" in x for x in o.get("diff", [])), txt)
         prop = o.get("proposal")

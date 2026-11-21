@@ -98,7 +98,7 @@ ID_RE = re.compile(r"^[A-Za-z][\w\-]{0,80}$")
 
 def ab_json(base_cmd, js):
     """neb 自己用（守門用的唯讀檢查）：在頁面上跑一段固定的 JS，回解析後的物件。"""
-    p = subprocess.run(base_cmd + ["eval", js], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    p = policy.run(base_cmd + ["eval", js], capture_output=True, text=True, encoding="utf-8", errors="replace")
     raw = (p.stdout.strip().splitlines() or [""])[-1].strip()
     try:
         v = json.loads(raw)
@@ -276,7 +276,7 @@ def do_login(base_cmd, profile, url, pol):
     if not pw:
         refuse("stdin 沒有密碼", sub="login")
     cmds = [["fill", "#" + info["user_id"], acct], ["fill", "#" + info["pw_id"], pw], ["focus", "#" + info["pw_id"]]]
-    p = subprocess.run(base_cmd + ["batch", "--bail"], input=json.dumps(cmds), capture_output=True, text=True,
+    p = policy.run(base_cmd + ["batch", "--bail"], input=json.dumps(cmds), capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     pw = None
     if p.returncode != 0:
@@ -284,7 +284,7 @@ def do_login(base_cmd, profile, url, pol):
     foc = ab_json(base_cmd, FOCUS_JS)
     if not foc or foc.get("type") != "password" or foc.get("id") != info["pw_id"]:
         refuse("焦點不在密碼欄，不按 Enter", sub="login")
-    p = subprocess.run(base_cmd + ["press", "Enter"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    p = policy.run(base_cmd + ["press", "Enter"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     ledger(allowed=True, sub="login", account=acct, host=host, ok=p.returncode == 0)
     print(json.dumps({"ok": p.returncode == 0, "tool": "neb", "login": acct}, ensure_ascii=False))
     sys.exit(0 if p.returncode == 0 else 1)
@@ -328,7 +328,7 @@ def main():
         url = args[0] if "://" in args[0] else "https://" + args[0]
     else:
         # 一律問瀏覽器目前在哪（點擊可能已經導到別的網域；不信任上次記下的網址）
-        p = subprocess.run(base_cmd + ["get", "url"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        p = policy.run(base_cmd + ["get", "url"], capture_output=True, text=True, encoding="utf-8", errors="replace")
         url = (p.stdout.strip().splitlines() or [""])[-1].strip() or st.get(session, {}).get("url", "")
     hp = policy.url_host_port(url)
     host = hp[0]
@@ -377,7 +377,7 @@ def main():
         elif sub not in READ_CMDS:
             refuse("已授權的敏感網站只允許讀取類指令（%s 不在允許清單）" % sub, app=app, sub=sub)
 
-    p = subprocess.run(base_cmd + [rest[0]] + args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    p = policy.run(base_cmd + [rest[0]] + args, capture_output=True, text=True, encoding="utf-8", errors="replace")
     out = p.stdout
     ent = st.setdefault(session, {})
     if sub in ("open", "goto", "navigate") and p.returncode == 0:
