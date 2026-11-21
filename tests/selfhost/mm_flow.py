@@ -88,9 +88,21 @@ def main():
         tok = None
         if steps_ok:
             try:
+                # Security 頁的 PAT 是收合的設定列：先按那一列的 Edit，才出現 Create Token
+                if not a.find("button", r"create token|create new token", tries=1):
+                    s_txt = a.run("snapshot").stdout
+                    me_ = re.search(r'Personal Access Tokens.*?button "(?:Edit|[^"]*Personal Access Tokens[^"]*)"[^\n]*?\bref=(e\d+)', s_txt, re.S | re.I)
+                    if me_:
+                        a.run("click", "@" + me_.group(1))
+                    else:
+                        i = s_txt.lower().find("personal access tokens")
+                        print("security-tab:", s_txt[max(0, i - 200): i + 800] if i >= 0 else "(no PAT section) " + s_txt[:800])
                 a.click("button", r"create token|create new token")
                 a.fill("textbox", r"description|token description", "no-errands")
                 a.click("button", r"^save$")
+                time.sleep(1)
+                if a.find("button", r"yes,? create", tries=2):   # 管理員帳號建 token 會再確認一次
+                    a.click("button", r"yes,? create")
                 time.sleep(1.5)
                 page = a.text()
                 mm = re.search(r"Access Token:\s*([a-z0-9]{26})", page)

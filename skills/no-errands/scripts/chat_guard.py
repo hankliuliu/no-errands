@@ -620,16 +620,22 @@ def _export_menu_popup(prof, win, snap, chat):
         time.sleep(0.4)
         pops = popup_menu.popup_windows(pid, exclude=before) or pops
     pop = pop or pops[0]
-    want, seen_rects = [], set()
-    for i in items:   # 同一個項目可能被 UIA 以兩層元素露出（名稱相同、位置相同）→ 以位置去重
+    def _center_in(a, b):   # a 的中心落在 b 裡
+        ra, rb = a.get("rect") or [0, 0, 0, 0], b.get("rect") or [0, 0, 0, 0]
+        cx, cy = (ra[0] + ra[2]) / 2, (ra[1] + ra[3]) / 2
+        return rb[0] <= cx <= rb[2] and rb[1] <= cy <= rb[3]
+    want = []
+    for i in items:   # 同一個項目可能被 UIA 以兩層元素露出（Win32 代理＋MSAA，位置可能差幾像素）→ 中心互相包含就算同一個
         if i["name"] in prof["popup_export_items"] and i.get("type") in ("MenuItem", "ListItem", "Button"):
-            k = tuple(i.get("rect") or ())
-            if k not in seen_rects:
-                seen_rects.add(k); want.append(i)
+            if not any(i["name"] == w["name"] and (_center_in(i, w) or _center_in(w, i)) for w in want):
+                want.append(i)
     if len(want) != 1:
         popup_menu.close_popup(pop["hwnd"])
         diag = [{"class": c.get("class"), "w": c["rect"][2] - c["rect"][0], "h": c["rect"][3] - c["rect"][1]} for c in pops][:5]
-        raise Refused("選單裡沒有唯一的匯出項目；選單項目：%s；彈出視窗候選：%s" % ([i["name"] for i in items][:15], diag))
+        hits = [{"name": i["name"], "type": i.get("type"), "rect": i.get("rect")} for i in items
+                if i["name"] in prof["popup_export_items"]][:6]
+        raise Refused("選單裡沒有唯一的匯出項目；選單項目：%s；名稱相符者：%s；彈出視窗候選：%s"
+                      % ([i["name"] for i in items][:15], hits, diag))
     if want[0].get("enabled") is False:
         popup_menu.close_popup(pop["hwnd"])
         raise Refused("匯出項目目前不可用")
