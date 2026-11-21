@@ -29,16 +29,23 @@ NO_A11Y = "--no-a11y" in sys.argv
 
 
 def ad(*a):
-    p = subprocess.run([AD] + list(a), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+    try:
+        p = subprocess.run([AD] + list(a), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=40)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": {"code": "TIMEOUT"}}
     try:
         return json.loads(p.stdout)
     except Exception:
         return {"ok": False}
 
 
-def ps(script, *args):
-    p = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", os.path.join(HERE, script)]
-                       + [str(x) for x in args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+def ps(script, *args, timeout=25):
+    try:
+        p = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", os.path.join(HERE, script)]
+                           + [str(x) for x in args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "TIMEOUT (%ss): UIA call blocked (modal dialog?)" % timeout}
     try:
         return json.loads(p.stdout.strip().splitlines()[-1])
     except Exception:
@@ -115,7 +122,10 @@ def main():
         """Cancel a save dialog / answer No to a confirmation, via UIA by HWND (never confirm)."""
         for w in windows_of(pid):
             if w["title"] in ("Save chat", "Leave group"):
-                ps("uia_click.ps1", w["hwnd"], "No|Cancel|否|取消")
+                r = ps("uia_click.ps1", w["hwnd"], "No|Cancel|否|取消")
+                if not r.get("ok"):
+                    # UIA 卡住時：對該對話框投遞 WM_CLOSE（等同按標題列 X / 取消；不是確認）
+                    u32.PostMessageW(w["hwnd"], 0x0010, 0, 0)
         time.sleep(0.5)
         for w in windows_of(pid):  # close any menu still open
             if w["title"] == "" and w["hwnd"] != 0 and "Popup" in w["class"]:
@@ -142,8 +152,13 @@ def main():
             rec["violation"] = any(k.startswith("VIOLATION") for k in ev)
         rec["cursor_moved"] = cursor() != c0
         rec["foreground_changed"] = u32.GetForegroundWindow() != f0
-        cleanup_dialogs()
+        try:
+            cleanup_dialogs()
+        except Exception as e:
+            rec["cleanup_error"] = str(e)[:150]
         RESULT["methods"][name] = rec
+        if arg("--out"):   # 每一步都存，crash 也留得下結果
+            json.dump(RESULT, open(arg("--out"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
     def m1(popup):
         r = ps("uia_dump.ps1", popup["hwnd"])
