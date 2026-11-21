@@ -13,8 +13,11 @@
   demo_runbook.py apply     <runbook.json> <proposal.json> --reason "<使用者同意的原話>"
   demo_runbook.py freeze|unfreeze <runbook.json> --reason "..."
   demo_runbook.py login     <runbook.json> --account <帳號> --secret-cmd "<印出密碼的指令>"
-        只限劇本裡標了 agent_login=true 的示範帳號（使用者明確同意過）；密碼只在記憶體裡，不輸出、不寫檔。
-  demo_runbook.py reset     <runbook.json>                     # 執行劇本的 reset 指令（使用者同意過才寫進劇本）
+        只限政策檔登記為 agent_login 的示範帳號（policy.py domain add … --agent-login …）；由 neb 的 login 規則填入，
+        密碼走 stdin（不進命令列參數）、只在記憶體裡，不輸出、不寫檔。
+  demo_runbook.py reset     <runbook.json>                     # 執行還原指令：政策檔要有使用者對「這組指令雜湊」的同意
+
+劇本裡的 preflight／reset 是會在本機執行的 shell 指令：validate 會全部列出；只跑自己寫的或看過的劇本。
 
 所有對目標網站的操作都經過 neb；送出類動作帶 --runbook-approval/--step，neb 只放行與核准清單逐字相符的輸入。
 政策 demo.persist=off → 一次性：紀錄寫在暫存資料夾、結束即刪，不更新 Plan B、不提出修改。
@@ -81,21 +84,30 @@ def names_of(t):
 
 
 def var_pattern(rb, text):
-    """'/case show {case_id}' → (regex, 顯示用文字)；沒有變數回 (None, None)。"""
+    """'/case show {case_id}' → (regex, 顯示用文字)；沒有變數回 (None, None)。
+    每個變數是具名群組 v_<名>_<序>，neb 另外對群組值加硬上限。沒宣告 pattern 的變數 → ValueError（沒有預設值）。"""
     if not VAR_RE.search(text or ""):
         return None, None
     vars_ = rb.get("vars") or {}
     parts, shown, pos = [], [], 0
-    for m in VAR_RE.finditer(text):
+    for k, m in enumerate(VAR_RE.finditer(text)):
         parts.append(re.escape(text[pos:m.start()]))
         shown.append(text[pos:m.start()])
         v = vars_.get(m.group(1)) or {}
-        parts.append("(?:%s)" % v.get("pattern", ".+"))
-        shown.append("«%s»" % (v.get("shown") or m.group(1)))
+        if not v.get("pattern"):
+            raise ValueError("變數 {%s} 沒有宣告 pattern" % m.group(1))
+        parts.append("(?P<v_%s_%d>%s)" % (m.group(1), k, v["pattern"]))
+        shown.append("«%s»" % m.group(1))
         pos = m.end()
     parts.append(re.escape(text[pos:]))
     shown.append(text[pos:])
     return "".join(parts), "".join(shown)
+
+
+def path_of(rb, url):
+    import urllib.parse
+    p = urllib.parse.urlparse(rb["target"]["base_url"].rstrip("/") + url).path
+    return p.rstrip("/") or "/"
 
 
 # ---------------------------------------------------------------- 送出清單（核准用）
@@ -104,30 +116,42 @@ def sends_of(rb):
     """每個含送出類動作的步驟 → 一筆：帳號、位置、種類、欄位與確切文字（或變動規則）、按鍵、點擊名稱。
     名稱清單排序後才進雜湊：選取方式的順序調整不需要重新核准，新增名稱才需要。"""
     res = []
+    cur = {}                                  # 每個帳號目前所在的網址路徑（跨步驟延續；每次 open 更新）
+    home = path_of(rb, rb["target"].get("home_path", "/"))
     for st in rb.get("steps", []):
         inputs, keys, clicks = [], [], []
-        for act in (st.get("actions") or []) + (st.get("fallback") or []):
-            d = act.get("do")
-            if d == "fill":
-                pat, shown = var_pattern(rb, act["text"])
-                ent = {"fields": sorted(names_of(act["target"]))}
-                if pat:
-                    ent.update(pattern=pat, shown=shown)
-                else:
-                    ent["text"] = act["text"]
-                if ent not in inputs:
-                    inputs.append(ent)
-            elif d == "press":
-                if act["key"] not in keys:
-                    keys.append(act["key"])
-            elif d in ("click", "check"):
-                for n in names_of(act["target"]):
-                    if n not in clicks:
-                        clicks.append(n)
+        start = cur.get(st["account"], home)
+        for seq in (st.get("actions") or [], st.get("fallback") or []):
+            at = start                        # 退路從步驟開始時的路徑算起
+            for act in seq:
+                d = act.get("do")
+                if d == "open":
+                    at = path_of(rb, act["url"])
+                elif d == "fill":
+                    pat, shown = var_pattern(rb, act["text"])
+                    ent = {"at": at, "fields": sorted(names_of(act["target"]))}
+                    if pat:
+                        ent.update(pattern=pat, shown=shown)
+                    else:
+                        ent["text"] = act["text"]
+                    if ent not in inputs:
+                        inputs.append(ent)
+                elif d == "press":
+                    k = {"at": at, "key": act["key"]}
+                    if k not in keys:
+                        keys.append(k)
+                elif d in ("click", "check"):
+                    for n in names_of(act["target"]):
+                        c = {"at": at, "name": n}
+                        if c not in clicks:
+                            clicks.append(c)
+            if seq is st.get("actions"):
+                cur[st["account"]] = at
         if inputs or keys or clicks:
+            key = lambda x: json.dumps(x, ensure_ascii=False, sort_keys=True)
             res.append({"step": st["id"], "account": st["account"], "where": st.get("where", ""),
-                        "kind": st.get("kind", "操作"), "inputs": inputs, "keys": sorted(keys),
-                        "clicks": sorted(clicks), "vary": list(st.get("vary") or [])})
+                        "kind": st.get("kind", "操作"), "inputs": inputs, "keys": sorted(keys, key=key),
+                        "clicks": sorted(clicks, key=key), "vary": list(st.get("vary") or [])})
     return res
 
 
@@ -157,9 +181,33 @@ def validate(rb):
                                      "snapshot_ok", "expect_absent", "scroll"):
                 errs.append("%s：未知動作 %s" % (st.get("id"), act.get("do")))
             for v in VAR_RE.findall(json.dumps({k: x for k, x in act.items() if k != "regex"}, ensure_ascii=False)):
-                if v not in (rb.get("vars") or {}):
-                    errs.append("%s：變數 {%s} 沒有在 vars 宣告" % (st.get("id"), v))
+                if not ((rb.get("vars") or {}).get(v) or {}).get("pattern"):
+                    errs.append("%s：變數 {%s} 沒有在 vars 宣告 pattern" % (st.get("id"), v))
+        if st.get("resume_at") is not None and not 0 <= int(st["resume_at"]) <= len(st.get("actions") or []):
+            errs.append("%s：resume_at 超出範圍" % st.get("id"))
     return errs
+
+
+def shell_commands(rb):
+    """劇本裡會在本機執行的 shell 指令（preflight／reset）：validate 一律列出來給人看。"""
+    return [{"where": "preflight", "name": c.get("name"), "cmd": c.get("cmd")} for c in rb.get("preflight") or []] + \
+           [{"where": "reset", "cmd": c} for c in (rb.get("reset") or {}).get("commands") or []]
+
+
+def in_git_tree(path):
+    d = os.path.abspath(path)
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        nd = os.path.dirname(d)
+        if nd == d:
+            return None
+        d = nd
+
+
+def reset_sha(rb):
+    return hashlib.sha256(json.dumps((rb.get("reset") or {}).get("commands") or [], ensure_ascii=False)
+                          .encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------- 瀏覽器（一律經 neb）
@@ -238,6 +286,24 @@ class Browser:
 
 # ---------------------------------------------------------------- 執行
 
+def err_of(rc, out_text):
+    """紀錄只留結構：neb 自己的拒絕訊息（守門規則的文字）或 rc；不留 agent-browser 輸出（可能含頁面文字）。"""
+    for line in reversed((out_text or "").strip().splitlines()):
+        try:
+            j = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(j, dict) and j.get("tool") == "neb" and j.get("error"):
+            return "neb：" + str(j["error"])[:160]
+    if '"tool": "neb"' in (out_text or ""):
+        try:
+            j = json.loads(out_text[out_text.find("{"):])
+            return "neb：" + str(j.get("error"))[:160]
+        except Exception:
+            pass
+    return "agent-browser rc=%s" % rc
+
+
 def subst(text, vars_):
     return VAR_RE.sub(lambda m: str(vars_.get(m.group(1), m.group(0))), text)
 
@@ -251,7 +317,7 @@ def run_action(br, rb, st, act, vars_, approval, rec):
         rc, o, e = br.neb(acct, "open", rb["target"]["base_url"].rstrip("/") + subst(act["url"], vars_))
         ok = rc == 0
         if not ok:
-            info["error"] = (o + e).strip()[-200:]
+            info["error"] = err_of(rc, o)
     elif d == "pause":
         time.sleep(float(act.get("s", 1)))
         ok = True
@@ -265,12 +331,12 @@ def run_action(br, rb, st, act, vars_, approval, rec):
             rc, o, e = br.neb(acct, *cmd, approval=approval, step=st["id"])
             ok = rc == 0
             if not ok:
-                info["error"] = (o + e).strip()[-300:]
+                info["error"] = err_of(rc, o)
     elif d == "press":
         rc, o, e = br.neb(acct, "press", act["key"], approval=approval, step=st["id"])
         ok = rc == 0
         if not ok:
-            info["error"] = (o + e).strip()[-300:]
+            info["error"] = err_of(rc, o)
     elif d == "scroll":
         rc, o, e = br.neb(acct, "scroll", act.get("dir", "down"), str(act.get("px", 600)))
         ok = rc == 0
@@ -343,7 +409,11 @@ def run_step(br, rb, st, vars_, approval, shots_dir):
         rec["fallback_used"] = True
         fok, _ = attempt(st["fallback"], "fallback")
         if fok:
-            rest = (st.get("actions") or [])[failed_at:] if st.get("retry_from_failed", True) else st.get("actions")
+            acts = st.get("actions") or []
+            if st.get("resume_at") is not None:          # 退路已取代前面的動作：從指定位置接著跑
+                rest = acts[int(st["resume_at"]):]
+            else:
+                rest = acts[failed_at:] if st.get("retry_from_failed", True) else acts
             ok, _ = attempt(rest, "after_fallback")
             rec["recovered"] = ok
     rec["ok"] = ok
@@ -368,9 +438,15 @@ def check_approval(rb, aid):
     return True, rec
 
 
+def runs_dir(rb):
+    """紀錄放哪：劇本的 runs_dir（相對於劇本資料夾）或預設 <劇本資料夾>/runs。"""
+    d = rb.get("runs_dir") or "runs"
+    return os.path.normpath(d if os.path.isabs(d) else os.path.join(rb["_dir"], d))
+
+
 def runs_root(rb, persist):
     if persist:
-        d = os.path.join(rb["_dir"], "runs")
+        d = runs_dir(rb)
         os.makedirs(d, exist_ok=True)
         return d
     return tempfile.mkdtemp(prefix="ne-demo-")
@@ -472,7 +548,18 @@ def preflight(rb, a):
             time.sleep(2)
             rc2, cur, _ = br.neb(acct, "get", "url")
             logged = rc == 0 and "/login" not in cur and "landing" not in cur
-            add("登入有效：" + acct, logged, cur.strip().splitlines()[-1] if cur.strip() else (o + e)[-150:])
+            who = None
+            me = rb["target"].get("whoami_path")             # 例：/api/v4/users/me（GET，回 JSON）
+            if logged and me:
+                br.neb(acct, "open", rb["target"]["base_url"].rstrip("/") + me)
+                try:
+                    txt = br.text(acct)
+                    who = json.loads(txt[txt.find("{"):]).get(rb["target"].get("whoami_field", "username"))
+                except Exception:
+                    who = None
+            want = (rb["accounts"][acct] or {}).get("username", acct)
+            ok = logged and (who == want if me else True)
+            add("登入有效且身分正確：" + acct, ok, ("登入的是 %s" % who) if me else "（劇本沒設 whoami_path，只檢查不在登入頁）")
     finally:
         br.close_all()
     aid = arg(a, "--approval")
@@ -497,7 +584,7 @@ def learn(rb, a):
     dm = pol.get("demo") or {}
     if dm.get("persist", "on") != "on" or dm.get("learn", "propose") != "propose":
         out({"ok": True, "proposal": None, "note": "政策 demo.persist/learn 關閉：不提出修改"})
-    root = os.path.join(rb["_dir"], "runs")
+    root = runs_dir(rb)
     runs = sorted(d for d in os.listdir(root) if os.path.exists(os.path.join(root, d, "run.json"))) if os.path.isdir(root) else []
     runs = runs[-int(arg(a, "--runs", "5")):]
     if not runs:
@@ -610,40 +697,46 @@ def apply(rb, a):
 # ---------------------------------------------------------------- 其他子指令
 
 def login(rb, a):
+    """示範帳號登入：可不可以由 agent 登入看政策檔（使用者那一側），不看劇本。實際填入由 neb 的 login 規則做：
+    只在登記的示範主機登入頁、只填頁面上唯一的帳號欄與 password 型別欄；密碼走 stdin，不進命令列參數。"""
     acct, cmd = arg(a, "--account"), arg(a, "--secret-cmd")
-    info = (rb.get("accounts") or {}).get(acct)
-    if not info or not info.get("agent_login"):
-        out({"ok": False, "error": "這個帳號沒有標 agent_login=true（要使用者明確同意 agent 代為登入）"}, 3)
+    if acct not in (rb.get("accounts") or {}):
+        out({"ok": False, "error": "劇本裡沒有這個帳號"}, 3)
+    pol = policy.load()
+    host, port = policy.url_host_port(rb["target"]["base_url"])
+    dent = policy.sensitive_domain_entry(pol, host, port) or {}
+    if acct not in (dent.get("agent_login") or []):
+        out({"ok": False, "error": "使用者沒有在政策檔同意 agent 代為登入這個帳號（policy.py domain add … --agent-login …）"}, 3)
     pw = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
     if not pw:
         out({"ok": False, "error": "取不到密碼（secret-cmd 沒有輸出）"}, 1)
     br = Browser(rb, headed=False, log=None)
-    ab = os.path.join(policy.HOME, "bin", "agent-browser.exe" if os.name == "nt" else "agent-browser")
-    g = ["--session", br.sess(acct), "--profile", br.prof(acct)]
-    lg = rb["target"].get("login") or {}
-
-    def run(*c):
-        return subprocess.run([ab] + g + list(c), capture_output=True, text=True, encoding="utf-8", errors="replace")
     try:
-        run("close")
-        run("open", rb["target"]["base_url"].rstrip("/") + lg.get("path", "/login"))
+        br.ensure(acct)
+        br.neb(acct, "open", rb["target"]["base_url"].rstrip("/") + "/login")
         time.sleep(2)
-        run("fill", lg.get("user_selector", "#input_loginId"), info.get("username", acct))
-        run("fill", lg.get("password_selector", "#input_password-input"), pw)
-        run("press", "Enter")
+        g = ["--session", br.sess(acct), "--profile", br.prof(acct)]
+        p = subprocess.run([sys.executable, NEB] + g + ["login"], input=pw + "\n", capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8"))
+        pw = None
         time.sleep(4)
-        cur = run("get", "url").stdout.strip()
+        rc, cur, _ = br.neb(acct, "get", "url")
     finally:
         pw = None
-        run("close")
-    ok = "/login" not in cur
-    out({"ok": ok, "account": acct, "landed": cur.splitlines()[-1] if cur else ""}, 0 if ok else 1)
+        br.close_all()
+    ok = p.returncode == 0 and "/login" not in cur
+    out({"ok": ok, "account": acct, "neb": err_of(p.returncode, p.stdout) if p.returncode else "ok",
+         "landed": cur.strip().splitlines()[-1] if cur.strip() else ""}, 0 if ok else 1)
 
 
 def reset(rb, a):
     r = rb.get("reset") or {}
-    if not r.get("user_consent"):
-        out({"ok": False, "error": "劇本沒有記錄使用者同意重置（reset.user_consent）"}, 3)
+    consent = ((policy.load().get("demo") or {}).get("reset_consent") or {})
+    if consent.get("commands_sha256") != reset_sha(rb):
+        out({"ok": False, "error": "政策檔沒有使用者對「這組」還原指令的同意（指令改過就要重新同意）",
+             "commands": r.get("commands"), "commands_sha256": reset_sha(rb),
+             "next": "把指令給使用者看；他同意後：policy.py set demo.reset_consent <sha256> --reason \"<原話>\""}, 3)
     res = []
     for c in r.get("commands") or []:
         p = subprocess.run(c, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -662,8 +755,19 @@ def main():
     rb = load_rb(a[1])
     if sub == "validate":
         e = validate(rb)
-        out({"ok": not e, "errors": e, "steps": len(rb.get("steps", [])), "sends": len(sends_of(rb)),
-             "runbook_sha256": rb_sha(rb)[:16]}, 0 if not e else 1)
+        warn = []
+        for label, d in (("劇本資料夾", rb["_dir"]), ("紀錄資料夾", runs_dir(rb))):
+            g = in_git_tree(d)
+            if g:
+                warn.append("%s在 git 工作目錄（%s）裡：紀錄與截圖可能被 commit；建議移到工作目錄外" % (label, g))
+        try:
+            n = len(sends_of(rb))
+        except ValueError as ex:
+            e.append(str(ex)); n = 0
+        out({"ok": not e, "errors": e, "warnings": warn, "steps": len(rb.get("steps", [])), "sends": n,
+             "runbook_sha256": rb_sha(rb)[:16] if not e else None,
+             "shell_commands": shell_commands(rb),
+             "note": "shell_commands 會在本機執行：只跑自己寫的或看過的劇本"}, 0 if not e else 1)
     e = validate(rb)
     if e:
         out({"ok": False, "errors": e}, 1)

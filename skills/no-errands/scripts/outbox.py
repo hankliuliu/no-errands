@@ -142,6 +142,14 @@ def sends_sha256(sends):
                                      separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def runbook_days(doc):
+    """到期天數由伺服器決定：清單可要求更短，上限 RUNBOOK_DAYS（7）天。"""
+    try:
+        return max(1, min(RUNBOOK_DAYS, int(doc.get("days") or RUNBOOK_DAYS)))
+    except (TypeError, ValueError):
+        return RUNBOOK_DAYS
+
+
 def parse_runbook_body(body):
     doc = json.loads(body)
     if doc.get("kind") != RUNBOOK_KIND:
@@ -150,6 +158,17 @@ def parse_runbook_body(body):
         raise ValueError("送出清單是空的")
     if not doc.get("target") or not doc.get("runbook_sha256"):
         raise ValueError("缺 target 或 runbook_sha256")
+    for s in doc["sends"]:
+        if not s.get("account") or not s.get("step"):
+            raise ValueError("每一筆送出都要有 step 與 account")
+        for i in s.get("inputs") or []:
+            if not i.get("at") or not i.get("fields"):
+                raise ValueError("輸入要有網址路徑（at）與欄位名稱")
+            if i.get("text") is None and not ("(?P<" in str(i.get("pattern", ""))):
+                raise ValueError("變動的輸入必須用具名群組宣告格式")
+        for k in (s.get("keys") or []) + (s.get("clicks") or []):
+            if not isinstance(k, dict) or not k.get("at"):
+                raise ValueError("按鍵與點擊要有網址路徑（at）")
     return doc
 
 
@@ -291,6 +310,7 @@ pre{white-space:pre-wrap;margin:6px 0 0;font:inherit;background:var(--bg);border
 #robot{border-color:var(--no)}
 table.rb{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}table.rb th,table.rb td{border-top:1px solid var(--line);padding:5px 6px;text-align:left;vertical-align:top}
 table.rb td.c{white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace}.var{color:var(--warn)}
+.agent{color:var(--mute);font-size:12px;font-style:italic;font-family:system-ui,sans-serif;margin-top:4px;white-space:normal}
 .st-approved{color:var(--ok)}.st-revoked{color:var(--no)}
 </style></head><body>
 <header><h1>📮 不求人發件匣</h1>
@@ -304,13 +324,15 @@ table.rb td.c{white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace}.
 const KEY=__KEY__;const ROBOT=!!navigator.webdriver;if(ROBOT)document.getElementById("robot").hidden=false;
 let data={pending:[],sent:[],rejected:[],approved:[],revoked:[]};let sig="";
 function rbTable(d){let doc;try{doc=JSON.parse(d.body)}catch(e){return '<div class="err">清單格式錯誤</div>'}
-  const rows=doc.sends.map(s=>{const c=[];
-    (s.inputs||[]).forEach(i=>c.push(`欄位「${esc((i.fields||[]).join("／"))}」← ${i.text!=null?esc(i.text):`<span class="var">${esc(i.shown||i.pattern)}</span>`}`));
-    (s.keys||[]).forEach(k=>c.push("按鍵 "+esc(k)));(s.clicks||[]).forEach(k=>c.push(`按「${esc(k)}」`));
-    (s.vary||[]).forEach(v=>c.push(`<span class="var">會變動：${esc(v)}</span>`));
-    return `<tr><td>${esc(s.step)}</td><td>${esc(s.account)}</td><td>${esc(s.where)}</td><td>${esc(s.kind)}</td><td class="c">${c.join("\n")}</td></tr>`}).join("");
-  return `<div class="note">目標主機：<b>${esc(doc.target)}</b>｜劇本雜湊 ${esc(String(doc.runbook_sha256).slice(0,12))}｜核准後 ${esc(doc.days||7)} 天內有效，可在「歷史」撤銷。執行時只允許下表的輸入與點擊，任何不同都會被擋下、需重新核准。</div>
-  <table class="rb"><tr><th>步驟</th><th>帳號</th><th>位置</th><th>種類</th><th>確切內容</th></tr>${rows}</table>`}
+  const rows=doc.sends.map(s=>{const c=[],at=new Set();
+    (s.inputs||[]).forEach(i=>{at.add(i.at);c.push(`在 ${esc(i.at)}｜欄位「${esc((i.fields||[]).join("／"))}」← ${i.text!=null?esc(i.text):`<span class="var">符合格式 ${esc(i.pattern)}</span>`}`)});
+    (s.keys||[]).forEach(k=>{at.add(k.at);c.push(`在 ${esc(k.at)}｜按鍵 ${esc(k.key)}（只在焦點欄位與內容都等於上面核准的輸入時）`)});
+    (s.clicks||[]).forEach(k=>{at.add(k.at);c.push(`在 ${esc(k.at)}｜按「${esc(k.name)}」`)});
+    return `<tr><td>${esc(s.step)}</td><td>${esc(s.account)}</td><td class="c">${[...at].map(esc).join("\n")}</td><td class="c">${c.join("\n")}<div class="agent">agent 的說明（不是強制內容）：${esc(s.kind)}｜${esc(s.where)}${(s.vary||[]).length?"｜"+esc(s.vary.join("；")):""}</div></td></tr>`}).join("");
+  return `<div class="note">目標主機：<b>${esc(doc.target)}</b>｜清單雜湊 ${esc(String(doc.runbook_sha256).slice(0,12))}｜核准後 <b>${esc(d.days_effective)}</b> 天內有效（伺服器上限 7 天），可在「歷史」撤銷。執行時只允許下表「在哪個網址路徑、對哪個欄位、輸入什麼、按什麼」，任何不同都會被擋下、需重新核准。變數值另有硬上限：不含空白與換行、最長 64 字。</div>
+  <div class="agent">劇本標題（agent 寫的）：${esc(doc.title)}</div>
+  <table class="rb"><tr><th>步驟</th><th>帳號</th><th>網址路徑（強制）</th><th>確切內容（強制）</th></tr>${rows}</table>
+  <div class="row">可執行次數：<select class="runs">${[1,2,3,5,10].map(n=>`<option value="${n}"${n===3?" selected":""}>${n} 次</option>`).join("")}</select><span class="note">每個送出動作超過這個次數就要重新核准（排練＋正式示範合計）</span></div>`}
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function tab(){return location.hash==="#history"?"history":"pending"}
@@ -371,6 +393,7 @@ async function decide(c,d,a){
   if(a==="approve"&&!text.trim()){err.textContent="內文是空的";return}
   const btns=c.querySelectorAll("button");btns.forEach(b=>b.disabled=true);
   const body={id:d.id,action:a==="approve"?(text!==d.body?"edit":"approve"):"reject",text,reason:c.querySelector(".reason").value,rev:d.rev,key:KEY};
+  const rs=c.querySelector("select.runs");if(rs)body.max_runs=parseInt(rs.value,10);
   try{const r=await fetch("api/decide",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     const j=await r.json();
     if(!j.ok){err.textContent=j.error||"失敗";if(j.stale){sig="";setTimeout(load,1500)}else btns.forEach(b=>b.disabled=false);return}
@@ -428,6 +451,11 @@ class Handler(BaseHTTPRequestHandler):
                              project_name=os.path.basename((r.get("project") or "").rstrip("\\/")))
                     if st == "pending":
                         r.update(rev=rev_of(r), **resolve(r, pol))
+                        if r.get("service") == "runbook":
+                            try:
+                                r["days_effective"] = runbook_days(parse_runbook_body(r["body"]))
+                            except Exception:
+                                r["days_effective"] = RUNBOOK_DAYS
                     rows.append(r)
                 out[st] = rows
             return self._json(200, out)
@@ -478,11 +506,18 @@ class Handler(BaseHTTPRequestHandler):
                 if not who.get("resolved"):
                     return self._json(409, {"ok": False, "error": "劇本清單無法確認：" + who.get("resolve_error", "")})
                 doc = parse_runbook_body(rec["body"])
-                days = int(doc.get("days") or RUNBOOK_DAYS)
+                days = runbook_days(doc)
+                try:
+                    max_runs = int(req.get("max_runs") or 3)
+                except (TypeError, ValueError):
+                    max_runs = 3
+                if not 1 <= max_runs <= 10:
+                    return self._json(400, {"ok": False, "error": "可執行次數必須是 1–10"})
                 exp_ts = time.time() + days * 86400
                 rec.update(decided=now, decided_via=ua, label=who["label"], approval={
                     "runbook_sha256": doc["runbook_sha256"], "sends_sha256": sends_sha256(doc["sends"]),
                     "target": str(doc["target"]).lower(), "approved": now, "expires_ts": exp_ts,
+                    "days": days, "max_runs": max_runs,
                     "expires": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(exp_ts))})
                 move(rec, "pending", "approved")
                 return self._json(200, {"ok": True, "state": "approved"})
