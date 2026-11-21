@@ -47,6 +47,11 @@ def main():
             return {"raw": p.stdout, "err": p.stderr}, p.returncode
 
     try:
+        # 升級守門：放行清單是對某個版本的 --help 全文逐項對過的；versions.json 換版本而沒重對 → 失敗
+        vj = json.load(open(os.path.join(REPO, "versions.json"), encoding="utf-8"))
+        doc = open(os.path.join(REPO, "docs", "agent-desktop-command-audit.md"), encoding="utf-8").read()
+        check("agent-desktop 的指令對照表是對 versions.json 釘的版本做的（%s）" % (vj["agent-desktop"]["version"]),
+              ("audited version: %s" % vj["agent-desktop"]["version"]) in doc, "versions.json=%s" % vj["agent-desktop"]["version"])
         o, rc = ned("LINE.exe", "snapshot", "-i")
         check("未授權敏感 app（LINE）→ 拒", rc == 3 and o.get("ok") is False, o)
         o, rc = ned("Outlook.exe", "screenshot", "x.png")
@@ -92,13 +97,36 @@ def main():
         # home 解析：從 <home>/bin 執行、沒有 NO_ERRANDS_HOME
         h2 = tempfile.mkdtemp(prefix="ne-ned-home2-")
         os.makedirs(os.path.join(h2, "bin"))
-        for f in ("ned.py", "policy.py"):
+        for f in ("ned.py", "policy.py", "nowin.py"):
             shutil.copyfile(os.path.join(SC, f), os.path.join(h2, "bin", f))
         open(os.path.join(h2, "config.json"), "w").write("{}")
         e2 = {k: v for k, v in env.items() if k != "NO_ERRANDS_HOME"}
         o, rc = ned("LINE.exe", "snapshot", e=e2, script=os.path.join(h2, "bin", "ned.py"))
         check("從 <home>/bin 執行 → ledger 寫進該 home", os.path.exists(os.path.join(h2, "ned-ledger.jsonl")), os.listdir(h2))
         shutil.rmtree(h2, ignore_errors=True)
+
+        # ---- agent-desktop 指令對照後補的反例（2026-11-22）----
+        o, rc = ned("Notepad.exe", "launch", r"C:\Users\x\AppData\Local\LINE\bin\current\LINE.exe")
+        check("借一般 app 名義 launch 別的程式（事故一的模式）→ 拒", rc == 3 and "launch" in o.get("error", ""), o)
+        o, rc = ned("Notepad.exe", "launch", "notepad.exe")
+        check("launch 宣告的 app 本身 → 放行", rc == 0, o)
+        ned("Notepad.exe", "snapshot")
+        o, rc = ned("Notepad.exe", "click", "@splain1:e1", "--headed")
+        check("背景模式 --headed（實體輸入）→ 拒", rc == 3 and "headed" in o.get("error", ""), o)
+        for sv in ("notification-center", "focused", "desktop", "taskbar", "start-menu"):
+            o, rc = ned("Notepad.exe", "snapshot", "--surface", sv)
+            check("snapshot --surface %s（讀到別的 app）→ 拒" % sv, rc == 3, o)
+        o, rc = ned("Notepad.exe", "snapshot", "--surface", "menu")
+        check("snapshot --surface menu（自己的選單）→ 放行", rc == 0, o)
+        o, rc = ned("Notepad.exe", "wait", "--notification")
+        check("wait --notification（讀所有通知）→ 拒", rc == 3, o)
+        o, rc = ned("Notepad.exe", "wait", "--element", "@sforeign9:e1")
+        check("wait 用不是 ned 拍的 ref → 拒", rc == 3, o)
+        for cmd in (["batch", "[]"], ["list-notifications"], ["notification-action", "0", "Reply"], ["clipboard-get"],
+                    ["clipboard-set", "x"], ["mcp"], ["sandbox", "exec", "x"], ["press", "return"],
+                    ["mouse-click", "10", "10"], ["focus-window"], ["open-system-surface", "start-menu"]):
+            o, rc = ned("Notepad.exe", *cmd)
+            check("ned %s → 拒（不在允許清單）" % cmd[0], rc == 3, o)
     finally:
         shutil.rmtree(home, ignore_errors=True)
     bad = RESULTS.count(False)

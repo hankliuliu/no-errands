@@ -27,6 +27,7 @@ import copy, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import policy  # noqa: E402
+import nowin  # noqa: E402,F401  Windows：子程序不開主控台視窗（背景引擎與播放器用 nowin.popen_background）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NEB = os.path.join(HERE, "neb.py")
@@ -401,7 +402,7 @@ class Browser:
             x, y, w, h = self.layout["windows"][acct]
             g += ["--args", "--window-position=%d,%d\n--window-size=%d,%d" % (x, y, w, h)]
         extra = ["--runbook-approval", approval, "--step", str(step)] if approval else []
-        p = policy.run([sys.executable, NEB] + g + list(cmd) + extra, capture_output=True, text=True,
+        p = subprocess.run([sys.executable, NEB] + g + list(cmd) + extra, capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=timeout,
                            env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8"))
         return p.returncode, p.stdout, p.stderr
@@ -753,11 +754,11 @@ def execute(rb, mode, a):
         kw = {"stdin": subprocess.DEVNULL, "env": dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8")}
         log = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")
         # 不用 DETACHED_PROCESS：沒有主控台的引擎每啟動一個 neb／agent-browser 都會冒出一個終端機視窗
-        eng = policy.popen_background([sys.executable, os.path.abspath(__file__), "live", rb["_path"], "--approval", aid,
+        eng = nowin.popen_background([sys.executable, os.path.abspath(__file__), "live", rb["_path"], "--approval", aid,
                                        "--foreground", "--run-dir", run_dir] + passthru, stdout=log, stderr=log, **kw)
         pl = None
         if "--no-player" not in a:          # 播放器的 tk 視窗照常顯示；主控台不顯示
-            pl = policy.popen_background([sys.executable, os.path.join(HERE, "demo_player.py"), run_dir],
+            pl = nowin.popen_background([sys.executable, os.path.join(HERE, "demo_player.py"), run_dir],
                                          stdout=log, stderr=log, **kw)
         out({"ok": True, "mode": "live", "run_dir": run_dir, "engine_pid": eng.pid,
              "player_pid": pl.pid if pl else None,
@@ -878,7 +879,7 @@ def preflight(rb, a):
 
     for chk in rb.get("preflight") or []:
         try:
-            p = policy.run(chk["cmd"], shell=True, capture_output=True, text=True, encoding="utf-8",
+            p = subprocess.run(chk["cmd"], shell=True, capture_output=True, text=True, encoding="utf-8",
                                errors="replace", timeout=chk.get("timeout_s", 60))
             o = p.stdout.strip()
             ok = p.returncode == 0 and (not chk.get("expect") or re.search(chk["expect"], o, re.M))
@@ -1106,7 +1107,7 @@ def login(rb, a):
     dent = policy.sensitive_domain_entry(pol, host, port) or {}
     if acct not in (dent.get("agent_login") or []):
         out({"ok": False, "error": "使用者沒有在政策檔同意 agent 代為登入這個帳號（policy.py domain add … --agent-login …）"}, 3)
-    pw = policy.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    pw = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
     if not pw:
         out({"ok": False, "error": "取不到密碼（secret-cmd 沒有輸出）"}, 1)
     br = Browser(rb, headed=False, log=None)
@@ -1115,7 +1116,7 @@ def login(rb, a):
         br.neb(acct, "open", rb["target"]["base_url"].rstrip("/") + "/login")
         time.sleep(2)
         g = ["--session", br.sess(acct), "--profile", br.prof(acct)]
-        p = policy.run([sys.executable, NEB] + g + ["login"], input=pw + "\n", capture_output=True, text=True,
+        p = subprocess.run([sys.executable, NEB] + g + ["login"], input=pw + "\n", capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
                            env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8"))
         pw = None
@@ -1138,7 +1139,7 @@ def reset(rb, a):
              "next": "把指令給使用者看；他同意後：policy.py set demo.reset_consent <sha256> --reason \"<原話>\""}, 3)
     res = []
     for c in r.get("commands") or []:
-        p = policy.run(c, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        p = subprocess.run(c, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=300)
         res.append({"rc": p.returncode, "tail": (p.stdout or p.stderr).strip().splitlines()[-1:] })
     ok = all(x["rc"] == 0 for x in res)
@@ -1182,7 +1183,7 @@ def main():
         doc = sends_doc(rb)
         p = os.path.join(rb["_dir"], "sends.json")
         json.dump(doc, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-        r = policy.run([sys.executable, OUTBOX, "draft", "--service", "runbook", "--to", doc["target"],
+        r = subprocess.run([sys.executable, OUTBOX, "draft", "--service", "runbook", "--to", doc["target"],
                             "--body-file", p, "--why", rb.get("approval_why", "示範劇本：整份一次核准")],
                            capture_output=True, text=True, encoding="utf-8", errors="replace",
                            env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME))

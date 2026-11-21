@@ -18,6 +18,7 @@
 - 每次呼叫寫 ledger（~/.no-errands/ned-ledger.jsonl；不含任何 app 內容字串）。
 """
 import json, os, re, subprocess, sys, time
+import nowin  # noqa: E402,F401  Windows：子程序不開主控台視窗（使用者回報視窗一直彈出）
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import policy  # noqa: E402  同目錄（setup 一起複製到 ~/.no-errands/bin/）
@@ -40,6 +41,9 @@ APP_CMDS = {"snapshot", "find", "screenshot", "list-windows"}  # 自動綁 --app
 PASS_CMDS = {"launch", "close-app", "wait", "status", "version", "skills"}
 OBSERVE_CMDS = {"snapshot", "find", "screenshot", "list-windows", "get", "is", "status", "version"}
 FOCUS_CMDS = {"focus", "type", "hover", "drag"}   # 會搶焦點或動滑鼠鍵盤
+# find/snapshot 的 --surface：只允許屬於這個 app 的表面；desktop/taskbar/notification-center/start-menu/focused…
+# 會讀到別的 app 的內容（例如通知中心裡的聊天預覽）→ 拒。（agent-desktop 1.3.1 對照：docs/agent-desktop-command-audit.md）
+APP_SURFACES = {"window", "menu", "menubar", "sheet", "popover", "alert", "toolbar"}
 OUTBOX_MARK = "NE-OUTBOX"                           # 發件匣頁面標題與 a11y 名稱都含此字串
 
 def ledger(app, sub, allowed, reason=""):
@@ -91,6 +95,16 @@ def main():
         if canon in CHAT_APPS and pol["chat"].get("unread_protection") == "on":
             refuse(app, sub, "未讀保護開啟中：聊天 app 的畫面/結構可能含未讀預覽，不可用一般桌面"
                              "操作觀察；請用 chat_guard 只開指名對話")
+    if "--headed" in rest and pol.get("visibility") != "watch":
+        refuse(app, sub, "--headed 允許實體鍵盤滑鼠與搶焦點；背景模式（預設）不接受。"
+                         "使用者要看你操作時，請他要求後把政策改成觀看模式")
+    if "--surface" in rest:
+        sv = rest[rest.index("--surface") + 1] if rest.index("--surface") + 1 < len(rest) else ""
+        if sv not in APP_SURFACES:
+            refuse(app, sub, "--surface %s 會讀到 %s 以外的內容（桌面、工作列、通知中心、目前焦點…）：只允許 %s"
+                             % (sv, app, "/".join(sorted(APP_SURFACES))))
+    if sub == "wait" and "--notification" in rest:
+        refuse(app, sub, "wait --notification 會讀到所有 app 的通知內容，不提供")
     if sub in FOCUS_CMDS and pol.get("visibility") != "watch":
         refuse(app, sub, "背景模式（預設）不送鍵盤事件、不搶焦點、不動滑鼠：改用 set-value / click "
                          "語意操作；若使用者要看你操作，請他要求後把政策改成觀看模式")
@@ -124,6 +138,22 @@ def main():
                 refuse(app, sub, "ref 屬於 %s，不屬於宣告的 %s：跨 app 操作被拒" % (owner, app))
         cmd += rest
     elif sub in PASS_CMDS:
+        if sub == "launch":
+            # 事故一：受測 agent 自己啟動了沒登入的 LINE。launch 的目標必須就是宣告的 app（不能借一般 app 的名義啟動別的）
+            tgt = next((x for x in rest if not x.startswith("-")), "")
+            base = re.split(r"[\\/]", tgt.strip("\"'"))[-1]
+            if not base or (base.lower() != app.lower() and policy.canonical_app(base) != canon):
+                refuse(app, sub, "launch 的目標（%s）必須等於宣告的 app（%s）" % (base or "未指定", app))
+        if sub == "wait":
+            refs = [m.group(1) for a in rest for m in [REF_RE.search(a)] if m]
+            for sid in refs:
+                ent = st.get(sid)
+                owner = ent.get("app") if isinstance(ent, dict) else ent
+                if owner is None or owner.lower() != app.lower():
+                    refuse(app, sub, "wait 的 ref 不屬於宣告的 %s（或不是 ned 拍的）" % app)
+            if any(x in rest for x in ("--text", "-w", "--wait-for", "--wait-for-gone", "--menu", "--menu-closed")) \
+                    and "--app" not in rest:
+                rest = rest + ["--app", app]
         cmd += rest
         if sub == "close-app" and (not rest or rest[0].lower() != app.lower()):
             refuse(app, sub, "close-app 目標必須等於宣告的 app")

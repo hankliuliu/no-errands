@@ -219,6 +219,25 @@ def main():
         check("10 已有結果時 wait 立刻回", w.get("state") == "rejected" and time.time() - t0 < 10, str(w))
         o, rc = cli(env, "send", d3["id"])
         check("9 沒有 send 子指令", rc != 0 and not o.get("ok"), str(o))
+
+        # ---- 真實使用踩到的（2026-11-22）：舊分頁帶著上一個伺服器的密鑰，按核准被拒卻只有一行小字 ----
+        _, st = http(base + "api/state")
+        inst = json.loads(st).get("instance")
+        check("11 /api/state 帶伺服器實例 id，與頁面裡的相同", inst and ('const INST="%s"' % inst) in page, inst)
+        check("11 頁面發現實例 id 不同就自動重新載入", "data.instance!==INST" in page and "location.reload()" in page)
+        code, body = http(base + "api/decide", {"id": "any-draft", "action": "approve", "text": "x",
+                                                "key": "old-page-key", "rev": "x"})   # 密鑰在查草稿之前就檢查
+        j = json.loads(body)
+        check("12 舊頁面的密鑰 → 403、code=bad_key、告訴使用者頁面會重新載入", code == 403 and j.get("code") == "bad_key"
+              and "重新載入" in j.get("error", ""), body)
+        check("12 頁面對失敗有顯眼的橫幅（role=alert），密鑰失效時自動重新載入", 'role","alert"' in page
+              and 'j.code==="bad_key"' in page)
+        log_p = os.path.join(home, "outbox", "decide-log.jsonl")
+        rows = [json.loads(l) for l in open(log_p, encoding="utf-8")] if os.path.exists(log_p) else []
+        check("13 伺服器記下每次決定請求的狀態碼與原因類別", any(r.get("code") == "bad_key" and r.get("status") == 403 for r in rows)
+              and any(r.get("code") == "rejected" for r in rows), rows[-3:])
+        raw = open(log_p, encoding="utf-8").read() if os.path.exists(log_p) else ""
+        check("13 決定紀錄不含內文與密鑰", "old-page-key" not in raw and key not in raw and '"text"' not in raw)
     finally:
         stop_server(home)
         if busy_sock:

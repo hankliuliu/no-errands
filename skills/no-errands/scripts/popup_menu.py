@@ -15,6 +15,7 @@
   close_popup(hwnd)                      → 投遞 Esc 給該彈出視窗
 """
 import ctypes, json, os, subprocess, tempfile, time
+import nowin  # noqa: E402,F401  Windows：子程序不開主控台視窗（使用者回報視窗一直彈出）
 
 # 座標一律用實體像素：UIA 回報的是實體像素，而沒宣告 DPI 感知的程序在縮放 150% 的螢幕上，
 # GetWindowRect／ScreenToClient 會給「縮放後」的邏輯座標 → 投遞的點擊落在錯的位置

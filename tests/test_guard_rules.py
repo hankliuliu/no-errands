@@ -35,6 +35,13 @@ try:
     c = json.load(open(sp, encoding="utf-8"))
     check("移除只拿掉自己的", c["permissions"].get("deny") == ["Read(./.env)"] and "ask" not in c["permissions"]
           and c["permissions"]["allow"] == ["Bash(npm test:*)"] and "hooks" in c, c)
+    # 守門從「建議」變成「只有這條路」：直接呼叫兩個執行檔的規則（語法經巢狀 claude 實測，見 setup.guard_rules 註解）
+    h2 = os.path.join(td, "h2"); os.makedirs(h2)
+    gr = ne.guard_rules(h2)
+    for tool in ("agent-browser", "agent-desktop"):
+        check("規則擋直接呼叫 %s（Bash 與 PowerShell）" % tool,
+              "Bash(*%s*)" % tool in gr["deny"] and "PowerShell(*%s*)" % tool in gr["deny"], gr["deny"])
+    check("neb／ned 本身不在擋的規則裡", not any("neb.py" in r or "ned.py" in r for r in gr["deny"]), gr["deny"])
 finally:
     shutil.rmtree(td, ignore_errors=True)
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))

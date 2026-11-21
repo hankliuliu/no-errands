@@ -9,6 +9,7 @@
 截圖只拍指定的那一個視窗或瀏覽器頁面（不拍全螢幕）。截圖可能含個資：留本機，分享前自己看過。
 """
 import json, os, subprocess, sys, time
+import nowin  # noqa: E402,F401  Windows：子程序不開主控台視窗（使用者回報視窗一直彈出）
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import policy  # noqa: E402

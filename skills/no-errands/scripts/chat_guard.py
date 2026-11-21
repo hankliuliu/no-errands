@@ -21,6 +21,7 @@
   需要 --expect 指紋且狀態沒變，有未讀就拒開。
 """
 import hashlib, json, os, re, shutil, subprocess, sys, time
+import nowin  # noqa: E402,F401  Windows：子程序不開主控台視窗（使用者回報視窗一直彈出）
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import policy  # noqa: E402

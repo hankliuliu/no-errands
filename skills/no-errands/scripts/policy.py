@@ -99,32 +99,6 @@ CHAT_APPS = {"line", "mattermost", "teams", "slack", "telegram", "whatsapp", "di
              "skype", "messenger", "messages", "fake-chat"}
 
 
-# Windows：內部子行程一律不開視窗。為什麼：沒有主控台的父行程（例如分離啟動的背景引擎）再啟動
-# python／agent-browser 時，Windows 會替每個子行程配一個新的主控台——預設終端機是 Windows Terminal 時
-# 就是一個看得見、會搶前景的視窗（實測 20 秒內 15 個）。CREATE_NO_WINDOW＝有主控台但沒有視窗，子孫會繼承它。
-CREATE_NO_WINDOW = 0x08000000
-CREATE_NEW_PROCESS_GROUP = 0x00000200
-BACKGROUND_FLAGS = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW     # 背景行程：不用 DETACHED_PROCESS（沒有主控台）
-
-
-def run(*a, **k):
-    """subprocess.run 的包裝：Windows 上加 CREATE_NO_WINDOW。"""
-    import subprocess
-    if os.name == "nt":
-        k["creationflags"] = k.get("creationflags", 0) | CREATE_NO_WINDOW
-    return subprocess.run(*a, **k)
-
-
-def popen_background(cmd, **k):
-    """獨立存活的背景行程：Windows 用 NEW_PROCESS_GROUP|NO_WINDOW（子孫繼承無視窗的主控台）；其他平台新 session。"""
-    import subprocess
-    if os.name == "nt":
-        k["creationflags"] = k.get("creationflags", 0) | BACKGROUND_FLAGS
-    else:
-        k["start_new_session"] = True
-    return subprocess.Popen(cmd, **k)
-
-
 def path(home=None):
     return os.path.join(home or HOME, "policy.json")
 
