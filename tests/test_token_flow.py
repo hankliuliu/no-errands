@@ -31,14 +31,16 @@ def main():
         outputs.append(p.stdout + p.stderr)
         steps.append("%s rc=%d" % (a[0] if a[0] != "fill" else "fill " + a[1], p.returncode))
         if p.returncode != 0 and not any(x.startswith("FIRST-ERR") for x in steps):
-            steps.append("FIRST-ERR " + " ".join((p.stdout + p.stderr).split())[-240:])   # 這時還沒有 token
+            steps.append("FIRST-ERR " + " ".join((p.stdout + p.stderr).split())[:400])   # 這時還沒有 token
         return p
 
     try:
         time.sleep(1.0)
         # 1) 使用者在 agent 專用 profile 登入一次（測試裡由腳本代勞；真實情境是人在有頭視窗登入）
-        if b("open", base + "/login").returncode != 0:     # macOS：第一次 open 時 daemon 可能還在啟動 → 重試一次
-            time.sleep(2); b("open", base + "/login")
+        # 暖機：新 profile 第一次開瀏覽器在 macOS 上會回錯（瀏覽器其實起來了）→ 先開空白頁、不看結果
+        b("open", "about:blank"); time.sleep(2)
+        if b("open", base + "/login").returncode != 0:
+            time.sleep(3); b("open", base + "/login")
         b("fill", "#user", "demo"); b("fill", "#pass", "demo123"); b("click", "#signin")
         b("wait", "#tokens")                      # 登入成功的證據：首頁的連結出現
         # 2) agent 接手：開 token 頁、填描述、建立
