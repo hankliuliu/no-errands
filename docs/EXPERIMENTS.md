@@ -52,7 +52,7 @@
 - **教訓**：即興的手沒有規矩——這正是「信任靠基礎設施」的實證。
 
 ## 2026-11-21 · 三平台 CI 與「信任設施」驗證
-- **狀態**：進行中（每次推送自動跑；以 `tests/ci_summary.py` 讀實際輸出判紅綠，不看步驟綠勾）
+- **狀態**：三平台＋popup-lab＋wizard-lab＋自架 Gitea／Mattermost 全綠（2026-11-22，commit 0ff5ccf；ci run 44923827769、selfhost run 44923827660）。每次推送自動跑；以 `tests/ci_summary.py` 讀實際輸出判紅綠，不看步驟綠勾。Windows runner 沒有 Office → office 測試 SKIP（Windows 的 Office 路徑是本機 COM 實測）。
 - **方法**：GitHub Actions windows-latest / ubuntu-latest（Xvfb＋openbox＋AT-SPI）/ macos-latest；
   stage-0 → setup（暫存 home 與 claude-dir）→ doctor → 各工具測試 → uninstall。會開視窗的測試只在 CI 跑。
 - **doctor（實際輸出，各平台每一項一行）**：Windows、Ubuntu、macOS 都是 `python / pkg_manager / browsers / browser / profile` ok；
@@ -71,9 +71,25 @@
 - **權限規則**：Windows 的 Claude Code 規則路徑必須寫 `//c/Users/...`（`//C:/...` 比對不到）；寫對之後巢狀 agent 用 Read 或 `cat`
   讀 token 檔都被拒絕。
 - **共存**：測試抓到兩個真 bug——已有同名 skill 會被直接覆蓋；受管區塊會吃掉原檔最後一行的行尾空白、改掉 CRLF。都已修、有測試。
+- **CI 上的 B3 彈出選單匯出一路踩到的**：WinForms 平面按鈕經 UIA FromHandle 讀成 Pane（不是 Button）→ 接受「項目大小的 Pane」；存檔對話框不採用寫進去的完整路徑、照預設檔名存到它自己的資料夾 → 存檔前從網址列讀資料夾，找不到時去那裡找；慢的 runner 上對話框剛出現時控制項還沒建好 → 重試 snapshot，拒絕前一定先按取消（否則留著的對話框會擋住之後每一步）。
 - **教訓**：CI 的 bash 預設 `-e -o pipefail`，一支測試失敗會讓同一步後面全部不跑；Windows runner 預設 cp1252，寫含中文的檔案要指定編碼；
   互動式 snapshot（`-i`）會漏掉標籤類靜態文字。
 - **數字出處**：`journal/evidence/`、CI artifacts（results-*、popup-lab、wizard-lab、demo-guide）
+
+## 2026-11-21 · A/B 第二輪（v0.3 受管區塊版）：沒裝 vs 裝了
+- **方法**：`claude.exe -p --model <固定>`，同 prompt、同 allowedTools；bare vs kit（setup --project）。巢狀執行一律指定 `--model`、記 modelUsage
+  （第一次補跑沒指定，預設模型中途從 fable-5 換成 opus-5-5，差點把兩個模型的結果合併）。
+- **結果（fable-5，T3 每格 3 次、其餘 n=1）**：
+  | 題 | bare | kit v0.3 |
+  |---|---|---|
+  | T1 修畫面並自己驗收 | ✅ 48s · $0.76 | ✅ 31s · $0.68 |
+  | T2 網頁互動 | ✅ 18s · $0.45（curl 直打 API） | ✅ 22s · $0.48（同樣選 API） |
+  | T3 操作桌面視窗 | 1/3；唯一成功那次 300s，搶前景、模擬滑鼠、全螢幕截圖（INC-2） | 3/3，約 40s |
+  | T4 登入後才看得到 | ❌ 停在登入頁、要帳密 | ✅ 39s |
+- **opus-5-5 的 T3**：bare 2/2（自己手寫 UIA＋BM_CLICK）、kit 2/2，時間相近。**haiku**：T3 bare 自己手寫 UIA 65s、kit 24s；T4 見下一條。
+- **結論**：強模型在有路可繞的題目上，裝不裝差不多（工具包 v0.2 甚至比較慢，瘦身成 v0.3 後打平）；差別出在
+  (1) 帳號牆（T4）——沒有登入過的 profile 就是過不去；(2) 桌面——沒工具的成功方式會干擾使用者；(3) 便宜模型。
+- **原始檔**：`journal/evidence/ab/v2/SUMMARY.md` 與各格 JSON（不進 repo）。
 
 ## 2026-11-21 · 弱模型（haiku）T4：指令寫在受管區塊 vs 寫在 skill 裡
 - **狀態**：完成（每格 n=1，未重複取樣）

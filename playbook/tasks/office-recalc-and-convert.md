@@ -1,6 +1,6 @@
 # xlsx 公式重算、舊版 .ppt/.doc/.xls 轉 PDF（不開視窗）
 
-> 狀態：Windows（Microsoft Office COM）本機實測；Linux（LibreOffice headless）CI 實測。macOS 未實測（有 LibreOffice 時同 Linux）。
+> 狀態：Windows（Microsoft Office COM）本機實測；Linux（LibreOffice headless）CI 實測。macOS（LibreOffice）CI 實測 4/4。
 
 ## 走得通的路
 - `python ~/.no-errands/bin/office.py recalc <in.xlsx> --out <out.xlsx>`：公式沒有快取值的 xlsx（程式產生的常見）重算後存檔。
