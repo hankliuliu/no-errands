@@ -43,6 +43,11 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb at-spi2-core libreoffice-calc libreoffice-writer zenity dbus-x11 openbox > /dev/null
 
+      - name: Codex CLI (Linux; to confirm the real CLI installs and runs)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: npm install -g @openai/codex >/dev/null 2>&1 && codex --version
+
       - name: doctor
         id: doctor
         continue-on-error: true
@@ -69,6 +74,7 @@ jobs:
           "$PY" tests/test_coexist.py | tee coexist.txt
           "$PY" tests/test_uac.py | tee uac.txt
           "$PY" tests/test_errand_audit.py | tee audit.txt
+          "$PY" tests/test_codex_install.py | tee codex.txt
           "$PY" tests/test_office.py | tee office.txt
           AB="$NE_HOME/bin/agent-browser"; [ -f "$AB.exe" ] && AB="$AB.exe"
           "$PY" tests/test_token_flow.py --ab "$AB" | tee token.txt
@@ -125,6 +131,7 @@ jobs:
             coexist.txt
             uac.txt
             audit.txt
+            codex.txt
             office.txt
             token.txt
             b3.*
