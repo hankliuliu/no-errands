@@ -85,7 +85,10 @@ PROFILES = {
         "overwrite_confirm_titles": ("確認另存新檔", "Confirm Save As"),
         "confirm_no_ids": {"CommandButton_7", "7"},
         "verify_export_filename_contains_chat": True,
-        "verify_export_first_line_contains_chat": True,
+        # 真機實測（LINE 26.x）：匯出檔沒有標頭、檔案裡完全不含對話名稱——第一行是日期「YYYY.MM.DD 星期X」，
+        # 之後是「HH:MM 發言者 內容」。所以存檔後的身分檢查改成：不同發言者數 ≤ 標頭寫的人數（只數、不輸出）。
+        "verify_export_first_line_contains_chat": False,
+        "verify_export_senders_within_members": {"line_re": r"^\d\d:\d\d ", "sender_field": 1},
         "close_button": None,                  # 收尾 = 交還（縮小視窗）
     },
 }
@@ -103,6 +106,36 @@ def header_ok(prof, snap, chat):   # snap 必須是完整 snapshot（-i 會漏�
                 return True
         return False
     return True
+
+
+def header_members(prof, snap, chat):
+    """標頭「名稱, N人」的 N（一對一聊天沒有人數 → 2）；找不到標頭回 None。"""
+    if not prof.get("header_toolbar"):
+        return None
+    pat = re.compile(re.escape(chat) + r"(?:, (\d+)人)?$")
+    for node, _ in walk(snap["tree"]):
+        kids = [k for k in node.get("children") or [] if k.get("role") == "button"]
+        if node.get("role") != "listbox" and len(kids) >= 6:
+            m = pat.match(kids[0].get("name") or "")
+            if m:
+                return int(m.group(1)) if m.group(1) else 2
+    return None
+
+
+EXPORT_CTX = {}
+
+
+def _safe_remove(path, tries=20):
+    """刪檔；app 可能還開著檔案（Windows 會 PermissionError）→ 重試約 10 秒。回傳是否刪掉。"""
+    for _ in range(tries):
+        try:
+            os.remove(path)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            time.sleep(0.5)
+    return False
 
 
 class Refused(Exception):
@@ -596,18 +629,51 @@ def cmd_export(app, prof, dest, chat=None):
         except Exception as e:
             diag["diag_error"] = str(e)[:120]
         raise Refused("按下存檔後沒有看到檔案；診斷：%s" % json.dumps(diag, ensure_ascii=False))
-    # 身分驗證 2：只讀第一行比對；不符就刪檔、不再讀任何一行
+    # app 可能還在寫：等檔案大小連續 1 秒不變再驗（真機：一出現就讀，app 還開著檔案，刪不掉）
+    last, stable_since = -1, time.time()
+    for _ in range(40):
+        sz = os.path.getsize(target)
+        if sz != last:
+            last, stable_since = sz, time.time()
+        elif time.time() - stable_since >= 1.0:
+            break
+        time.sleep(0.25)
+
+    def reject(why):
+        if _safe_remove(target):
+            raise Refused(why + "：已刪除檔案")
+        raise Refused(why + "：**檔案刪不掉（app 還開著它），留在 %s**，請使用者確認後刪除" % target)
+
+    verified = {"default_filename": bool(prof.get("verify_export_filename_contains_chat"))}
+    # 身分驗證 2a：只讀第一行比對；不符就刪檔、不再讀任何一行
     if prof.get("verify_export_first_line_contains_chat"):
-        with open(target, encoding="utf-8-sig") as f:
+        with open(target, encoding="utf-8-sig", errors="replace") as f:
             first = f.readline()
         if chat not in first:
-            os.remove(target)
-            raise Refused("匯出檔第一行不含指名對話名稱：已刪除檔案（沒有讀其他內容）")
-    with open(target, encoding="utf-8-sig") as f:
+            reject("匯出檔第一行不含指名對話名稱（沒有讀其他內容）")
+        verified["first_line"] = True
+    # 身分驗證 2b：不同發言者數 ≤ 標頭人數（只數、不輸出任何名字或內容）
+    sw = prof.get("verify_export_senders_within_members")
+    if sw:
+        members = EXPORT_CTX.get("members")
+        rx = re.compile(sw["line_re"])
+        senders = set()
+        with open(target, encoding="utf-8-sig", errors="replace") as f:
+            for line in f:
+                if rx.match(line):
+                    parts = line.rstrip("\r\n").split(" ")
+                    if len(parts) > sw["sender_field"] + 1:
+                        senders.add(parts[sw["sender_field"]])
+        if members is None:
+            reject("讀不到標頭人數，無法做存檔後的身分檢查")
+        if len(senders) > members:
+            reject("匯出檔的發言者數（%d）多於標頭人數（%d）：可能不是指名對話" % (len(senders), members))
+        verified["senders_within_members"] = {"senders": len(senders), "members": members}
+    with open(target, encoding="utf-8-sig", errors="replace") as f:
         n = sum(1 for _ in f)
     ledger(app, "export", True, chat=chat)
     out({"ok": True, "path": target, "bytes": os.path.getsize(target), "lines": n,
-         "verified": {"default_filename": True, "first_line": True},
+         "verified": verified,
          "saved_via": ("default-name-in-%s-then-moved" % moved_from) if moved_from else "typed-path",
          "dialog_folder_known": bool(dialog_folder)})
 
@@ -616,8 +682,10 @@ def _export_menu_popup(prof, win, snap, chat):
     """標頭的選單按鈕 → 彈出選單（獨立頂層視窗）→ 只點名稱完全等於預期項目的那一項（投遞訊息，不動游標）。"""
     if popup_menu is None or os.name != "nt":
         raise Refused("彈出選單路徑目前只支援 Windows")
-    if not header_ok(prof, snapshot(win, interactive=False), chat):
+    full = snapshot(win, interactive=False)
+    if not header_ok(prof, full, chat):
         raise Refused("目前開著的不是指名對話：先 open --chat 並確認標頭")
+    EXPORT_CTX["members"] = header_members(prof, full, chat)
     btn, bparents = find_node(snap, lambda n: n.get("role") == "button" and n.get("name") == prof["menu_button"])
     if not btn:
         raise Refused("找不到選單按鈕")
@@ -753,6 +821,9 @@ def main():
     except RuntimeError as e:
         ledger(app, sub, False, "error: " + str(e)[:200], arg(a, "--chat"))
         out({"ok": False, "error": str(e)}, 1)
+    except Exception as e:   # 任何意外都要回 JSON（真機曾在存檔後當掉、什麼都沒回報）
+        ledger(app, sub, False, "internal: %s" % type(e).__name__, arg(a, "--chat"))
+        out({"ok": False, "error": "internal: %s: %s" % (type(e).__name__, str(e)[:200])}, 1)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,13 @@ check("名稱重複 → 2（呼叫端會拒絕）", len(cg.match_chat(P, snap(du
 check("未開任何對話 → header_ok 為假", not cg.header_ok(P, s, "Group A"))
 check("標頭「Group A, 4人」→ header_ok 為真", cg.header_ok(P, snap("Group A, 4人"), "Group A"))
 check("標頭是別的對話 → header_ok 為假", not cg.header_ok(P, snap("Group A Ops, 3人"), "Group A"))
+# 存檔後的身分檢查要用標頭人數（真機：LINE 匯出檔裡沒有對話名稱）
+check("header_members：「Group A, 4人」→ 4", cg.header_members(P, snap("Group A, 4人"), "Group A") == 4)
+check("header_members：一對一（沒有人數）→ 2", cg.header_members(P, snap("Group A"), "Group A") == 2)
+check("header_members：沒開對話 → None", cg.header_members(P, s, "Group A") is None)
+check("header_members：別的對話的標頭不算 → None", cg.header_members(P, snap("Group A Ops, 3人"), "Group A") is None)
+check("LINE profile 不再要求首行含名稱、改用發言者數", not P.get("verify_export_first_line_contains_chat")
+      and P.get("verify_export_senders_within_members"))
 check("has_unread 解析「名稱, N人, 未讀數, …」", P["has_unread"]("Group A, 4人, 5, x, d") and not P["has_unread"]("Group A, 4人, hi, d"))
 s2 = snap("Group A, 4人")
 
