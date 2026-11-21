@@ -177,10 +177,16 @@ def managed_block(home, paths, checks=None, repo=None):
     def status(key, line_ok):
         if checks is None:
             return line_ok + "（⚠ 尚未驗證：先跑 doctor.py）"
-        c = checks.get(key, {})
-        if c.get("ok"):
+        c = checks.get(key)
+        if c and c.get("ok"):
             return line_ok
-        return "- ❌ %s 不可用：%s（修好後重跑 doctor）" % (key, c.get("error", "doctor 未通過"))
+        if key in _said:          # 同一項只說一次：第二行起整行省略
+            return None
+        _said.add(key)
+        if c is None:             # doctor 沒跑這項（例如 --skip-desktop）≠ 失敗
+            return "- ⚠ %s 未驗證（doctor 跳過；要用前先跑 `doctor.py`）" % key
+        return "- ❌ %s 不可用：%s（修好後重跑 doctor）" % (key, c.get("error") or "doctor 未通過")
+    _said = set()
     playbook = os.path.join(repo, "playbook") if repo else "（repo 的 playbook/，路徑見 config.json）"
     prof = os.path.join(home, "browser-profile")
     pol_mod = load_policy_mod()
@@ -214,7 +220,7 @@ def managed_block(home, paths, checks=None, repo=None):
         "只有「準備請使用者動手」或被「登入牆 / GUI-only / 安裝精靈」擋住時，才讀 skill `no-errands`。",
         MARK_E,
     ]
-    return "\n".join(lines)
+    return "\n".join(l for l in lines if l is not None)
 
 GUARD_TAG = "no-errands"
 

@@ -28,7 +28,7 @@ $v = (Get-Content "$repo\versions.json" -Raw -Encoding UTF8 | ConvertFrom-Json).
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'windows-arm64' } else { 'windows-x86_64' }
 $t = $v.targets.$arch
 if (-not $t) { Write-Error "versions.json has no uv entry for $arch"; exit 1 }
-$homeDir = if ($Rest -contains '--home') { $Rest[([array]::IndexOf($Rest, '--home') + 1)] } else { Join-Path $env:USERPROFILE '.no-errands' }
+$homeDir = if ($Rest -contains '--home') { $Rest[([array]::IndexOf($Rest, '--home') + 1)] } elseif ($env:NO_ERRANDS_HOME) { $env:NO_ERRANDS_HOME } else { Join-Path $env:USERPROFILE '.no-errands' }
 $bin = Join-Path $homeDir 'bin'
 New-Item -ItemType Directory -Force $bin | Out-Null
 $zip = Join-Path $env:TEMP 'ne-uv.zip'

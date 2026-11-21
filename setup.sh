@@ -20,7 +20,7 @@ for cand in python3 python; do
 done
 
 echo '找不到可用的 Python >= 3.9，下載 uv 單檔（user-scope）...'
-home_dir="${HOME}/.no-errands"
+home_dir="${NO_ERRANDS_HOME:-${HOME}/.no-errands}"
 prev=""
 for a in "$@"; do
     [ "$prev" = "--home" ] && home_dir="$a"
