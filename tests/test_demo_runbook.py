@@ -212,6 +212,19 @@ def main():
         json.dump(bd, open(bdp, "w", encoding="utf-8"), ensure_ascii=False)
         rc, o, _ = run(OUTBOX, "draft", "--service", "runbook", "--to", "localhost:8065", "--body-file", bdp)
         check("pattern 與卡片顯示的文字＋變數格式不一致 → 發件匣拒收", rc == 2 and "不一致" in o.get("error", ""), o)
+        bd = json.loads(json.dumps(doc))
+        s2b = [s for s in bd["sends"] if s["step"] == "s2"][0]
+        evil = "a)(?:.*)(?P<q>b"
+        s2b["inputs"][0]["vars"] = {"case_id": evil}
+        s2b["inputs"][0]["pattern"] = "/case\\ show\\ (?P<v_case_id_0>%s)" % evil
+        json.dump(bd, open(bdp, "w", encoding="utf-8"), ensure_ascii=False)
+        rc, o, _ = run(OUTBOX, "draft", "--service", "runbook", "--to", "localhost:8065", "--body-file", bdp)
+        check("變數格式會跳出群組（單獨不合法）→ 發件匣拒收", rc == 2 and "單獨合法" in o.get("error", ""), o)
+        s2b["inputs"][0]["vars"] = {"case_id": "(?P<x>C-\\w+)"}
+        s2b["inputs"][0]["pattern"] = "/case\\ show\\ (?P<v_case_id_0>(?P<x>C-\\w+))"
+        json.dump(bd, open(bdp, "w", encoding="utf-8"), ensure_ascii=False)
+        rc, o, _ = run(OUTBOX, "draft", "--service", "runbook", "--to", "localhost:8065", "--body-file", bdp)
+        check("變數格式自帶具名群組 → 發件匣拒收", rc == 2 and "具名群組" in o.get("error", ""), o)
         bd = json.loads(json.dumps(doc)); bd["sends"][0]["keys"] = ["Enter"]
         json.dump(bd, open(bdp, "w", encoding="utf-8"), ensure_ascii=False)
         rc, o, _ = run(OUTBOX, "draft", "--service", "runbook", "--to", "localhost:8065", "--body-file", bdp)
@@ -388,11 +401,123 @@ def main():
         calls = open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read()
         check("變數代入：s2 輸入的是 capture 到的編號", "/case show C-1234abcd" in calls)
 
-        # ---------- live 在 cue 步驟停下、resume 接著跑
-        rc, o, txt = rbj("live", rbp, "--approval", aid)
-        check("live 在 advance=cue 的 s2 前停下等講者", rc == 0 and (o.get("stopped") or {}).get("waiting_cue") == "s2", txt)
-        rc, o, txt = rbj("live", rbp, "--approval", aid, "--resume", o.get("run_dir") or "")
-        check("講者示意後 --resume 跑完", rc == 0 and o.get("steps_ok") == 3 and not o.get("stopped"), txt)
+        # ---------- 探查：找不到某個目標時，同一頁其餘目標先全部找一遍（只看不做）
+        pr = json.loads(json.dumps(RUNBOOK))
+        pr["steps"][1]["actions"][1]["target"]["names"] = ["不存在的按鈕"]
+        prp = os.path.join(rbdir, "probe.json"); json.dump(pr, open(prp, "w", encoding="utf-8"), ensure_ascii=False)
+        rbj("request-approval", prp)
+        st_ = json.loads(http(base + "api/state")[1])
+        pp = [d for d in st_["pending"] if json.loads(d["body"])["sends"][1]["clicks"][0]["name"] == "不存在的按鈕"][-1]
+        dl = (pp.get("diff_vs") or {}).get("lines") or []
+        check("卡片列出伺服器算的「與上次核准的差異」", any("新增點擊" in l and "不存在的按鈕" in l for l in dl)
+              and any("移除點擊" in l for l in dl), dl)
+        approve(pp["id"])
+        n_calls = len(open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines())
+        rc, o, txt = rbj("rehearse", prp, "--approval", pp["id"])
+        rj = json.load(open(os.path.join(o["run_dir"], "run.json"), encoding="utf-8")) if o.get("run_dir") else {}
+        probes = [x for s in rj.get("steps", []) for x in s["actions"] if x.get("phase") == "probe"]
+        check("找不到目標 → 同一頁其餘目標也探查過才停", rc == 1 and probes and probes[0]["ok"]
+              and probes[0]["used"]["name"] == "訊息", probes)
+        new_calls = open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines()[n_calls:]
+        check("探查只拍 snapshot，沒有填入或點擊", not any(json.loads(c)[0] in ("fill", "click", "press")
+                                                       for c in new_calls if json.loads(c)[0:1] and
+                                                       "show" in " ".join(json.loads(c))), new_calls[-5:])
+        rc, o, txt = rbj("request-approval", rbp)
+        st_ = json.loads(http(base + "api/state")[1])
+        same = [d for d in st_["pending"] if d["id"] == o["id"]][0]
+        last_ap = max((json.load(open(os.path.join(home, "outbox", d_, f), encoding="utf-8"))
+                       for d_ in ("approved", "revoked") for f in os.listdir(os.path.join(home, "outbox", d_))),
+                      key=lambda r: r.get("decided") or "")
+        check("沒帶建議值 → 沿用同一主機上次核准的次數", same.get("runs_default") == last_ap["approval"]["max_runs"]
+              and "沿用" in same.get("runs_why", ""), (same.get("runs_default"), same.get("runs_why"), last_ap["approval"]["max_runs"]))
+        run(OUTBOX, "withdraw", o["id"])
+        sg = json.loads(json.dumps(RUNBOOK)); sg["suggested_runs"] = 7; sg["suggested_runs_why"] = "排練與正式示範合計"
+        sgp = os.path.join(rbdir, "sg.json"); json.dump(sg, open(sgp, "w", encoding="utf-8"), ensure_ascii=False)
+        rc, o, _ = rbj("request-approval", sgp)
+        st_ = json.loads(http(base + "api/state")[1])
+        sgd = [d for d in st_["pending"] if d["id"] == o["id"]][0]
+        check("清單帶建議值 → 卡片預選它並附理由", sgd.get("runs_default") == 7 and sgd.get("runs_why") == "排練與正式示範合計",
+              (sgd.get("runs_default"), sgd.get("runs_why")))
+        (code, t), _ = approve(o["id"])
+        ap7 = json.load(open(os.path.join(home, "outbox", "approved", o["id"] + ".json"), encoding="utf-8"))["approval"]
+        check("使用者直接按核准（沒改）→ 採用預選的建議值", code == 200 and ap7["max_runs"] == 7, ap7)
+        http(base + "api/decide", {"id": o["id"], "action": "revoke", "key": key})
+        sg["suggested_runs"] = 11
+        json.dump(sg, open(sgp, "w", encoding="utf-8"), ensure_ascii=False)
+        rc, o, _ = rbj("request-approval", sgp)
+        check("建議值超出 1–10 → 發件匣拒收", rc == 2, o)
+
+        # ---------- live：引擎在背景跑、播放器／control 指令控制（暫停、繼續、下一步、走開後回到正確頁面、停止）
+        def now_of(rd):
+            try:
+                return json.load(open(os.path.join(rd, "now.json"), encoding="utf-8"))
+            except Exception:
+                return {}
+
+        def wait_for(rd, cond, t=30):
+            t0 = time.time()
+            while time.time() - t0 < t:
+                n = now_of(rd)
+                if cond(n):
+                    return n
+                time.sleep(0.2)
+            return now_of(rd)
+
+        lb = json.loads(json.dumps(RUNBOOK))
+        lb["steps"][0]["actions"].append({"do": "pause", "s": 3})
+        lb["steps"][0]["caption"] = [{"text": "第一句", "s": 2}, {"text": "第二句", "s": 3}]
+        lbp = os.path.join(rbdir, "live.json"); json.dump(lb, open(lbp, "w", encoding="utf-8"), ensure_ascii=False)
+        rc, o, txt = rbj("live", lbp, "--approval", aid, "--no-player")
+        rd = o.get("run_dir") or ""
+        check("live 立刻返回、引擎在背景", rc == 0 and o.get("engine_pid") and os.path.isdir(rd), txt)
+        n = wait_for(rd, lambda n: n.get("step_id") == "s1" and n.get("status") == "running")
+        check("now.json：進度、角色、字幕（多句＋秒數）", n.get("steps_total") == 3 and n.get("captions", [{}])[0].get("text") == "第一句", n)
+        t0 = time.time()                     # 等 s1 送出（Enter）之後、在它的 3 秒停頓裡暫停
+        while time.time() - t0 < 20 and '"Enter"' not in "".join(
+                open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines()[-6:]):
+            time.sleep(0.1)
+        rbj("control", rd, "pause")
+        n = wait_for(rd, lambda n: n.get("status") == "paused", 10)
+        open(os.path.join(home, "url-rb-demo_a.txt"), "w").write("http://localhost:8065/t/channels/elsewhere")
+        c0 = len(open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines())
+        time.sleep(4)
+        c1 = len(open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines())
+        check("暫停期間不再呼叫瀏覽器", n.get("status") == "paused" and c1 == c0, (n.get("status"), c0, c1))
+        rc, o, _ = rbj("status", rd)
+        check("status 指令看得到暫停", o.get("now", {}).get("status") == "paused", o)
+        rbj("control", rd, "resume")
+        n = wait_for(rd, lambda n: n.get("status") == "waiting_next", 30)
+        check("advance=cue 的 s2 在播放器上等「下一步」", n.get("step_id") == "s2" and n.get("status") == "waiting_next", n)
+        tail = open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines()[c1:]
+        check("講者暫停時點走 → 繼續前先回到這一步的網址", any(json.loads(c)[:2] == ["open", "http://localhost:8065/t/messages/@bot"]
+                                                     for c in tail), tail[:6])
+        rbj("control", rd, "next")
+        n = wait_for(rd, lambda n: n.get("status") in ("done", "failed"), 40)
+        time.sleep(1)
+        rj = json.load(open(os.path.join(rd, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rd, "run.json")) else {}
+        s1 = (rj.get("steps") or [{}])[0]
+        check("按下一步後跑完；暫停時間另記、不算進耗時", n.get("status") == "done" and len(rj.get("steps", [])) == 3
+              and s1.get("paused_s", 0) >= 3 and s1.get("dur_s", 99) < 9 and s1.get("returned_after_pause") == 1,
+              (n.get("status"), s1.get("paused_s"), s1.get("dur_s"), s1.get("returned_after_pause")))
+        rc, o, txt = rbj("live", lbp, "--approval", aid, "--no-player", "--step-mode")
+        rd2 = o.get("run_dir") or ""
+        n = wait_for(rd2, lambda n: n.get("status") == "waiting_next", 20)
+        check("逐步模式：第一步就等「下一步」", n.get("step_id") == "s1", n)
+        rbj("control", rd2, "stop")
+        t0 = time.time()
+        while time.time() - t0 < 20 and not os.path.exists(os.path.join(rd2, "run.json")):
+            time.sleep(0.3)
+        rj2 = json.load(open(os.path.join(rd2, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rd2, "run.json")) else {}
+        check("停止：乾淨結束並存檔", (rj2.get("stopped") or {}).get("user_stop") == "s1" and now_of(rd2).get("status") == "stopped", rj2.get("stopped"))
+        open(os.path.join(rbdir, "captions.txt"), "w", encoding="utf-8").write("s1 | 用文字檔改的字幕 | 4\n")
+        rc, o, txt = rbj("live", lbp, "--approval", aid, "--no-player", "--step-mode")
+        rd3 = o.get("run_dir") or ""
+        n = wait_for(rd3, lambda n: n.get("status") == "waiting_next", 20)
+        log3 = open(os.path.join(rd3, "engine.log"), encoding="utf-8", errors="replace").read()[-600:] if rd3 and os.path.exists(os.path.join(rd3, "engine.log")) else txt
+        check("字幕可用 captions.txt 覆寫（不用重新核准）", n.get("captions") == [{"text": "用文字檔改的字幕", "s": 4.0}], (n, log3))
+        rbj("control", rd3, "stop")
+        os.remove(os.path.join(rbdir, "captions.txt"))
+        time.sleep(2)
 
         # ---------- learn / freeze / apply
         rc, o, txt = rbj("learn", rbp)

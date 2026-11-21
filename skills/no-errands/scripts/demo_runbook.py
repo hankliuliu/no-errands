@@ -158,9 +158,13 @@ def sends_of(rb):
 
 def sends_doc(rb):
     s = sends_of(rb)
-    return {"kind": "no-errands-runbook-sends", "version": 1, "title": rb.get("title", ""),
-            "target": rb["target"]["host"].lower(), "runbook_sha256": rb_sha(rb), "days": rb.get("approval_days", 7),
-            "sends": s}
+    doc = {"kind": "no-errands-runbook-sends", "version": 1, "title": rb.get("title", ""),
+           "target": rb["target"]["host"].lower(), "runbook_sha256": rb_sha(rb), "days": rb.get("approval_days", 7),
+           "sends": s}
+    if rb.get("suggested_runs") is not None:                # 卡片預選的可執行次數（使用者仍可改）
+        doc["suggested_runs"] = rb["suggested_runs"]
+        doc["suggested_runs_why"] = rb.get("suggested_runs_why", "")
+    return doc
 
 
 def validate(rb):
@@ -213,10 +217,147 @@ def reset_sha(rb):
 
 # ---------------------------------------------------------------- 瀏覽器（一律經 neb）
 
+class StopDemo(Exception):
+    pass
+
+
+def _atomic_json(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def write_control(run_dir, **kw):
+    """播放器與 CLI 共用：更新 control.json（state=playing|paused|stopped、advance=auto|step、next_seq 遞增＝下一步）。"""
+    p = os.path.join(run_dir, "control.json")
+    try:
+        c = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        c = {"state": "playing", "advance": "auto", "next_seq": 0}
+    if kw.pop("next", False):
+        c["next_seq"] = int(c.get("next_seq", 0)) + 1
+        if c.get("state") == "paused":
+            c["state"] = "playing"
+    c.update(kw)
+    c["ts"] = time.time()
+    _atomic_json(p, c)
+    return c
+
+
+class Control:
+    """引擎端的控制通道。安全點：每個動作之前、等待迴圈每一輪、每步開始前。
+    暫停期間不呼叫 neb；等待預算與計時凍結（回傳暫停秒數讓呼叫端扣掉）。"""
+
+    def __init__(self, run_dir, advance="auto"):
+        self.dir = run_dir
+        if not os.path.exists(os.path.join(run_dir, "control.json")):
+            write_control(run_dir, state="playing", advance=advance, next_seq=0)
+        self.next_seen = int(self.read().get("next_seq", 0))
+        self.now = {}
+
+    def read(self):
+        try:
+            return json.load(open(os.path.join(self.dir, "control.json"), encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def publish(self, **kw):
+        self.now.update(kw)
+        self.now["updated"] = time.time()
+        try:
+            _atomic_json(os.path.join(self.dir, "now.json"), self.now)
+        except OSError:
+            pass
+
+    def gate(self, on_resume=None):
+        t0, prev = None, None
+        while True:
+            c = self.read()
+            if c.get("state") == "stopped":
+                raise StopDemo()
+            if c.get("state") != "paused":
+                break
+            if t0 is None:
+                t0, prev = time.time(), self.now.get("status")
+                self.publish(status="paused")
+            time.sleep(0.25)
+        if t0 is None:
+            return 0.0
+        self.next_seen = max(self.next_seen, int(self.read().get("next_seq", 0)))
+        self.publish(status=prev if prev not in (None, "paused") else "running")
+        if on_resume:
+            on_resume()
+        return time.time() - t0
+
+    def step_mode(self):
+        return self.read().get("advance") == "step"
+
+    def wait_next(self):
+        self.publish(status="waiting_next")
+        t0 = time.time()
+        while True:
+            c = self.read()
+            if c.get("state") == "stopped":
+                raise StopDemo()
+            if int(c.get("next_seq", 0)) > self.next_seen:
+                self.next_seen = int(c["next_seq"])
+                break
+            time.sleep(0.25)
+        self.publish(status="running")
+        return time.time() - t0
+
+
+class NoControl:
+    def gate(self, on_resume=None):
+        return 0.0
+
+    def publish(self, **kw):
+        pass
+
+    def step_mode(self):
+        return False
+
+    def wait_next(self):
+        return 0.0
+
+
+def screen_size():
+    """邏輯解析度（與瀏覽器 --window-* 的單位一致）。沒有 tk 時退回 1920×1080。"""
+    try:
+        import tkinter
+        r = tkinter.Tk(); r.withdraw()
+        w, h = r.winfo_screenwidth(), r.winfo_screenheight()
+        r.destroy()
+        return w, h
+    except Exception:
+        return 1920, 1080
+
+
+def layout_of(rb):
+    """看得到的模式：瀏覽器視窗與字幕列的位置。side＝帳號並排（預設），stack＝疊放（輪到誰誰在前，盡力而為）。"""
+    lay = dict(rb.get("layout") or {})
+    sw, sh = lay.get("screen") or screen_size()
+    bar_h = int(lay.get("bar_h", 170))
+    task = int(lay.get("taskbar_h", 48))
+    accts = list(rb["accounts"])
+    win_h = sh - bar_h - task
+    wins = {}
+    for i, a in enumerate(accts):
+        if lay.get("mode", "side") == "stack" or len(accts) == 1:
+            wins[a] = (0, 0, sw, win_h)
+        else:
+            w = sw // len(accts)
+            wins[a] = (i * w, 0, w, win_h)
+    return {"windows": wins, "bar": (0, win_h, sw, bar_h), "screen": (sw, sh), "mode": lay.get("mode", "side")}
+
+
 class Browser:
     def __init__(self, rb, headed, log):
         self.rb, self.headed, self.log = rb, headed, log
         self.started = set()
+        self.cur_url = {}
+        self.layout = layout_of(rb) if headed else None
 
     def prof(self, acct):
         p = self.rb["accounts"][acct]["profile"]
@@ -229,6 +370,8 @@ class Browser:
         g = ["--session", self.sess(acct), "--profile", self.prof(acct)]
         if self.headed:
             g.append("--headed")
+            x, y, w, h = self.layout["windows"][acct]
+            g += ["--args", "--window-position=%d,%d\n--window-size=%d,%d" % (x, y, w, h)]
         extra = ["--runbook-approval", approval, "--step", str(step)] if approval else []
         p = subprocess.run([sys.executable, NEB] + g + list(cmd) + extra, capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=timeout,
@@ -240,10 +383,26 @@ class Browser:
         if acct in self.started:
             return
         self.neb(acct, "close")
-        w, h = (self.rb.get("viewport") or [1400, 900])
         self.neb(acct, "open", "about:blank")
-        self.neb(acct, "set", "viewport", str(w), str(h))
+        if not self.headed:                        # 看得到的模式用真的視窗大小，不另外模擬 viewport
+            w, h = (self.rb.get("viewport") or [1400, 900])
+            self.neb(acct, "set", "viewport", str(w), str(h))
         self.started.add(acct)
+
+    def return_to(self, acct):
+        """暫停後繼續：講者可能點走或捲動；不在最近一次開啟的網址路徑就先回去。回傳是否有回去。"""
+        want = self.cur_url.get(acct)
+        if not want or acct not in self.started:
+            return False
+        import urllib.parse
+        rc, cur, _ = self.neb(acct, "get", "url")
+        cur = (cur.strip().splitlines() or [""])[-1].strip()
+        p = lambda u: (urllib.parse.urlparse(u).path or "/").rstrip("/") or "/"
+        if p(cur) != p(want):
+            self.neb(acct, "open", want)
+            time.sleep(1.5)
+            return True
+        return False
 
     def close_all(self):
         for acct in list(self.started):
@@ -280,7 +439,7 @@ class Browser:
                     h = hits[0] if target.get("pick") == "first" else hits[-1]
                     return h["ref"], {"scope": sc, "name": nm, "n_hits": len(hits)}
             tried.append({"scope": sc, "n_items": len(items),
-                          "near": [i["role"] + ":" + i["name"][:30] for i in items
+                          "near": [i["role"] + ":" + i["name"][:80] for i in items
                                    if any(n[:2] in i["name"] for n in names_of(target))][:6]})
         return None, tried
 
@@ -309,18 +468,29 @@ def subst(text, vars_):
     return VAR_RE.sub(lambda m: str(vars_.get(m.group(1), m.group(0))), text)
 
 
-def run_action(br, rb, st, act, vars_, approval, rec):
-    """回 (ok, info)。info 只含結構資訊，不含輸入文字。"""
+def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
+    """回 (ok, info)。info 只含結構資訊，不含輸入文字。耗時（ms）不含暫停時間（另記 paused_ms）。"""
+    ctl = ctl or NoControl()
     acct, d = st["account"], act["do"]
+    resume = lambda: rec.setdefault("returned_after_pause", 0) if not br.return_to(acct) else \
+        rec.__setitem__("returned_after_pause", rec.get("returned_after_pause", 0) + 1)
+    pre = ctl.gate(on_resume=resume)                        # 安全點：動作之前
+    paused = 0.0                                            # 動作進行中（等待迴圈裡）的暫停
     t0 = time.time()
     info = {"do": d}
     if d == "open":
-        rc, o, e = br.neb(acct, "open", rb["target"]["base_url"].rstrip("/") + subst(act["url"], vars_))
+        url = rb["target"]["base_url"].rstrip("/") + subst(act["url"], vars_)
+        rc, o, e = br.neb(acct, "open", url)
         ok = rc == 0
-        if not ok:
+        if ok:
+            br.cur_url[acct] = url
+        else:
             info["error"] = err_of(rc, o)
     elif d == "pause":
-        time.sleep(float(act.get("s", 1)))
+        end = float(act.get("s", 1))
+        while time.time() - t0 - paused < end:
+            time.sleep(0.2)
+            paused += ctl.gate(on_resume=resume)
         ok = True
     elif d in ("fill", "click", "check"):
         ref, used = br.find(acct, act["target"])
@@ -353,9 +523,14 @@ def run_action(br, rb, st, act, vars_, approval, rec):
                 if (d == "wait_text" and found) or (d == "expect_absent" and not found and body):
                     ok, hit = True, {"scope": sc, "text_index": texts.index(found[0]) if found else None}
                     break
-            if ok or time.time() - t0 >= budget:
+            waited = time.time() - t0 - paused
+            if ok or waited >= budget:
                 break
+            if waited > 3:
+                ctl.publish(status="waiting_system", waited_s=int(waited))
             time.sleep(float(act.get("poll_s", 1.5)))
+            paused += ctl.gate(on_resume=resume)           # 安全點：等待迴圈每一輪；暫停時預算凍結
+        ctl.publish(status="running", waited_s=0)
         info["used"] = hit
         info["budget_s"] = budget
         if not ok:
@@ -378,32 +553,73 @@ def run_action(br, rb, st, act, vars_, approval, rec):
             info["error"] = "畫面上沒有預期的元素"
     else:
         ok, info["error"] = False, "未知動作"
-    info["ok"], info["ms"] = ok, int((time.time() - t0) * 1000)
+    info["ok"], info["ms"] = ok, int((time.time() - t0 - paused) * 1000)
+    if pre + paused:
+        info["paused_ms"] = int((pre + paused) * 1000)
     return ok, info
 
 
-def run_step(br, rb, st, vars_, approval, shots_dir):
+def captions_of(rb, st):
+    """字幕：captions.txt（使用者用文字檔改；每行「步驟id | 句子 | 秒數(選填)」）> 步驟的 caption > say。
+    字幕不在送出清單裡，改了不用重新核准。"""
+    p = os.path.join(rb["_dir"], "captions.txt")
+    if os.path.exists(p):
+        rows = []
+        for line in open(p, encoding="utf-8-sig"):
+            parts = [x.strip() for x in line.rstrip("\n").split("|")]
+            if len(parts) >= 2 and parts[0] == st["id"] and parts[1]:
+                rows.append({"text": parts[1], "s": float(parts[2]) if len(parts) > 2 and parts[2] else 6})
+        if rows:
+            return rows
+    c = st.get("caption")
+    if isinstance(c, str):
+        return [{"text": c, "s": 6}]
+    if isinstance(c, list):
+        return [x if isinstance(x, dict) else {"text": str(x), "s": 6} for x in c]
+    return [{"text": st.get("say", ""), "s": 6}]
+
+
+def run_step(br, rb, st, vars_, approval, shots_dir, ctl=None):
+    ctl = ctl or NoControl()
     acct = st["account"]
     br.ensure(acct)
     rec = {"id": st["id"], "account": acct, "start": now_s(), "actions": [], "recovered": False,
            "fallback_used": False}
     t0 = time.time()
 
-    def attempt(actions, tag):
+    def attempt(actions, tag, base=0):
         for i, act in enumerate(actions):
-            ok, info = run_action(br, rb, st, act, vars_, approval, rec)
-            info["i"], info["phase"] = i, tag
+            ok, info = run_action(br, rb, st, act, vars_, approval, rec, ctl)
+            info["i"], info["phase"] = base + i, tag
             rec["actions"].append(info)
             if not ok and act["do"] in ("fill", "click", "check", "snapshot_ok", "capture"):
                 time.sleep(2)                                   # 一次就地重試（畫面可能還在更新）
-                ok, info2 = run_action(br, rb, st, act, vars_, approval, rec)
-                info2["i"], info2["phase"], info2["retry"] = i, tag, True
+                ok, info2 = run_action(br, rb, st, act, vars_, approval, rec, ctl)
+                info2["i"], info2["phase"], info2["retry"] = base + i, tag, True
                 rec["actions"].append(info2)
                 if ok:
                     rec["recovered"] = True
             if not ok and not act.get("optional"):
+                if act["do"] in ("fill", "click", "check", "snapshot_ok") and "找不到" in str(info.get("error", "")):
+                    probe(actions[i + 1:], tag, base + i + 1)
                 return False, i
         return True, None
+
+    def probe(rest, tag, start):
+        """同一頁（直到下一個 open）其餘的目標先全部找一遍：只拍 snapshot，不填、不點、不送任何東西。
+        讓一個表單的名稱問題一次排練就全部浮出來（learn 會讀這些紀錄）。"""
+        for j, act in enumerate(rest):
+            if act["do"] == "open":
+                break
+            if act["do"] not in ("fill", "click", "check", "snapshot_ok"):
+                continue
+            ref, used = br.find(acct, act["target"])
+            ent = {"do": act["do"], "phase": "probe", "of": tag, "i": start + j,
+                   "ok": bool(ref), "ms": 0}
+            ent["used" if ref else "tried"] = used
+            if not ref:
+                ent["error"] = "探查：找不到目標"
+            rec["actions"].append(ent)
 
     ok, failed_at = attempt(st.get("actions") or [], "main")
     if not ok and st.get("fallback"):
@@ -412,13 +628,14 @@ def run_step(br, rb, st, vars_, approval, shots_dir):
         if fok:
             acts = st.get("actions") or []
             if st.get("resume_at") is not None:          # 退路已取代前面的動作：從指定位置接著跑
-                rest = acts[int(st["resume_at"]):]
+                off = int(st["resume_at"])
             else:
-                rest = acts[failed_at:] if st.get("retry_from_failed", True) else acts
-            ok, _ = attempt(rest, "after_fallback")
+                off = failed_at if st.get("retry_from_failed", True) else 0
+            ok, _ = attempt(acts[off:], "after_fallback", off)
             rec["recovered"] = ok
     rec["ok"] = ok
-    rec["dur_s"] = round(time.time() - t0, 1)
+    rec["paused_s"] = round(sum(x.get("paused_ms", 0) for x in rec["actions"]) / 1000.0, 1)
+    rec["dur_s"] = round(time.time() - t0 - rec["paused_s"], 1)      # 不含暫停
     if shots_dir:
         p = os.path.join(shots_dir, "%s.png" % st["id"])
         br.neb(acct, "screenshot", p)
@@ -460,14 +677,44 @@ def execute(rb, mode, a):
     ok, why = check_approval(rb, aid)
     if not ok:
         out({"ok": False, "error": why, "next": "請使用者在發件匣核准劇本（demo_runbook.py request-approval）"}, 3)
+    advance = "step" if "--step-mode" in a else "auto"
+    if mode == "live" and "--foreground" not in a:
+        # 正式示範：引擎與播放器是獨立的背景行程，指令立刻返回；講者用播放器（或 control 指令）控制
+        root = runs_root(rb, persist)
+        run_dir = os.path.join(root, time.strftime("%Y%m%d-%H%M%S-") + mode)
+        os.makedirs(run_dir)
+        write_control(run_dir, state="playing", advance=advance, next_seq=0)
+        passthru = [x for k in ("--from", "--to") if arg(a, k) for x in (k, arg(a, k))]
+        kw = {"stdin": subprocess.DEVNULL, "env": dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8")}
+        if os.name == "nt":
+            kw["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000      # DETACHED|NEW_GROUP|NO_WINDOW
+        else:
+            kw["start_new_session"] = True
+        log = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")
+        eng = subprocess.Popen([sys.executable, os.path.abspath(__file__), "live", rb["_path"], "--approval", aid,
+                                "--foreground", "--run-dir", run_dir] + passthru, stdout=log, stderr=log, **kw)
+        pl = None
+        if "--no-player" not in a:
+            pk = dict(kw)
+            if os.name == "nt":
+                pk["creationflags"] = 0x00000008 | 0x00000200              # 播放器要有視窗
+            pl = subprocess.Popen([sys.executable, os.path.join(HERE, "demo_player.py"), run_dir], stdout=log,
+                                  stderr=log, **pk)
+        out({"ok": True, "mode": "live", "run_dir": run_dir, "engine_pid": eng.pid,
+             "player_pid": pl.pid if pl else None,
+             "control": "demo_runbook.py control %s pause|resume|next|stop|auto|step" % run_dir,
+             "status": "demo_runbook.py status %s" % run_dir,
+             "next": "講者用播放器控制；agent 不必守在前景（出錯時再看 status）"})
     resume = arg(a, "--resume")
     if resume:
         run_dir = resume
         state = json.load(open(os.path.join(run_dir, "run.json"), encoding="utf-8"))
     else:
-        root = runs_root(rb, persist)
-        run_dir = os.path.join(root, time.strftime("%Y%m%d-%H%M%S-") + mode)
-        os.makedirs(run_dir)
+        run_dir = arg(a, "--run-dir")
+        if not run_dir:
+            root = runs_root(rb, persist)
+            run_dir = os.path.join(root, time.strftime("%Y%m%d-%H%M%S-") + mode)
+        os.makedirs(run_dir, exist_ok=True)
         state = {"mode": mode, "runbook_sha256": rb_sha(rb), "approval": aid, "started": now_s(),
                  "persist": persist, "vars": {}, "steps": [], "next": 0}
     shots = os.path.join(run_dir, "shots")
@@ -478,16 +725,25 @@ def execute(rb, mode, a):
     hi = ids.index(arg(a, "--to")) + 1 if arg(a, "--to") in ids else len(steps)
     i = max(state["next"], lo)
     br = Browser(rb, headed=(mode == "live"), log=None)
+    ctl = Control(run_dir, advance=advance)
+    ctl.publish(steps_total=hi - lo, status="running", mode=mode, title=rb.get("title", ""),
+                layout=br.layout and {"bar": br.layout["bar"], "mode": br.layout["mode"]},
+                planb_dir=os.path.join(rb["_dir"], "planb"))
     stopped = None
     try:
         while i < hi:
             st = steps[i]
-            if mode == "live" and st.get("advance") == "cue" and state.get("cued") != st["id"]:
-                state.update(next=i, cued=st["id"])
-                stopped = {"waiting_cue": st["id"], "say": st.get("say", "")}
-                break
-            print(json.dumps({"step": st["id"], "say": st.get("say", "")}, ensure_ascii=False), flush=True)
-            rec = run_step(br, rb, st, state["vars"], aid, shots)
+            role = (rb["accounts"].get(st["account"]) or {}).get("role") or st["account"]
+            ctl.publish(step_index=i - lo + 1, step_id=st["id"], account=st["account"], role=role,
+                        captions=captions_of(rb, st), on_fail=st.get("on_fail", ""), status="running", waited_s=0)
+            cue_wait = 0.0
+            if mode == "live" and (st.get("advance") == "cue" or ctl.step_mode()):
+                cue_wait = ctl.wait_next()                     # 播放器「下一步」或 control next
+            ctl.gate()
+            print(json.dumps({"step": st["id"]}, ensure_ascii=False), flush=True)
+            rec = run_step(br, rb, st, state["vars"], aid, shots, ctl)
+            if cue_wait:
+                rec["cue_wait_s"] = round(cue_wait, 1)
             state["steps"].append(rec)
             i += 1
             state["next"] = i
@@ -495,6 +751,8 @@ def execute(rb, mode, a):
                 planb = os.path.join(rb["_dir"], "planb", "%s.png" % st["id"])
                 stopped = {"failed": st["id"], "planb": planb if os.path.exists(planb) else None,
                            "fallback_text": st.get("on_fail", "")}
+                ctl.publish(status="failed", captions=[{"text": st.get("on_fail") or "這一步沒有完成", "s": 60}],
+                            planb=stopped["planb"])
                 if mode == "rehearse" and "--continue" in a:
                     stopped = None
                     continue
@@ -502,25 +760,53 @@ def execute(rb, mode, a):
             if mode == "rehearse" and persist and rec.get("shot"):
                 os.makedirs(os.path.join(rb["_dir"], "planb"), exist_ok=True)
                 shutil.copyfile(os.path.join(shots, rec["shot"]), os.path.join(rb["_dir"], "planb", rec["shot"]))
+    except StopDemo:
+        stopped = {"user_stop": steps[min(i, len(steps) - 1)]["id"]}
+        ctl.publish(status="stopped")
     finally:
-        if mode != "live" or not stopped or "failed" in (stopped or {}):
+        if mode != "live" or not stopped or "user_stop" in (stopped or {}):
             br.close_all()
         state["ended"] = now_s()
         state["stopped"] = stopped
         state["vars_seen"] = sorted(state["vars"])           # 變數名；值（例如案件編號）也留在本機紀錄
         with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=1)
-    summary = {"ok": stopped is None or "waiting_cue" in stopped, "mode": mode, "run_dir": run_dir if persist else None,
+        if not stopped:
+            ctl.publish(status="done")
+    summary = {"ok": stopped is None or "user_stop" in stopped, "mode": mode, "run_dir": run_dir if persist else None,
                "steps_run": len(state["steps"]), "steps_ok": sum(1 for s in state["steps"] if s["ok"]),
                "recovered": [s["id"] for s in state["steps"] if s.get("recovered")],
                "failed": [s["id"] for s in state["steps"] if not s["ok"]],
-               "durations": {s["id"]: s["dur_s"] for s in state["steps"]}, "stopped": stopped}
+               "durations": {s["id"]: s["dur_s"] for s in state["steps"]},
+               "paused_s": round(sum(s.get("paused_s", 0) for s in state["steps"]), 1), "stopped": stopped}
     if not persist:
         shutil.rmtree(run_dir, ignore_errors=True)
         summary["note"] = "demo.persist=off：一次性執行，紀錄已刪除"
-    if stopped and "waiting_cue" in stopped:
-        summary["next"] = "等講者示意；之後執行：demo_runbook.py live <runbook> --approval %s --resume %s" % (aid, run_dir)
     out(summary, 0 if summary["ok"] else 1)
+
+
+def control_cli(a):
+    """demo_runbook.py control <run 資料夾> pause|resume|next|stop|auto|step；status <run 資料夾>。"""
+    run_dir = a[1]
+    if not os.path.isdir(run_dir):
+        out({"ok": False, "error": "找不到這個執行資料夾"}, 2)
+    if a[0] == "status":
+        try:
+            now = json.load(open(os.path.join(run_dir, "now.json"), encoding="utf-8"))
+        except Exception:
+            now = {}
+        try:
+            c = json.load(open(os.path.join(run_dir, "control.json"), encoding="utf-8"))
+        except Exception:
+            c = {}
+        out({"ok": True, "now": {k: now.get(k) for k in ("step_index", "steps_total", "step_id", "role", "status",
+                                                         "waited_s")}, "control": c})
+    cmd = a[2] if len(a) > 2 else ""
+    m = {"pause": {"state": "paused"}, "resume": {"state": "playing"}, "next": {"next": True},
+         "stop": {"state": "stopped"}, "auto": {"advance": "auto"}, "step": {"advance": "step"}}
+    if cmd not in m:
+        out({"ok": False, "error": "要 pause|resume|next|stop|auto|step"}, 2)
+    out({"ok": True, "control": write_control(run_dir, **m[cmd])})
 
 
 # ---------------------------------------------------------------- preflight
@@ -606,14 +892,14 @@ def learn(rb, a):
     runs = runs[-int(arg(a, "--runs", "5")):]
     if not runs:
         out({"ok": False, "error": "還沒有紀錄"}, 1)
-    obs = {}   # (step, phase, i) -> {"ms": [...], "used": [...], "fail": n}
+    obs = {}   # (step, phase, i) -> {"ms": [...], "used": [...], "fail": n, "near": set()}
     issues = []
     for r in runs:
         st_ = json.load(open(os.path.join(root, r, "run.json"), encoding="utf-8"))
         for s in st_["steps"]:
             for act in s["actions"]:
-                k = (s["id"], "actions" if act["phase"] in ("main", "after_fallback") else "fallback", act["i"])
-                o = obs.setdefault(k, {"ms": [], "used": [], "fail": 0, "ok": 0})
+                k = (s["id"], "fallback" if act["phase"] == "fallback" or act.get("of") == "fallback" else "actions", act["i"])
+                o = obs.setdefault(k, {"ms": [], "used": [], "fail": 0, "ok": 0, "near": []})
                 if act["ok"]:
                     o["ok"] += 1
                     o["ms"].append(act["ms"])
@@ -621,6 +907,10 @@ def learn(rb, a):
                         o["used"].append(act["used"])
                 else:
                     o["fail"] += 1
+                    for t in act.get("tried") or []:
+                        for n in t.get("near") or []:
+                            if n not in o["near"]:
+                                o["near"].append(n)
             if not s["ok"] or s.get("recovered"):
                 errs = [x.get("error", "") for x in s["actions"] if not x["ok"]]
                 issues.append({"step": s["id"], "run": r, "recovered": s.get("recovered"), "errors": errs[:3]})
@@ -640,6 +930,20 @@ def learn(rb, a):
                 changes.append({"path": base + ".budget_s", "old": cur, "new": new,
                                 "why": "觀測 %d 次成功，最長 %.1f 秒；失敗 %d 次" % (len(o["ms"]), hi, o["fail"]),
                                 "needs_reapproval": False})
+        if act["do"] in ("fill", "click", "check", "snapshot_ok") and o["fail"] and not o["ok"] and o["near"]:
+            # 找不到目標：頁面上同角色、以候選名稱開頭的元素 → 提議加入候選名稱（送出內容改變 → 需重新核准）
+            t = act["target"]
+            names = names_of(t)
+            found = []
+            for n in o["near"]:
+                role, _, nm = n.partition(":")
+                if (not t.get("role") or role == t["role"]) and any(nm.startswith(b.rstrip(" *")) for b in names) \
+                        and nm not in names and nm not in found:
+                    found.append(nm)
+            if found:
+                changes.append({"path": base + ".target.names", "old": names, "new": found + names,
+                                "why": "排練中找不到目標；頁面上相近的元素：%s" % "、".join(found),
+                                "needs_reapproval": act["do"] != "snapshot_ok"})
         if act["do"] in ("fill", "click", "check", "snapshot_ok") and o["used"]:
             t = act["target"]
             # 名稱順序：最常成功的放前面
@@ -769,6 +1073,8 @@ def main():
         print(__doc__)
         sys.exit(2)
     sub = a[0]
+    if sub in ("control", "status"):
+        control_cli(a)
     rb = load_rb(a[1])
     if sub == "validate":
         e = validate(rb)

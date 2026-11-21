@@ -155,6 +155,13 @@ def runbook_days(doc):
 def rebuild_pattern(shown, vars_):
     """由「顯示用文字」（變數寫成 «名稱»）與各變數格式重建 neb 會用的正規表示式；
     卡片顯示的就是這兩樣，所以清單裡的 pattern 必須與重建結果完全相同（防止顯示與強制不一致）。"""
+    for n, p in vars_.items():
+        # 每個格式要能單獨編譯、不含具名群組：單獨合法的格式放進群組就跳不出去（擋 `a)(?:.*)(?P<q>b` 這類）
+        try:
+            if re.compile(str(p)).groupindex:
+                raise ValueError("變數 %s 的格式不能含具名群組" % n)
+        except re.error:
+            raise ValueError("變數 %s 的格式不是單獨合法的正規表示式" % n)
     parts, pos = [], 0
     for k, m in enumerate(re.finditer(r"«([A-Za-z_]\w*)»", shown)):
         if m.group(1) not in vars_:
@@ -174,6 +181,13 @@ def parse_runbook_body(body):
         raise ValueError("送出清單是空的")
     if not doc.get("target") or not doc.get("runbook_sha256"):
         raise ValueError("缺 target 或 runbook_sha256")
+    if doc.get("suggested_runs") is not None:
+        try:
+            ok = 1 <= int(doc["suggested_runs"]) <= 10
+        except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            raise ValueError("建議的可執行次數必須是 1–10")
     for s in doc["sends"]:
         if not s.get("account") or not s.get("step"):
             raise ValueError("每一筆送出都要有 step 與 account")
@@ -199,6 +213,84 @@ def resolve_runbook(rec, pol):
     accts = sorted({s.get("account", "?") for s in doc["sends"]})
     return {"label": "示範劇本「%s」→ %s（帳號：%s；%d 個送出步驟）" % (
         doc.get("title", ""), doc["target"], "、".join(accts), len(doc["sends"]))}
+
+
+def runbook_diff(new_doc, old_doc):
+    """伺服器自己算的「與上次核准的差異」（只是顯示，不改強制內容；不採用 agent 的說明）。"""
+    def items(s):
+        out = set()
+        for i in s.get("inputs") or []:
+            out.add(("輸入", i.get("at"), "／".join(i.get("fields") or []),
+                     i["text"] if i.get("text") is not None else "«%s»" % i.get("shown")))
+        for k in s.get("keys") or []:
+            out.add(("按鍵", k.get("at"), k.get("key"), ""))
+        for c in s.get("clicks") or []:
+            out.add(("點擊", c.get("at"), c.get("name"), ""))
+        return out
+    old = {str(s["step"]): s for s in old_doc.get("sends") or []}
+    new = {str(s["step"]): s for s in new_doc.get("sends") or []}
+    lines = []
+    if str(old_doc.get("target")).lower() != str(new_doc.get("target")).lower():
+        lines.append("目標主機改變：%s → %s" % (old_doc.get("target"), new_doc.get("target")))
+    for sid in new:
+        if sid not in old:
+            lines.append("新增步驟 %s（帳號 %s，%d 個輸入、%d 個點擊、%d 個按鍵）" % (
+                sid, new[sid].get("account"), len(new[sid].get("inputs") or []), len(new[sid].get("clicks") or []),
+                len(new[sid].get("keys") or [])))
+    for sid in old:
+        if sid not in new:
+            lines.append("移除步驟 %s" % sid)
+    texts_changed = False
+    for sid in new:
+        if sid not in old:
+            continue
+        a, b = items(old[sid]), items(new[sid])
+        if old[sid].get("account") != new[sid].get("account"):
+            lines.append("步驟 %s 換帳號：%s → %s" % (sid, old[sid].get("account"), new[sid].get("account")))
+        for x in sorted(b - a):
+            same_field_text = any(y[0] == "輸入" and y[1] == x[1] and y[3] == x[3] for y in a) if x[0] == "輸入" else False
+            if x[0] == "輸入" and same_field_text:
+                lines.append("步驟 %s：欄位名稱候選改為「%s」（輸入文字沒變）" % (sid, x[2]))
+            else:
+                if x[0] == "輸入":
+                    texts_changed = True
+                lines.append("步驟 %s：新增%s %s「%s」%s" % (sid, x[0], x[1], x[2], ("← " + x[3]) if x[3] else ""))
+        for x in sorted(a - b):
+            if x[0] == "輸入" and any(y[0] == "輸入" and y[1] == x[1] and y[3] == x[3] for y in b):
+                continue
+            if x[0] == "輸入":
+                texts_changed = True
+            lines.append("步驟 %s：移除%s %s「%s」" % (sid, x[0], x[1], x[2]))
+    if not lines:
+        lines.append("送出內容與上次核准的完全相同")
+    elif not texts_changed and not any(l.startswith(("新增步驟", "目標主機")) for l in lines):
+        lines.append("所有輸入文字都沒有變")
+    return lines
+
+
+def last_approved_runbook(target, exclude_id=None):
+    best = None
+    for st in ("approved", "revoked"):
+        for r in list_state(st):
+            if r.get("service") == "runbook" and r.get("id") != exclude_id \
+                    and str(r.get("to", "")).lower() == str(target).lower():
+                if best is None or (r.get("decided") or "") > (best.get("decided") or ""):
+                    best = r
+    return best
+
+
+def runs_default(rec):
+    """卡片上要選的東西預設就是建議值：清單的建議 > 同一目標主機上次核准的次數（沿用）> 3。回 (次數, 理由)。"""
+    try:
+        bd = json.loads(rec["body"])
+    except Exception:
+        bd = {}
+    if bd.get("suggested_runs") is not None:
+        return int(bd["suggested_runs"]), str(bd.get("suggested_runs_why") or "agent 的建議")[:200]
+    prev = last_approved_runbook(rec.get("to"), rec.get("id"))
+    if prev and (prev.get("approval") or {}).get("max_runs"):
+        return int(prev["approval"]["max_runs"]), "沿用上次核准的次數"
+    return 3, "預設"
 
 
 def runbook_approval(aid, now=None):
@@ -331,6 +423,7 @@ table.rb{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}table.r
 table.rb td.c{white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace}.var{color:var(--warn)}
 .agent{color:var(--mute);font-size:12px;font-style:italic;font-family:system-ui,sans-serif;margin-top:4px;white-space:normal}
 .st-approved{color:var(--ok)}.st-revoked{color:var(--no)}
+.diff{border:2px solid var(--acc);border-radius:8px;padding:8px 12px;margin:8px 0;font-size:14px}.diff ul{margin:4px 0 0;padding-left:20px}
 </style></head><body>
 <header><h1>📮 不求人發件匣</h1>
 <nav><a href="#pending" id="t-p" class="on">待核准<span class="badge" id="cnt">0</span></a><a href="#history" id="t-h">歷史</a></nav></header>
@@ -350,9 +443,10 @@ function rbTable(d){let doc;try{doc=JSON.parse(d.body)}catch(e){return '<div cla
     (s.clicks||[]).forEach(k=>{at.add(k.at);c.push(`在 ${esc(k.at)}｜按「${esc(k.name)}」`)});
     return `<tr><td>${esc(s.step)}</td><td>${esc(s.account)}</td><td class="c">${[...at].map(esc).join("\n")}</td><td class="c">${c.join("\n")}<div class="agent">agent 的說明（不是強制內容）：${esc(s.kind)}｜${esc(s.where)}${(s.vary||[]).length?"｜"+esc(s.vary.join("；")):""}</div></td></tr>`}).join("");
   return `<div class="note">目標主機：<b>${esc(doc.target)}</b>｜清單雜湊 ${esc(String(doc.runbook_sha256).slice(0,12))}｜核准後 <b>${esc(d.days_effective)}</b> 天內有效（伺服器上限 7 天），可在「歷史」撤銷。執行時只允許下表「在哪個網址路徑、對哪個欄位、輸入什麼、按什麼」，任何不同都會被擋下、需重新核准。變數值另有硬上限：不含空白與換行、最長 64 字。</div>
+  ${d.diff_vs?`<div class="diff"><b>與上次核准（${esc(d.diff_vs.decided||d.diff_vs.id)}）的差異</b>（伺服器比對兩份清單算出；完整清單在下面）<ul>${d.diff_vs.lines.map(l=>`<li>${esc(l)}</li>`).join("")}</ul></div>`:'<div class="note">這個目標主機沒有核准過的劇本：請看完整清單。</div>'}
   <div class="agent">劇本標題（agent 寫的）：${esc(doc.title)}</div>
   <table class="rb"><tr><th>步驟</th><th>帳號</th><th>網址路徑（強制）</th><th>確切內容（強制）</th></tr>${rows}</table>
-  <div class="row">可執行次數：<select class="runs">${[1,2,3,5,10].map(n=>`<option value="${n}"${n===3?" selected":""}>${n} 次</option>`).join("")}</select><span class="note">每個送出動作超過這個次數就要重新核准（排練＋正式示範合計）</span></div>`}
+  <div class="row">可執行次數：<select class="runs">${[1,2,3,4,5,6,7,8,9,10].map(n=>`<option value="${n}"${n===(d.runs_default||3)?" selected":""}>${n} 次</option>`).join("")}</select><span class="note">已預選建議值（${esc(d.runs_why||"預設")}）；每個送出動作超過這個次數就要重新核准。通常不用改，直接核准即可。</span></div>`}
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function tab(){return location.hash==="#history"?"history":"pending"}
@@ -476,6 +570,14 @@ class Handler(BaseHTTPRequestHandler):
                                 r["days_effective"] = runbook_days(parse_runbook_body(r["body"]))
                             except Exception:
                                 r["days_effective"] = RUNBOOK_DAYS
+                            prev = last_approved_runbook(r.get("to"), r.get("id"))
+                            r["runs_default"], r["runs_why"] = runs_default(r)
+                            if prev:
+                                try:
+                                    r["diff_vs"] = {"id": prev["id"], "decided": prev.get("decided"),
+                                                    "lines": runbook_diff(json.loads(r["body"]), json.loads(prev["body"]))}
+                                except Exception as e:
+                                    r["diff_vs"] = {"id": prev["id"], "lines": ["（無法比較：%s）" % str(e)[:80]]}
                     rows.append(r)
                 out[st] = rows
             return self._json(200, out)
@@ -528,9 +630,9 @@ class Handler(BaseHTTPRequestHandler):
                 doc = parse_runbook_body(rec["body"])
                 days = runbook_days(doc)
                 try:
-                    max_runs = int(req.get("max_runs") or 3)
+                    max_runs = int(req.get("max_runs") or runs_default(rec)[0])
                 except (TypeError, ValueError):
-                    max_runs = 3
+                    max_runs = 0
                 if not 1 <= max_runs <= 10:
                     return self._json(400, {"ok": False, "error": "可執行次數必須是 1–10"})
                 exp_ts = time.time() + days * 86400
