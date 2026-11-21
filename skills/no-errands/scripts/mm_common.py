@@ -65,7 +65,8 @@ def conf(token_file, url_override=None):
     url = next((kv[k] for k in URL_KEYS if kv.get(k)), "") or (url_override or "")
     tok = next((kv[k] for k in TOKEN_KEYS if kv.get(k)), "")
     if not url or not tok:
-        raise RuntimeError("Mattermost 設定檔格式無法辨識（需要伺服器網址與 token 兩個欄位）")
+        raise RuntimeError("缺少 Mattermost 伺服器網址或 token：請使用者提供伺服器網址，寫進政策檔 mattermost.url"
+                           "（不要從其他檔案推測——把 token 送到猜出來的主機等於外洩）")
     if not url.startswith("http"):
         url = "https://" + url
     return url.rstrip("/"), tok
@@ -84,6 +85,8 @@ def get(base, tok, path, params=None):
             return json.loads(r.read().decode("utf-8") or "null")
     except urllib.error.HTTPError as e:
         raise RuntimeError("Mattermost GET %s → HTTP %d" % (path.split("?")[0], e.code)) from None
+    except (urllib.error.URLError, OSError) as e:
+        raise RuntimeError("Mattermost GET %s → 連線失敗（%s）" % (path.split("?")[0], type(getattr(e, "reason", e)).__name__)) from None
 
 
 def resolve_target(base, tok, to):

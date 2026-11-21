@@ -33,25 +33,25 @@ ad close-app <App.exe>                  # 收尾
   或用 --window-id 鎖定自己開的視窗）。
 - 收尾只關自己開的東西；殺程序用 PID/參數指紋。
 
-## 會不會打擾使用者：實測表（Windows 11，2026-11-21，`tests/n4_noninterference.py`）
+## 會不會打擾使用者：實測表（Windows 11 本機 + GitHub Actions windows-latest，2026-11-21）
 
-量法：全程每 50ms 記錄前景視窗 handle 與游標位置（不記視窗標題）。視窗 A 以 `WM_CHAR` 持續收字
-（每 100ms 一字、共 200 字），同時對視窗 B（假聊天）反覆 locate/open/read/截圖/匯出/close。
+保證的是**不注入鍵盤滑鼠**；「前景絕不改變」**不是**保證。量法：每 50ms 記錄前景視窗 handle 與游標
+（不記標題）。**正對照（CI，刻意 SetForegroundWindow + SendInput + SetCursorPos）通過**：量測工具確實抓得到干擾。
 
-| 動作 | 改變前景 | 移動游標 | 備註 |
+| 動作 | 注入鍵鼠 | 改變前景 | 備註 |
 |---|---|---|---|
-| `snapshot` / `click`（語意 press）/ `get` / `read` | 否 | 否 | 視窗 A 收到 200/200 字，完全一致 |
-| `screenshot --window-id` | 否 | 否 | |
-| chat_guard `export`（含系統另存新檔對話框） | 否 | 否 | 目標視窗未被啟用時，對話框也不會取得前景（假視窗實測；真實 app 待驗） |
-| `launch calc`（從背景程序啟動新 app） | 否 | 否 | Windows 前景鎖：新視窗不會搶走使用者正在用的視窗 |
+| `snapshot` / `get` / `read` / `screenshot --window-id` | 否 | 否 | |
+| 語意 `click`（UIA press）、chat_guard `open`/`close`/`export` | 否 | **視系統前景鎖而定** | 本機早上兩輪量到 0 次；下午同一套 B3 連三輪在 open/close 時前景變成目標視窗；真實 LINE 第一次點清單項目也被拉到前景。差別推測是 Windows 前景鎖（使用者多久沒操作等）。chat_guard 每次操作前後比對前景，輸出 `foreground_taken` |
+| 系統另存新檔對話框 | 否 | 視目標視窗是否已在前景 | |
+| `launch`（從背景程序啟動新 app） | 否 | 本機否（前景鎖）／CI 是 | CI runner 沒有使用者視窗，前景鎖不起作用 |
+| `minimize --window-id` 目標視窗 | 否 | 把前景**還給**原本的視窗 | 實測 3 次都回到使用者原本的視窗（z-order 下一個若是我們自己的測試視窗則會落在那裡） |
 | 關閉自己開的視窗（點該視窗的關閉鈕） | 否 | 否 | 不要用 `close-app` 按程序名關：會波及使用者自己開的同名 app |
 | agent-browser headless open/snapshot/click/screenshot/close | 否 | 否 | |
 | 發件匣 `draft`（背景模式，不開頁面） | 否 | 否 | 觀看模式才會用預設瀏覽器開頁面（預期會搶焦點） |
 | `--headed` 系列、`focus` / `focus-window` / `hover` / `drag` / `mouse-*` | **是** | **是** | `ned` 在背景模式直接拒絕 focus/type/hover/drag |
 
-限制：這次量測期間前景從頭到尾沒變過，**沒有跑「刻意搶焦點」的正對照**，所以量測工具的
-靈敏度是以 Win32 API 的行為推定，不是實測。視窗 A 的輸入是直接投遞到它的文字框，
-不是真的使用者打字（為了不在使用者用電腦時搶走他的前景）。
+**測試與示範本身也會打擾人**：會開視窗的檢查（doctor 桌面項、假聊天、60 秒導覽）先問使用者現在方便嗎；
+預設把 GUI 測試放到 CI。
 
 **即興手段才是干擾來源**：沒有工具時，受測 agent 會自己寫 `SetForegroundWindow`、
 `SetCursorPos`/`mouse_event`/`SendInput` 與全螢幕截圖（INC-2）。用 `ned`/chat_guard 的語意操作就不需要這些。

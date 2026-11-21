@@ -39,3 +39,9 @@
 - 已讀上界：`GET /api/v4/channels/{id}/members/{user_id}` 的 `last_viewed_at`（單位待實測）。
 - `since` 參數：回「modified since」、上限 1000、不保證連續 → 增量要自己補洞。
 - 旁證：實驗室 context-gather 以 PAT + 純 GET 同步數月，未出現頻道被標已讀的副作用。
+
+### 讀貼文會不會動已讀？（2026-11-21 實測）
+不會。依據：對 3 個使用者**從未開過**的頻道（`last_viewed_at = 0`）用 `GET /api/v4/channels/{id}/posts`
+讀最近 30 則，前後各以 `GET /channels/{id}/members/{user_id}` 讀成員紀錄：`last_viewed_at`、`msg_count`
+都沒有變。會更新已讀的是明確的 `POST /channels/members/{user_id}/view`（`mm_ro` 發不出 POST）。
+限制：只測了 3 個頻道、一台伺服器；Mattermost 版本若改行為要重測。
