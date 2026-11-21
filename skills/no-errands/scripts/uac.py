@@ -12,7 +12,9 @@ import json, os, subprocess, sys, time
 
 HANDOFF = ("Windows 跳出了「使用者帳戶控制」確認視窗（螢幕會變暗、中間一個對話框）。這一步只有你能按："
            "確認上面寫的程式是我剛剛要安裝/執行的那一個，再按「是」；不認得就按「否」。"
-           "按完不用跟我說，我偵測到視窗消失就會繼續。")
+           "按完不用跟我說，我偵測到視窗消失就會繼續。（大約 2 分鐘沒人按，Windows 會自動當成「否」。）")
+# 本機實測（2026-11-22）：沒人按時提示約 120 秒後自動消失、提權指令沒有執行（等同按「否」）。
+AUTO_CANCEL_S = 115
 
 
 def uac_prompt():
@@ -38,7 +40,10 @@ def main():
         t0 = time.time()
         while time.time() - t0 < to:
             if not uac_prompt():
-                print(json.dumps({"cleared": True, "waited_s": round(time.time() - t0, 1)})); return
+                w = round(time.time() - t0, 1)
+                print(json.dumps({"cleared": True, "waited_s": w, "likely_timed_out": w >= AUTO_CANCEL_S,
+                                  "note": "視窗消失 ≠ 核准：按「否」或約 2 分鐘沒人按都會消失。用提權動作的結果（檔案、服務、版本號）判斷有沒有成功。"},
+                                 ensure_ascii=False)); return
             time.sleep(1)
         print(json.dumps({"cleared": False, "waited_s": to, "next": "逾時：保留現場，結束回合並告訴使用者"})); return
 
