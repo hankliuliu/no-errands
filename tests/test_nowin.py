@@ -25,8 +25,11 @@ def check(n, c, d=""):
 
 import nowin  # noqa: E402
 if os.name == "nt":
-    check("add_flag 加上 CREATE_NO_WINDOW", nowin.add_flag({}).get("creationflags") == 0x08000000)
-    check("add_flag 不覆蓋呼叫者自己的旗標", nowin.add_flag({"creationflags": 0x8}).get("creationflags") == 0x8)
+    check("父程序沒有主控台 → 加 CREATE_NO_WINDOW", nowin.add_flag({}, console=False).get("creationflags") == 0x08000000)
+    check("父程序有主控台 → 不加（子程序沿用主控台、輸出不會不見）", "creationflags" not in nowin.add_flag({}, console=True))
+    check("不覆蓋呼叫者自己的旗標", nowin.add_flag({"creationflags": 0x8}, console=False).get("creationflags") == 0x8)
+    check("背景啟動旗標是 NEW_PROCESS_GROUP|NO_WINDOW、不含 DETACHED", nowin.BACKGROUND_FLAGS == 0x08000200
+          and not nowin.BACKGROUND_FLAGS & 0x8)
 else:
     check("非 Windows：add_flag 不動參數", nowin.add_flag({}) == {})
 

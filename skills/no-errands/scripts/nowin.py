@@ -1,26 +1,52 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Windows：子程序一律不開主控台視窗（純 stdlib）。
+"""Windows：子程序不彈出主控台視窗（純 stdlib）。這是全專案唯一的機制。
 
-為什麼：agent 的工具呼叫常常跑在沒有主控台的程序裡；這時每啟動一個命令列程式（agent-browser、agent-desktop、
-powershell、tasklist…），Windows 11 都會替它開一個終端機視窗、跑完就關——使用者看到的就是「視窗一直彈出」
-（2026-11-22 使用者回報）。neb 每個指令就要呼叫兩次，所以特別明顯。
+為什麼：沒有主控台的程序（分離啟動的伺服器、背景測試、排程工作）每啟動一個主控台程式（agent-browser、agent-desktop、
+powershell、tasklist…），Windows 都會給它一個新的主控台；預設終端機是 Windows Terminal 的機器上，那就是一個看得見、
+會搶前景的視窗（2026-11-22 使用者回報「視窗一直彈出」，實測 20 秒 15 個）。
 
-用法：在會開子程序的腳本最上面 `import nowin`。之後所有 subprocess.Popen／run／check_output 在沒有自己指定
-creationflags 時，都會加上 CREATE_NO_WINDOW。這個旗標只影響主控台程式；有視窗的 GUI 程式照常顯示。
-已經自己指定 creationflags 的呼叫（例如發件匣伺服器的 DETACHED_PROCESS）不動。
+規則：
+1. `import nowin` 之後，所有 subprocess 在**父程序沒有主控台**、且呼叫者沒有自己指定 creationflags 時，加上 CREATE_NO_WINDOW。
+   父程序有主控台時不加：子程序直接沿用父程序的主控台，本來就不會彈窗；加了反而會讓沒擷取的輸出跑到新的隱藏主控台而不見。
+2. 獨立存活的背景程序用 `popen_background()`：Windows 上是 NEW_PROCESS_GROUP|CREATE_NO_WINDOW——**不要用 DETACHED_PROCESS**。
+   DETACHED 讓程序本身沒有主控台（而且 DETACHED 時 NO_WINDOW 不生效），之後它的子孫只要有一個沒帶旗標就會彈窗；
+   NO_WINDOW 則給它一個「有主控台但沒有視窗」的主控台，子孫會繼承這個隱藏主控台（另一位執行手實測發現）。
 """
 import os
 import subprocess
 
 CREATE_NO_WINDOW = 0x08000000
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+BACKGROUND_FLAGS = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
 
 
-def add_flag(kw):
-    """回傳加了 CREATE_NO_WINDOW 的 kwargs（呼叫者自己給了非 0 的 creationflags 就不動）。"""
+def has_console():
+    """目前程序有沒有接上主控台（包括隱藏的）。沒有的話，它的主控台子程序會彈出新視窗。"""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        return ctypes.windll.kernel32.GetConsoleCP() != 0
+    except Exception:
+        return False
+
+
+def add_flag(kw, console=None):
+    """父程序沒有主控台、且呼叫者沒給 creationflags 時，加上 CREATE_NO_WINDOW。"""
     if os.name == "nt" and not kw.get("creationflags"):
-        kw = dict(kw, creationflags=CREATE_NO_WINDOW)
+        if not (has_console() if console is None else console):
+            kw = dict(kw, creationflags=CREATE_NO_WINDOW)
     return kw
+
+
+def popen_background(cmd, **kw):
+    """獨立存活的背景程序（例如發件匣伺服器）：Windows 用 NEW_PROCESS_GROUP|NO_WINDOW（不用 DETACHED），其他平台開新 session。"""
+    if os.name == "nt":
+        kw["creationflags"] = BACKGROUND_FLAGS
+    else:
+        kw.setdefault("start_new_session", True)
+    return subprocess.Popen(cmd, **kw)
 
 
 # NE_NOWIN_DISABLE=1 只給 CI 的正對照用：關掉修正，證明 tests/test_nowin.py 真的抓得到彈窗

@@ -458,14 +458,10 @@ def ensure_server(pol):
                        "（例如 8766）再重跑；草稿已保存，不會遺失。" % (port, policy.path(HOME)))
     log = os.path.join(BOX, "server.log")
     os.makedirs(BOX, exist_ok=True)
-    kw = {}
-    if os.name == "nt":
-        kw["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED|NEW_GROUP|NO_WINDOW
-    else:
-        kw["start_new_session"] = True
+    # 背景伺服器：NEW_PROCESS_GROUP|NO_WINDOW（不用 DETACHED——DETACHED 讓它沒有主控台，子孫會彈窗；見 nowin.py）
     with open(log, "a", encoding="utf-8") as lf:
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), "serve"], stdin=subprocess.DEVNULL,
-                         stdout=lf, stderr=lf, env=dict(os.environ, NO_ERRANDS_HOME=HOME), **kw)
+        nowin.popen_background([sys.executable, os.path.abspath(__file__), "serve"], stdin=subprocess.DEVNULL,
+                               stdout=lf, stderr=lf, env=dict(os.environ, NO_ERRANDS_HOME=HOME))
     for _ in range(50):
         time.sleep(0.1)
         if ping(pol):
