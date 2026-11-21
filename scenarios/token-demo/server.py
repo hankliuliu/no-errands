@@ -51,6 +51,9 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         f = self._form()
+        if ISSUED:
+            with open(ISSUED + ".posts", "a") as fh:
+                fh.write("%s authed=%s\n" % (self.path, self._authed()))
         if self.path == "/login":
             if f.get("user") == "demo" and f.get("pass") == "demo123":
                 sid = secrets.token_hex(16); SESS.add(sid)

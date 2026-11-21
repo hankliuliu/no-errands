@@ -55,8 +55,16 @@ def main():
             for what in ("url", "title"):
                 g = subprocess.run([ab] + sess + ["get", what], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
                 steps.append("page-%s=%s" % (what, (g.stdout.strip().splitlines() or [""])[-1][:80]))
-            # 重試改用在欄位裡按 Enter 送出表單（CDP 送到 headless 頁面，不是系統輸入）
-            b("open", base + "/tokens"); b("wait", "#create"); b("fill", "#desc", "no-errands"); b("press", "Enter"); b("wait", "#new-token")
+            # 換送出方式（都是 CDP 送到 headless 頁面，不是系統輸入）；記下哪一種成功——macOS runner 上 click 與 Enter 曾都沒送出
+            for how in (["press", "Enter"], ["find", "role", "button", "click", "--name", "Create token"],
+                        ["eval", "document.querySelector('form').requestSubmit(); 'submitted'"]):
+                b("open", base + "/tokens"); b("wait", "#create"); b("fill", "#desc", "no-errands"); b(*how)
+                if b("wait", "#new-token").returncode == 0:
+                    steps.append("submitted-via=" + how[0]); break
+            try:
+                steps.append("server-posts=" + " | ".join(l.strip() for l in open(issued + ".posts")))
+            except OSError:
+                steps.append("server-posts=none")
         # 3) 讀一次 token，直接寫進設定檔；不印出、不經過對話
         cfg = os.path.join(td, ".env")
         open(cfg, "w").write("OTHER=keep\n")
