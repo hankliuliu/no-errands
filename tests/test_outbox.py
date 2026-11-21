@@ -201,6 +201,22 @@ def main():
         check("8 草稿保留在待核准", o.get("saved") is True and
               os.path.exists(os.path.join(busy_home, "outbox", "pending", o.get("id", "x") + ".json")))
 
+        # 10. 有上限的等待與 stop_polling
+        d6, _ = draft("等待測試")
+        for _ in range(3):
+            s, _ = cli(env, "status", d6["id"])
+        check("10 60 秒內前 3 次 status 沒有 stop_polling", not s.get("stop_polling"), str(s))
+        s, _ = cli(env, "status", d6["id"])
+        check("10 第 4 次 status 附 stop_polling 與結束回合提示", s.get("stop_polling") is True and "結束回合" in s.get("next", ""), str(s))
+        t0 = time.time()
+        w, _ = cli(env, "wait", d6["id"], "--timeout", "2")
+        check("10 wait 逾時回 pending 與結束回合", w.get("state") == "pending" and w.get("waited", 0) >= 2
+              and "結束回合" in w.get("next", "") and time.time() - t0 < 15, str(w))
+        p6 = pending(d6["id"])
+        http(base + "api/decide", {"id": d6["id"], "action": "reject", "reason": "x", "key": key, "rev": p6["rev"]})
+        t0 = time.time()
+        w, _ = cli(env, "wait", d6["id"], "--timeout", "30")
+        check("10 已有結果時 wait 立刻回", w.get("state") == "rejected" and time.time() - t0 < 10, str(w))
         o, rc = cli(env, "send", d3["id"])
         check("9 沒有 send 子指令", rc != 0 and not o.get("ok"), str(o))
     finally:

@@ -5,11 +5,13 @@
 agent 想傳訊息時只能「起草」；草稿出現在固定的本機頁面，使用者看過、可修改、按核准後，
 由**本伺服器程序**呼叫送出轉接器。agent 沒有送出的子指令。
 
-agent 可用的子指令（只有這兩個）：
+agent 可用的子指令（只有這三個；沒有 send）：
   outbox.py draft --service <fake|mattermost> --to <對象> --body-file <檔> --why "<來由>"
       → 草稿寫進 ~/.no-errands/outbox/pending/，確保伺服器在跑，回 {id, url}
   outbox.py status <id>
-      → pending | sent | rejected（附使用者的退回原因）
+      → pending | sent | rejected（附使用者的退回原因）；60 秒內查同一 id 超過 3 次會附 stop_polling
+  outbox.py wait <id> [--timeout 秒]
+      → 有上限（120 秒）的等待；一有結果就回，逾時回 pending 與「現在結束回合」
 
 人或安裝程式用的：
   outbox.py serve            # 前景啟動伺服器（draft 會自動在背景啟動它）
@@ -520,15 +522,15 @@ def cmd_draft(a):
     _out({"ok": True, "id": rec["id"], "url": url_of(pol), "server": "running", "page_opened": opened,
           "next": ("頁面已在使用者的瀏覽器開啟（觀看模式）。" if opened else
                    "告訴使用者：草稿在發件匣頁面等他核准（給上面的網址）。") +
-                  "你不要開啟或操作那個頁面。然後就結束回合，不要在前景等核准（最多輪詢約 60 秒）；環境支援背景任務才掛背景監看 `outbox.py status %s`。" % rec["id"]})
+                  "你不要開啟或操作那個頁面。最多等一次 `outbox.py wait %s`（上限 120 秒），沒有結果就結束回合；"
+                  "不要自己寫迴圈反覆查詢。" % rec["id"]})
 
 
-def cmd_status(a):
-    if len(a) < 2:
-        _out({"ok": False, "error": "用法：outbox.py status <id>"}, 2)
-    st, rec = find(a[1])
-    if not st:
-        _out({"ok": False, "error": "找不到這個草稿 id"}, 1)
+STOP_NEXT = "現在結束回合；使用者核准或退回後再繼續（不要在前景反覆查詢）"
+WAIT_CAP = 120
+
+
+def _status_obj(st, rec):
     out = {"ok": True, "id": rec["id"], "state": st}
     if st == "rejected":
         out["reason"] = rec.get("reject_reason", "")
@@ -537,7 +539,58 @@ def cmd_status(a):
         out["decided"] = rec.get("decided")
     if st == "pending" and rec.get("last_error"):
         out["last_error"] = rec["last_error"]
+    return out
+
+
+def _poll_count(draft_id):
+    """記錄 status 呼叫時間；回傳最近 60 秒內對同一 id 的次數。"""
+    p = os.path.join(BOX, "status-calls.json")
+    now = time.time()
+    try:
+        calls = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        calls = {}
+    lst = [t for t in calls.get(draft_id, []) if now - t < 60] + [now]
+    calls = {k: v for k, v in calls.items() if k == draft_id or (v and now - v[-1] < 600)}
+    calls[draft_id] = lst[-20:]
+    try:
+        json.dump(calls, open(p, "w", encoding="utf-8"))
+    except Exception:
+        pass
+    return len(lst)
+
+
+def cmd_status(a):
+    if len(a) < 2:
+        _out({"ok": False, "error": "用法：outbox.py status <id>"}, 2)
+    st, rec = find(a[1])
+    if not st:
+        _out({"ok": False, "error": "找不到這個草稿 id"}, 1)
+    out = _status_obj(st, rec)
+    if st == "pending" and _poll_count(rec["id"]) > 3:
+        out.update(stop_polling=True, next=STOP_NEXT)
     _out(out)
+
+
+def cmd_wait(a):
+    """有上限的等待（最多 120 秒）：一有結果就回；逾時回 pending 與「結束回合」。"""
+    if len(a) < 2:
+        _out({"ok": False, "error": "用法：outbox.py wait <id> [--timeout 秒(<=120)]"}, 2)
+    try:
+        limit = min(WAIT_CAP, max(1, int(_arg(a, "--timeout", str(WAIT_CAP)))))
+    except ValueError:
+        limit = WAIT_CAP
+    t0 = time.time()
+    while True:
+        st, rec = find(a[1])
+        if not st:
+            _out({"ok": False, "error": "找不到這個草稿 id"}, 1)
+        if st != "pending" or time.time() - t0 >= limit:
+            out = _status_obj(st, rec)
+            if st == "pending":
+                out.update(waited=int(time.time() - t0), next=STOP_NEXT)
+            _out(out)
+        time.sleep(1)
 
 
 def main():
@@ -548,6 +601,8 @@ def main():
         cmd_draft(a)
     elif a[0] == "status":
         cmd_status(a)
+    elif a[0] == "wait":
+        cmd_wait(a)
     elif a[0] == "serve":
         serve()
     elif a[0] == "url":
