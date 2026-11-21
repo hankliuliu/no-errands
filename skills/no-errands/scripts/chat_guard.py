@@ -25,6 +25,10 @@ import hashlib, json, os, re, shutil, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import policy  # noqa: E402
 import idle  # noqa: E402
+try:
+    import popup_menu  # noqa: E402  (Windows)
+except Exception:
+    popup_menu = None
 
 HOME = policy.HOME
 LEDGER = os.path.join(HOME, "chat-guard-ledger.jsonl")
@@ -44,6 +48,9 @@ PROFILES = {
         "forbidden_names": {"message input", "Send", "Emoji"},
         "forbidden_roles_main": {"textfield"},          # 主視窗裡的任何文字框都不碰
         "menu_path": ["Chat", "Export chat"],
+        "export_via": "popup",                 # 像 LINE：標頭的「More」按鈕 → 彈出選單（獨立頂層視窗）→ Save chat
+        "menu_button": "More",
+        "popup_export_items": ("Save chat",),
         "close_button": "Close chat",
         "dialog_title": "Save chat history",
         "dialog_filename_ids": {"1001", "1148"},          # 系統檔案對話框的檔名欄 automation id
@@ -55,7 +62,47 @@ PROFILES = {
         "verify_export_filename_contains_chat": True,
         "verify_export_first_line_contains_chat": True,
     },
+    # LINE 桌面版（Windows、LINE 26.x、Qt）——結構實測 2026-11-21，見 playbook/apps/line-desktop.md
+    "line": {
+        "window_title": "LINE",
+        "list_role": "listbox",                # 聊天清單 = 主視窗裡的 listbox，項目是 button
+        "item_role": "button",
+        "chat_name": lambda packed: packed.split(", ", 1)[0],
+        "has_unread": lambda packed: bool(re.match(r"^[^,]+, \d+人, \d+, ", packed)),
+        "unread_format_known": False,          # 非白名單對話一律不開
+        "header_toolbar": True,                # 開著的對話：右側 7 顆按鈕的工具列，第一顆 = 「名稱, N人」
+        "raises_foreground": True,
+        "forbidden_names": {"開始通話", "關閉提醒", "傳送檔案", "Keep筆記", "截取畫面", "截取畫面選項", "貼圖",
+                            "以個別視窗開啟", "記事本", "搜尋聊天", "建立聊天室", "聊天室排序", "收起聊天視窗"},
+        "forbidden_roles_main": {"textfield"},
+        "export_via": "popup",
+        "menu_button": "其他功能",
+        "popup_export_items": ("儲存聊天", "儲存聊天記錄", "Save chat", "Save chat history"),
+        "dialog_titles": ("另存新檔", "Save As", "儲存", "Save"),
+        "dialog_filename_ids": {"1001", "1148"},
+        "dialog_save_ids": {"1"},
+        "dialog_cancel_ids": {"2"},
+        "overwrite_confirm_titles": ("確認另存新檔", "Confirm Save As"),
+        "confirm_no_ids": {"CommandButton_7", "7"},
+        "verify_export_filename_contains_chat": True,
+        "verify_export_first_line_contains_chat": True,
+        "close_button": None,                  # 收尾 = 交還（縮小視窗）
+    },
 }
+
+
+def header_ok(prof, snap, chat):
+    """目前開著的就是指名對話？（只比對、不輸出名稱）"""
+    if prof.get("header_name"):
+        return find_node(snap, lambda n: n.get("name") == prof["header_name"](chat))[0] is not None
+    if prof.get("header_toolbar"):
+        pat = re.compile(re.escape(chat) + r"(, \d+人)?$")
+        for node, _ in walk(snap["tree"]):
+            kids = [k for k in node.get("children") or [] if k.get("role") == "button"]
+            if node.get("role") != "listbox" and len(kids) >= 6 and pat.match(kids[0].get("name") or ""):
+                return True
+        return False
+    return True
 
 
 class Refused(Exception):
@@ -144,11 +191,16 @@ def snapshot(win, interactive=True):
     return ad(*args)
 
 
+def _is_list(prof, node):
+    if prof.get("list_role"):
+        return node.get("role") == prof["list_role"]
+    return node.get("name") == prof.get("list_container")
+
+
 def list_items(prof, snap):
     items = []
     for node, parents in walk(snap["tree"]):
-        if node.get("role") == prof["item_role"] and any(
-                p.get("name") == prof["list_container"] for p in parents):
+        if node.get("role") == prof["item_role"] and parents and _is_list(prof, parents[-1]):
             items.append(node)
     return items
 
@@ -181,14 +233,16 @@ def assert_allowed(prof, action, node, parents, ctx):
         raise Refused("主視窗的文字輸入框一律不碰（不代發）")
     if action != "click":
         raise Refused("主視窗只允許語意點擊（不輸入任何文字）")
-    in_list = any(p.get("name") == prof["list_container"] for p in parents)
+    in_list = any(_is_list(prof, p_) for p_ in parents)
     if in_list:
         if ctx.get("allow") == "list-target" and prof["chat_name"](name) == ctx.get("target_chat"):
             return
         raise Refused("清單中非目標項目：不可點")
     if ctx.get("allow") == "menu" and role == "menuitem" and name in prof["menu_path"]:
         return
-    if ctx.get("allow") == "close" and role == "button" and name == prof["close_button"]:
+    if ctx.get("allow") == "close" and role == "button" and name == prof.get("close_button"):
+        return
+    if ctx.get("allow") == "menu-button" and role == "button" and name == prof.get("menu_button"):
         return
     raise Refused("這個元素不在本步驟的允許清單內")
 
@@ -316,6 +370,9 @@ def cmd_open(app, prof, chat, expect, pol):
             raise Refused("這個對話有未讀訊息，未讀保護開啟中，不開")
     _, parents = find_node(snap, lambda n: n is node)
     guarded(prof, "click", node, parents, {"zone": "main", "allow": "list-target", "target_chat": chat})
+    time.sleep(0.8)
+    if not header_ok(prof, snapshot(win), chat):
+        raise Refused("開啟後確認不到開著的是指名對話（標頭不符或沒有開成）：停手，不再點任何東西")
     ledger(app, "open", True, "whitelist" if white else "fingerprint", chat)
     out({"ok": True, "opened": True, "via": "whitelist" if white else "fingerprint"})
 
@@ -347,8 +404,10 @@ def cmd_export(app, prof, dest, chat=None):
     os.makedirs(dest, exist_ok=True)
     win = find_window(prof)
     snap = snapshot(win)
-    # 1) 選單 → 匯出
-    for step in prof["menu_path"]:
+    if prof.get("export_via") == "popup":
+        _export_menu_popup(prof, win, snap, chat)
+    # 1) 選單 → 匯出（選單列版）
+    for step in ([] if prof.get("export_via") == "popup" else prof["menu_path"]):
         node, parents = find_node(snap, lambda n, s=step: n.get("role") == "menuitem" and n.get("name") == s)
         if not node:
             raise Refused("找不到選單項目（第 %d 層）" % (prof["menu_path"].index(step) + 1))
@@ -364,11 +423,11 @@ def cmd_export(app, prof, dest, chat=None):
         if not last:
             snap = snapshot(win)
     # 2) 等系統另存新檔對話框
+    titles = tuple(prof.get("dialog_titles") or ()) + ((prof["dialog_title"],) if prof.get("dialog_title") else ())
     dlg = None
     for _ in range(25):
         time.sleep(0.2)
-        cands = [w for w in ad("list-windows") if w.get("title") == prof["dialog_title"]
-                 and w.get("pid") == win.get("pid")]
+        cands = [w for w in ad("list-windows") if w.get("title") in titles and w.get("pid") == win.get("pid")]
         if len(cands) == 1:
             dlg = cands[0]
             break
@@ -522,9 +581,51 @@ def cmd_export(app, prof, dest, chat=None):
          "saved_via": "default-folder-then-moved" if moved_from else "typed-path"})
 
 
+def _export_menu_popup(prof, win, snap, chat):
+    """標頭的選單按鈕 → 彈出選單（獨立頂層視窗）→ 只點名稱完全等於預期項目的那一項（投遞訊息，不動游標）。"""
+    if popup_menu is None or os.name != "nt":
+        raise Refused("彈出選單路徑目前只支援 Windows")
+    if not header_ok(prof, snap, chat):
+        raise Refused("目前開著的不是指名對話：先 open --chat 並確認標頭")
+    btn, bparents = find_node(snap, lambda n: n.get("role") == "button" and n.get("name") == prof["menu_button"])
+    if not btn:
+        raise Refused("找不到選單按鈕")
+    pid = win.get("pid")
+    before = popup_menu.visible_hwnds(pid)
+    guarded(prof, "click", btn, bparents, {"zone": "main", "allow": "menu-button"})
+    pops = []
+    for _ in range(15):
+        time.sleep(0.2)
+        pops = popup_menu.popup_windows(pid, exclude=before)
+        if pops:
+            break
+    if len(pops) != 1:
+        for p_ in pops:
+            popup_menu.close_popup(p_["hwnd"])
+        raise Refused("點了選單按鈕，但沒有出現唯一的彈出選單（%d 個）" % len(pops))
+    pop = pops[0]
+    res = popup_menu.popup_items(pop["hwnd"])
+    items = [i for i in res.get("items", []) if i.get("name")]
+    want = [i for i in items if i["name"] in prof["popup_export_items"] and i.get("type") in ("MenuItem", "ListItem", "Button")]
+    if len(want) != 1:
+        popup_menu.close_popup(pop["hwnd"])
+        raise Refused("選單裡沒有唯一的匯出項目；選單項目：%s" % [i["name"] for i in items][:15])
+    if want[0].get("enabled") is False:
+        popup_menu.close_popup(pop["hwnd"])
+        raise Refused("匯出項目目前不可用")
+    before_fg = _fg()
+    popup_menu.click_item(pop["hwnd"], want[0])
+    if before_fg is not None and _fg() != before_fg:
+        FG_EVENTS.append("popup-click")
+
+
 def cmd_close(app, prof):
     win = find_window(prof)
     snap = snapshot(win)
+    if not prof.get("close_button"):
+        ad("minimize", "--window-id", win["id"])
+        ledger(app, "close", True, "minimized")
+        out({"ok": True, "closed": "minimized"})
     node, parents = find_node(snap, lambda n: n.get("role") == "button" and n.get("name") == prof["close_button"])
     if not node:
         raise Refused("找不到離開聊天室的按鈕")
@@ -560,7 +661,7 @@ def main():
     prof = PROFILES.get(app)
     try:
         if not prof:
-            raise Refused("chat_guard 尚未支援這個 app（目前只有 fake-chat）")
+            raise Refused("chat_guard 尚未支援這個 app（目前：fake-chat、line）")
         pol = policy.load(HOME)
         if not policy.is_granted(pol, app):
             raise Refused("使用者尚未授權這個 app（同意閘門）：先在對話中取得指名同意")

@@ -87,7 +87,15 @@ $left.Left = 8; $left.Top = 32; $left.Width = 250; $left.Height = 440
 $left.AccessibleName = 'chat list'
 
 $header = New-Object System.Windows.Forms.Label
-$header.Left = 270; $header.Top = 34; $header.Width = 360; $header.Text = '(no chat open)'
+$header.Left = 270; $header.Top = 34; $header.Width = 280; $header.Text = '(no chat open)'
+# Header "More" button -> popup menu (ContextMenuStrip = its own top-level popup window, like LINE's Qt menu)
+$moreBtn = New-Object System.Windows.Forms.Button
+$moreBtn.Text = 'More'; $moreBtn.AccessibleName = 'More'; $moreBtn.Left = 560; $moreBtn.Top = 30; $moreBtn.Width = 70
+$popup = New-Object System.Windows.Forms.ContextMenuStrip
+$piSearch = $popup.Items.Add('Search')
+$piSave = $popup.Items.Add('Save chat')
+$piLeave = $popup.Items.Add('Leave group')
+$moreBtn.Add_Click({ $popup.Show($moreBtn, 0, $moreBtn.Height) })
 $closeBtn = New-Object System.Windows.Forms.Button
 $closeBtn.Text = 'Close chat'; $closeBtn.AccessibleName = 'Close chat'; $closeBtn.Left = 640; $closeBtn.Top = 30; $closeBtn.Width = 90
 $header.AccessibleName = 'open chat: (none)'
@@ -178,6 +186,12 @@ $script:exportAction = {
         Write-JsonLine $eventFile @{ kind = 'export'; chat = $script:current.name; path = $dlg.FileName; lines = $lines.Count }
     }
 }
+$piSave.Add_Click({ [void]$f.BeginInvoke([Action]{ & $script:exportAction }) })
+$piSearch.Add_Click({ Write-JsonLine $eventFile @{ kind = 'search' } })
+$piLeave.Add_Click({
+    $r = [System.Windows.Forms.MessageBox]::Show($f, 'Really leave this group?', 'Leave group', 'YesNo')
+    if ($r -eq 'Yes') { Write-JsonLine $violFile @{ kind = 'leave-confirmed' } } else { Write-JsonLine $eventFile @{ kind = 'leave-declined' } }
+})
 $mExport.Add_Click({
     # Default: defer the modal dialog so the click handler (and a UIA Invoke) returns at once,
     # like most native apps. -SyncDialog keeps the blocking behaviour as a test target.
@@ -232,7 +246,7 @@ $timer.Add_Tick({
     }
 })
 
-$f.Controls.AddRange(@($menu, $left, $header, $closeBtn, $msgList, $input, $emoji, $send))
+$f.Controls.AddRange(@($menu, $left, $header, $moreBtn, $closeBtn, $msgList, $input, $emoji, $send))
 Update-List
 $timer.Start()
 Write-JsonLine $eventFile @{ kind = 'start'; pid = $PID }
