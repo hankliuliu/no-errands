@@ -156,7 +156,7 @@ def split_sentences(text):
         if 6 <= len(s) <= 400:
             yield s
 
-def audit(root):
+def audit(root, exclude=None):
     hits = []          # dict(project, file, ts, sidechain, category, sentence)
     stats = collections.Counter()
     session_count = 0
@@ -165,7 +165,7 @@ def audit(root):
     sessions = {}   # fpath -> first timestamp
     for proj in sorted(os.listdir(root)):
         pdir = os.path.join(root, proj)
-        if not os.path.isdir(pdir):
+        if not os.path.isdir(pdir) or (exclude and re.search(exclude, proj)):
             continue
         for fn in sorted(os.listdir(pdir)):
             if not fn.endswith(".jsonl"):
@@ -214,9 +214,10 @@ def main():
     ap.add_argument("--samples", type=int, default=20)
     ap.add_argument("--candidates", help="候選清單（含前後文、日期、去識別化）輸出 JSON，給 agent 複判")
     ap.add_argument("--split-date", help="以這天切前後（預設：~/.no-errands/config.json 的 installed_at）")
+    ap.add_argument("--exclude", help="略過專案目錄名稱符合這個 regex 的（例如測試沙盒）")
     args = ap.parse_args()
 
-    res = audit(args.root)
+    res = audit(args.root, args.exclude)
     split = args.split_date
     if not split:
         try:
