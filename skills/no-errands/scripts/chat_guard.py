@@ -620,7 +620,12 @@ def _export_menu_popup(prof, win, snap, chat):
         time.sleep(0.4)
         pops = popup_menu.popup_windows(pid, exclude=before) or pops
     pop = pop or pops[0]
-    want = [i for i in items if i["name"] in prof["popup_export_items"] and i.get("type") in ("MenuItem", "ListItem", "Button")]
+    want, seen_rects = [], set()
+    for i in items:   # 同一個項目可能被 UIA 以兩層元素露出（名稱相同、位置相同）→ 以位置去重
+        if i["name"] in prof["popup_export_items"] and i.get("type") in ("MenuItem", "ListItem", "Button"):
+            k = tuple(i.get("rect") or ())
+            if k not in seen_rects:
+                seen_rects.add(k); want.append(i)
     if len(want) != 1:
         popup_menu.close_popup(pop["hwnd"])
         diag = [{"class": c.get("class"), "w": c["rect"][2] - c["rect"][0], "h": c["rect"][3] - c["rect"][1]} for c in pops][:5]

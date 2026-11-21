@@ -20,7 +20,8 @@ INSTALLERS = {
                  "target": r"C:\Program Files\WinMerge\WinMergeU.exe",
                  "uninstall": [r"C:\Program Files\WinMerge\unins000.exe", "/VERYSILENT", "/SUPPRESSMSGBOXES"]},
 }
-NEXT_NAMES = {"OK", "Next >", "Next", "I Agree", "Install", "下一步(N) >", "我接受(I)", "安裝(I)"}
+NEXT_NAMES = {"OK", "Next >", "Next", "I Agree", "Install", "下一步(N) >", "我接受(I)", "安裝(I)",
+              "Install for me only (recommended)", "Install for me only", "Install for all users"}
 FINISH_NAMES = {"Finish", "完成(F)"}
 ACCEPT_HINTS = ("I accept", "我接受")
 RUN_HINTS = ("Run", "Launch", "View", "執行")
@@ -127,6 +128,7 @@ def main():
                 break
             nxt = [n for n in btns if clean(n.get("name")) in NEXT_NAMES and "disabled" not in str(n.get("states") or []).lower()]
             if not nxt:
+                LOG["steps"].append({"page": w.get("title"), "no_next": [clean(n.get("name")) for n in btns][:8]})
                 continue
             name = clean(nxt[0].get("name"))
             if stall == 0:
@@ -136,6 +138,8 @@ def main():
                 LOG["steps"].append({"page": w.get("title"), "method": "BM_CLICK", "button": name, "hwnds": k})
                 LOG["methods_used"].append("bm_click:%s" % name)
             elif stall >= 6 and escalate == 1:
+                ad("focus-window", "--window-id", w["id"])   # 實體點擊會落在最上層的視窗 → 先把安裝程式拉到前景（只在 CI）
+                time.sleep(0.5)
                 r = ad("click", "--headed", nxt[0]["ref_id"]); escalate = 2
                 LOG["steps"].append({"page": w.get("title"), "method": "physical(--headed)", "button": name, "ok": r.get("ok")})
                 LOG["methods_used"].append("physical:%s" % name)

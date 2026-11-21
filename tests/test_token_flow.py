@@ -35,7 +35,11 @@ def main():
         return p
 
     try:
-        time.sleep(1.0)
+        for _ in range(60):   # 等伺服器真的在聽（macOS runner 上 Python 啟動比較慢）
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=1).close(); break
+            except OSError:
+                time.sleep(0.5)
         # 1) 使用者在 agent 專用 profile 登入一次（測試裡由腳本代勞；真實情境是人在有頭視窗登入）
         # 暖機：新 profile 第一次開瀏覽器在 macOS 上會回錯（瀏覽器其實起來了）→ 先開空白頁、不看結果
         b("open", "about:blank"); time.sleep(2)

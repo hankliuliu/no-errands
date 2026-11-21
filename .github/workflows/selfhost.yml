@@ -1,0 +1,72 @@
+name: selfhost
+
+# 用自架的真實第三方服務當靶，驗證「鑰匙」「token 申請」「Mattermost 唯讀與發件匣真實送出」：
+# 不需要使用者的帳號，結果比自寫 demo 頁有說服力。
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  gitea:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GITEA_URL: http://127.0.0.1:3000
+      GITEA_USER: alice
+      GITEA_PASS: Passw0rd-x9-test
+      MARKER: private-marker-7f3a
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - name: agent-browser (temp home)
+        run: mkdir -p ../p && python3 setup.py --project ../p --home ../h > setup.json
+      - name: start Gitea (single binary, sqlite)
+        run: |
+          curl -fsSL -o gitea https://dl.gitea.com/gitea/1.22.6/gitea-1.22.6-linux-amd64 && chmod +x gitea
+          mkdir -p /tmp/gt/custom/conf /tmp/gt/data
+          printf '%s\n' 'APP_NAME = ne-test' 'RUN_MODE = prod' 'WORK_PATH = /tmp/gt' \
+            '[server]' 'HTTP_ADDR = 127.0.0.1' 'HTTP_PORT = 3000' 'ROOT_URL = http://127.0.0.1:3000/' 'OFFLINE_MODE = true' \
+            '[database]' 'DB_TYPE = sqlite3' 'PATH = /tmp/gt/data/gitea.db' \
+            '[security]' 'INSTALL_LOCK = true' '[service]' 'DISABLE_REGISTRATION = true' '[log]' 'LEVEL = Warn' > /tmp/gt/custom/conf/app.ini
+          C="--work-path /tmp/gt --config /tmp/gt/custom/conf/app.ini"
+          ./gitea $C migrate
+          ./gitea $C admin user create --username "$GITEA_USER" --password "$GITEA_PASS" --email alice@example.com --admin --must-change-password=false
+          nohup ./gitea $C web > /tmp/gt/web.log 2>&1 &
+          for i in $(seq 60); do curl -fs "$GITEA_URL/api/healthz" >/dev/null && break; sleep 1; done
+          curl -fs -u "$GITEA_USER:$GITEA_PASS" -H 'Content-Type: application/json' -d '{"name":"secret-repo","private":true,"auto_init":true}' "$GITEA_URL/api/v1/user/repos" > /dev/null
+          curl -fs -u "$GITEA_USER:$GITEA_PASS" -H 'Content-Type: application/json' -d "{\"content\":\"$(printf %s "$MARKER" | base64)\",\"message\":\"add\"}" "$GITEA_URL/api/v1/repos/$GITEA_USER/secret-repo/contents/secret.txt" > /dev/null
+      - name: gitea end-to-end (keys + private content + token via web UI)
+        run: python3 tests/selfhost/gitea_flow.py --ab ../h/bin/agent-browser | tee gitea.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selfhost-gitea
+          path: gitea.txt
+
+  mattermost:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      MM_URL: http://127.0.0.1:8065
+      MM_ADMIN: neadmin
+      MM_ADMIN_PASS: Adm1n-pass-test!
+      MM_BOB: bob
+      MM_BOB_PASS: B0b-pass-test!
+      MM_TEAM: t1
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - name: agent-browser (temp home)
+        run: mkdir -p ../p && python3 setup.py --project ../p --home ../h > setup.json
+      - name: start Mattermost (official preview image)
+        run: docker run -d --name mm -p 8065:8065 mattermost/mattermost-preview
+      - name: prepare server (API)
+        run: python3 tests/selfhost/mm_setup.py
+      - name: mattermost end-to-end (PAT via UI, read-only tool, outbox real send, read state)
+        run: python3 tests/selfhost/mm_flow.py --ab ../h/bin/agent-browser | tee mm.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selfhost-mattermost
+          path: mm.txt
