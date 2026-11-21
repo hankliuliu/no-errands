@@ -353,11 +353,14 @@ class NoControl:
 
 def screen_size():
     """邏輯解析度（與瀏覽器 --window-* 的單位一致）。沒有 tk 時退回 1920×1080。"""
+    # 在子行程裡量：tk 在沒有畫面的環境（Linux 沒有 DISPLAY、macOS 的背景行程）可能直接 abort，不會丟例外
+    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+        return 1920, 1080
     try:
-        import tkinter
-        r = tkinter.Tk(); r.withdraw()
-        w, h = r.winfo_screenwidth(), r.winfo_screenheight()
-        r.destroy()
+        p = subprocess.run([sys.executable, "-c", "import tkinter;r=tkinter.Tk();r.withdraw();"
+                            "print(r.winfo_screenwidth(),r.winfo_screenheight());r.destroy()"],
+                           capture_output=True, text=True, timeout=10)
+        w, h = (int(x) for x in p.stdout.split()[:2])
         return w, h
     except Exception:
         return 1920, 1080
