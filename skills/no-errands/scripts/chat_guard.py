@@ -623,7 +623,8 @@ def _export_menu_popup(prof, win, snap, chat):
     want = [i for i in items if i["name"] in prof["popup_export_items"] and i.get("type") in ("MenuItem", "ListItem", "Button")]
     if len(want) != 1:
         popup_menu.close_popup(pop["hwnd"])
-        raise Refused("選單裡沒有唯一的匯出項目；選單項目：%s" % [i["name"] for i in items][:15])
+        diag = [{"class": c.get("class"), "w": c["rect"][2] - c["rect"][0], "h": c["rect"][3] - c["rect"][1]} for c in pops][:5]
+        raise Refused("選單裡沒有唯一的匯出項目；選單項目：%s；彈出視窗候選：%s" % ([i["name"] for i in items][:15], diag))
     if want[0].get("enabled") is False:
         popup_menu.close_popup(pop["hwnd"])
         raise Refused("匯出項目目前不可用")

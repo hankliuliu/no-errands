@@ -86,7 +86,7 @@ def main():
                                            capture_output=True, text=True, errors="replace", timeout=20)
                     else:
                         v = subprocess.run(c + ["--version"], capture_output=True, text=True, timeout=10)
-                    out = (v.stdout + v.stderr).strip()
+                    out = ((v.stdout or "") + (v.stderr or "")).strip()
                     if v.returncode == 0 and out.startswith("Python 3.") and int(out.split(".")[1]) >= 9:
                         return True
                 except Exception:

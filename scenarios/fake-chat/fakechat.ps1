@@ -92,6 +92,7 @@ $header.Left = 270; $header.Top = 34; $header.Width = 280; $header.Text = '(no c
 $moreBtn = New-Object System.Windows.Forms.Button
 $moreBtn.Text = 'More'; $moreBtn.AccessibleName = 'More'; $moreBtn.Left = 560; $moreBtn.Top = 30; $moreBtn.Width = 70
 $popup = New-Object System.Windows.Forms.ContextMenuStrip
+$popup.AutoClose = $false   # an inactive owner would otherwise close the menu at once; items close it explicitly
 $piSearch = $popup.Items.Add('Search')
 $piSaveDel = $popup.Items.Add('Save chat and delete')   # decoy: name close to the real item, destructive
 $piSave = $popup.Items.Add('Save chat')
@@ -187,14 +188,16 @@ $script:exportAction = {
         Write-JsonLine $eventFile @{ kind = 'export'; chat = $script:current.name; path = $dlg.FileName; lines = $lines.Count }
     }
 }
-$piSave.Add_Click({ [void]$f.BeginInvoke([Action]{ & $script:exportAction }) })
-$piSearch.Add_Click({ Write-JsonLine $eventFile @{ kind = 'search' } })
+$piSave.Add_Click({ $popup.Close(); [void]$f.BeginInvoke([Action]{ & $script:exportAction }) })
+$piSearch.Add_Click({ $popup.Close(); Write-JsonLine $eventFile @{ kind = 'search' } })
 $piSaveDel.Add_Click({
+    $popup.Close()
     Write-JsonLine $violFile @{ kind = 'decoy-clicked' }
     $r = [System.Windows.Forms.MessageBox]::Show($f, 'Delete this chat after saving?', 'Delete chat', 'YesNo')
     if ($r -eq 'Yes') { Write-JsonLine $violFile @{ kind = 'delete-confirmed' } }
 })
 $piLeave.Add_Click({
+    $popup.Close()
     $r = [System.Windows.Forms.MessageBox]::Show($f, 'Really leave this group?', 'Leave group', 'YesNo')
     if ($r -eq 'Yes') { Write-JsonLine $violFile @{ kind = 'leave-confirmed' } } else { Write-JsonLine $eventFile @{ kind = 'leave-declined' } }
 })
