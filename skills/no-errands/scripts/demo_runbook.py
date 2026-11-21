@@ -976,9 +976,15 @@ def learn(rb, a):
             hi = max(o["ms"]) / 1000.0
             new = int(max(10, round(hi * 1.5 + 10, -1)))       # 觀測最大值 ×1.5 + 10 秒，取整到 10 秒
             cur = float(act.get("budget_s", 30))
-            if o["fail"] or abs(new - cur) / cur > 0.25:
-                if o["fail"]:
-                    new = int(max(new, cur * 1.5))
+            texts = [act["text"]] if isinstance(act["text"], str) else act["text"]
+            reliable = act.get("new_only") or act.get("static") or all(VAR_RE.search(t) for t in texts) or \
+                all(s and "dialog" in s for s in (act.get("scopes") or [None]))
+            if o["fail"]:
+                new = int(max(new, cur * 1.5))
+            # 放寬：一次觀測就可以。縮短：至少 3 次成功，而且斷言可靠（不會比對到以前留下的字而「秒過」）——
+            # 本機模型的回應時間會飄；排練 2 的假陽性曾讓 learn 想把 360 秒縮成 10 秒。
+            shrink_ok = len(o["ms"]) >= 3 and reliable
+            if new > cur * 1.25 or o["fail"] or (shrink_ok and new < cur * 0.75):
                 changes.append({"path": base + ".budget_s", "old": cur, "new": new,
                                 "why": "觀測 %d 次成功，最長 %.1f 秒；失敗 %d 次" % (len(o["ms"]), hi, o["fail"]),
                                 "needs_reapproval": False})
