@@ -364,7 +364,9 @@ def main():
     if not a.skip_browser:
         check_browser(res, home)
         check_profile(res, home)
-        run([os.path.join(home, "bin", ne.exe_name("agent-browser")), "close", "--all"], 20)
+        # 只關 doctor 自己開的工作階段（close --all 會連使用者自己的 agent-browser 工作階段一起關掉——onboarding 實測時被受測 agent 指出）
+        for s in ("ne-doctor", "ne-key-a", "ne-key-b"):
+            run(ab_cmd(home, s, ["close"]), 20)
     dur = time.time() - t0
     cap, refreshed = write_outputs(res, home, dur)
     ok = all(v.get("ok") for v in res.values())
