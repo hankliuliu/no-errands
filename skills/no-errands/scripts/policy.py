@@ -17,6 +17,10 @@ CLI（agent 只在「使用者於對話中明確要求」時才可呼叫 set/gra
   policy.py whitelist add|remove <對話名稱> --reason "..."
   policy.py set unread_protection on|off --reason "..."
   policy.py set visibility background|watch --reason "..."
+  policy.py set demo.persist on|off --reason "..."        # off＝示範一次性：不留紀錄、不改劇本
+  policy.py set demo.learn propose|off --reason "..."
+  policy.py domain add <host[:port]> <app> --reason "..."  # 登記敏感網域（例：經通道的示範主機）
+  policy.py domain remove <host[:port]> --reason "..."
 每次修改寫一筆 ledger（~/.no-errands/policy-ledger.jsonl；白名單名稱只記雜湊）。
 """
 import copy, hashlib, json, os, sys, time
@@ -50,6 +54,12 @@ DEFAULTS = {
     "busy_behavior": "wait_idle",
     "idle_min_s": 180,
     "outbox": {"port": 8765},
+    # 示範劇本（demo_runbook.py）：persist=off → 一次性（不留紀錄、不改劇本）；learn=off → 不提出劇本修改
+    "demo": {"persist": "on", "learn": "propose"},
+    # 使用者登記的敏感網域（例如經 SSH 通道的示範主機 localhost:8065）：neb 把它當敏感網站——
+    # 未授權 → 拒；已授權 → 只讀，輸入與點擊都要有核准過的示範劇本。
+    # 每筆 {"host": "localhost:8065" 或 "example.org", "app": "<正規 app 名>"}
+    "sensitive_domains": [],
 }
 
 # app 別名 → 正規名。三平台：Windows 程序名、macOS 顯示名稱與 bundle id、Linux list-apps 名稱與 desktop id。
@@ -151,6 +161,23 @@ def name_hash(s):
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
 
 
+def sensitive_domain_app(pol, netloc):
+    """netloc（host 或 host:port）是否為使用者登記的敏感網域 → 回 app 名或 None。
+    登記值帶埠號時要完全相同；不帶埠號時比對主機名（含子網域）。"""
+    netloc = (netloc or "").lower()
+    host = netloc.rsplit(":", 1)[0] if netloc.count(":") == 1 else netloc
+    for ent in pol.get("sensitive_domains") or []:
+        h = str(ent.get("host", "")).lower()
+        if not h:
+            continue
+        if ":" in h:
+            if netloc == h:
+                return canonical_app(ent.get("app", h))
+        elif host == h or host.endswith("." + h):
+            return canonical_app(ent.get("app", h))
+    return None
+
+
 def summary(pol):
     apps = "、".join(pol.get("granted_apps") or []) or "（無）"
     up = pol.get("chat", {}).get("unread_protection", "on")
@@ -214,6 +241,18 @@ def main(argv=None):
         pol["chat"]["unread_protection"] = a[2]; detail = {"unread_protection": a[2]}
     elif cmd == "set" and len(a) == 3 and a[1] == "visibility" and a[2] in ("background", "watch"):
         pol["visibility"] = a[2]; detail = {"visibility": a[2]}
+    elif cmd == "set" and len(a) == 3 and a[1] == "demo.persist" and a[2] in ("on", "off"):
+        pol.setdefault("demo", {})["persist"] = a[2]; detail = {"demo.persist": a[2]}
+    elif cmd == "set" and len(a) == 3 and a[1] == "demo.learn" and a[2] in ("propose", "off"):
+        pol.setdefault("demo", {})["learn"] = a[2]; detail = {"demo.learn": a[2]}
+    elif cmd == "domain" and len(a) == 4 and a[1] == "add":
+        ents = [e for e in pol.get("sensitive_domains") or [] if str(e.get("host", "")).lower() != a[2].lower()]
+        ents.append({"host": a[2].lower(), "app": canonical_app(a[3])})
+        pol["sensitive_domains"] = ents; detail = {"domain_add": a[2].lower(), "app": canonical_app(a[3])}
+    elif cmd == "domain" and len(a) == 3 and a[1] == "remove":
+        pol["sensitive_domains"] = [e for e in pol.get("sensitive_domains") or []
+                                    if str(e.get("host", "")).lower() != a[2].lower()]
+        detail = {"domain_remove": a[2].lower()}
     else:
         _out({"ok": False, "error": "看不懂的指令；見 policy.py --help"}, 2)
     save(pol, home)
