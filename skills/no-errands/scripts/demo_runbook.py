@@ -209,7 +209,8 @@ def loose_waits(rb):
             for i, act in enumerate(st.get(phase) or []):
                 if act.get("do") != "wait_text" or act.get("new_only") or act.get("static"):
                     continue
-                texts = [act["text"]] if isinstance(act["text"], str) else act["text"]
+                raw = act.get("regex", act.get("text"))
+                texts = [raw] if isinstance(raw, str) else raw
                 if all(VAR_RE.search(t) for t in texts):
                     continue
                 scopes = act.get("scopes") or [None]
@@ -491,6 +492,15 @@ def err_of(rc, out_text):
     return "agent-browser rc=%s" % rc
 
 
+def count_of(body, x, is_re):
+    return len(re.findall(x, body)) if is_re else body.count(x)
+
+
+def resubst(pat, vars_):
+    """正規表示式裡的 {變數} 代入時先跳脫（案件編號等值不會被當成語法）。"""
+    return VAR_RE.sub(lambda m: re.escape(str(vars_.get(m.group(1), m.group(0)))), pat)
+
+
 def subst(text, vars_):
     return VAR_RE.sub(lambda m: str(vars_.get(m.group(1), m.group(0))), text)
 
@@ -545,9 +555,11 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
     elif d == "mark":
         # 記下這幾段文字目前出現幾次（給後面的 wait_text new_only 比較）：聊天、通知這種會累積歷史的頁面必用
         marks = rec.setdefault("_marks", {})
-        for x in ([act["text"]] if isinstance(act["text"], str) else act["text"]):
-            x = subst(x, vars_)
-            marks[x] = max(br.text(acct, sc).count(x) for sc in (act.get("scopes") or [None]))
+        is_re = "regex" in act
+        for x in ([act.get("regex", act.get("text"))] if isinstance(act.get("regex", act.get("text")), str)
+                  else act.get("regex", act.get("text"))):
+            x = resubst(x, vars_) if is_re else subst(x, vars_)
+            marks[x] = max(count_of(br.text(acct, sc), x, is_re) for sc in (act.get("scopes") or [None]))
         ok = True
     elif d == "press":
         rc, o, e = br.neb(acct, "press", act["key"], approval=approval, step=st["id"])
@@ -560,16 +572,18 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
     elif d in ("wait_text", "expect_absent"):
         budget = float(act.get("budget_s", 30))
         scopes = act.get("scopes") or [None]
-        texts = [subst(x, vars_) for x in ([act["text"]] if isinstance(act["text"], str) else act["text"])]
+        is_re = "regex" in act                              # regex：同一則訊息裡同時要有案件編號與狀態文字
+        raw = act["regex"] if is_re else act["text"]
+        texts = [(resubst(x, vars_) if is_re else subst(x, vars_)) for x in ([raw] if isinstance(raw, str) else raw)]
         ok, hit = False, None
         marks = rec.get("_marks", {})
         while True:
             for sc in scopes:
                 body = br.text(acct, sc)
                 if act.get("new_only"):                     # 只認本次新出現的（比 mark 時多）
-                    found = [x for x in texts if body.count(x) > marks.get(x, 0)]
+                    found = [x for x in texts if count_of(body, x, is_re) > marks.get(x, 0)]
                 else:
-                    found = [x for x in texts if x in body]
+                    found = [x for x in texts if count_of(body, x, is_re) > 0]
                 if (d == "wait_text" and found) or (d == "expect_absent" and not found and body):
                     ok, hit = True, {"scope": sc, "text_index": texts.index(found[0]) if found else None}
                     break
@@ -976,7 +990,8 @@ def learn(rb, a):
             hi = max(o["ms"]) / 1000.0
             new = int(max(10, round(hi * 1.5 + 10, -1)))       # 觀測最大值 ×1.5 + 10 秒，取整到 10 秒
             cur = float(act.get("budget_s", 30))
-            texts = [act["text"]] if isinstance(act["text"], str) else act["text"]
+            raw = act.get("regex", act.get("text"))
+            texts = [raw] if isinstance(raw, str) else raw
             reliable = act.get("new_only") or act.get("static") or all(VAR_RE.search(t) for t in texts) or \
                 all(s and "dialog" in s for s in (act.get("scopes") or [None]))
             if o["fail"]:

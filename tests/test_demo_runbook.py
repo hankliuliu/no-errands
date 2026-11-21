@@ -582,6 +582,19 @@ def main():
               any(c["path"].endswith(".settle_s") and not c["needs_reapproval"] for c in prop_.get("changes", [])), txt[-300:])
         check("learn：結構不同的紀錄不採用", prop_.get("skipped_runs_other_structure") == ["r0"], prop_.get("skipped_runs_other_structure"))
 
+        rx = json.loads(json.dumps(RUNBOOK)); rx["steps"] = [rx["steps"][0]]
+        rx["steps"][0]["actions"] = rx["steps"][0]["actions"][:2] + [
+            {"do": "capture", "var": "case_id", "regex": "C-[0-9a-f]{8}"},
+            {"do": "wait_text", "regex": "{case_id} 其他", "budget_s": 3}]
+        rxp = os.path.join(rbdir, "rx.json"); json.dump(rx, open(rxp, "w", encoding="utf-8"), ensure_ascii=False)
+        rc, o, _ = rbj("request-approval", rxp); approve(o["id"]); rx_aid = o["id"]
+        rc, o, txt = rbj("rehearse", rxp, "--approval", rx_aid)
+        check("wait_text regex：同一段裡有本次的案件編號＋狀態文字 → 過", rc == 0, txt[-200:])
+        rx["steps"][0]["actions"][-1]["regex"] = "{case_id} 不存在的狀態"
+        json.dump(rx, open(rxp, "w", encoding="utf-8"), ensure_ascii=False)
+        rc, o, txt = rbj("rehearse", rxp, "--approval", rx_aid)
+        check("wait_text regex：狀態文字不在同一段 → 逾時失敗", rc == 1, txt[-200:])
+
         # ---------- learn / freeze / apply
         rc, o, txt = rbj("learn", rbp, "--runs", "50")
         check("learn 產生提案（等待預算依觀測值調整）", rc == 0 and o.get("n_changes", 0) >= 1
