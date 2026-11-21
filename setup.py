@@ -9,7 +9,7 @@
 
 輸出：單一 JSON 物件（stdout）。失敗的步驟附 recovery 建議。
 """
-import argparse, hashlib, io, json, os, platform, shutil, stat, sys, tarfile, tempfile, urllib.request, zipfile
+import argparse, hashlib, io, json, os, platform, shutil, stat, sys, tarfile, tempfile, time, urllib.request, zipfile
 
 REPO = os.path.dirname(os.path.abspath(__file__))
 MARK_S, MARK_E = "<!-- no-errands:start -->", "<!-- no-errands:end -->"
@@ -153,9 +153,9 @@ def skill_is_ours(skill_dst, home):
         return False
 
 
-def install_skill(skill_dst):
+def install_skill(skill_dst, name="no-errands"):
     shutil.rmtree(skill_dst, ignore_errors=True)
-    shutil.copytree(os.path.join(REPO, "skills", "no-errands"), skill_dst)
+    shutil.copytree(os.path.join(REPO, "skills", name), skill_dst)
     open(os.path.join(skill_dst, OWN_MARK), "w", encoding="utf-8").write("installed by no-errands setup.py" + chr(10))
 
 
@@ -378,6 +378,9 @@ def main():
         s2 = os.path.isdir(skill_dst) and skill_is_ours(skill_dst, home)
         if s2:
             shutil.rmtree(skill_dst)
+        audit_dst = os.path.join(os.path.dirname(skill_dst), "errand-audit")
+        if os.path.isdir(audit_dst) and os.path.exists(os.path.join(audit_dst, OWN_MARK)):
+            shutil.rmtree(audit_dst)
         elif os.path.isdir(skill_dst):
             steps.append({"step": "uninstall:skill", "ok": True, "skipped": "同名 skill 目錄不是我們裝的，保留不動",
                           "path": skill_dst})
@@ -402,6 +405,13 @@ def main():
         install_skill(skill_dst)
         steps.append({"step": "install:skill", "ok": True, "path": skill_dst,
                       "hash": skill_tree_hash(skill_dst)})
+        audit_dst = os.path.join(os.path.dirname(skill_dst), "errand-audit")   # 跑腿稽核 skill（同樣不覆蓋別人的同名目錄）
+        if skill_is_ours(audit_dst, home):
+            install_skill(audit_dst, "errand-audit")
+            steps.append({"step": "install:skill-errand-audit", "ok": True, "path": audit_dst})
+        else:
+            steps.append({"step": "install:skill-errand-audit", "ok": True, "skipped": "已有別人的同名 skill，保留不動",
+                          "path": audit_dst})
         upsert_block(md_path, managed_block(home, paths, checks=None, repo=REPO))
         steps.append({"step": "install:claude-md-block", "ok": True, "path": md_path})
         cfg_p = os.path.join(home, "config.json")
@@ -413,6 +423,7 @@ def main():
         cfg["repo"] = REPO
         cfg["python"] = sys.executable
         cfg["skill_hash"] = skill_tree_hash(os.path.join(REPO, "skills", "no-errands"))
+        cfg.setdefault("installed_at", time.strftime("%Y-%m-%d %H:%M"))   # 稽核用來切安裝前後；重裝不改
         json.dump(cfg, open(cfg_p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         steps.append({"step": "config", "ok": True, "path": cfg_p,
                       "next": "跑 doctor.py --home %s 做各階 smoke test 並產出 capabilities.md" % home})
