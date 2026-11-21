@@ -97,7 +97,7 @@ python doctor.py
 
 **有什麼擋不住？** 老實講：這些防線擋的是「太熱心」的 agent，不是惡意程式。能在你電腦上任意執行程式的東西，本來就什麼都能做；權限規則是前綴比對，刻意繞路還是繞得過。發件匣的核准頁對自動化瀏覽器會停用按鈕、伺服器也會拒絕，但刻意偽造還是繞得過。
 另外，有些模型起草後會一直在前景等你核准；工具提供有上限的等待指令並提醒它結束回合，但沒辦法強制它停。
-網頁與桌面的守門（`neb`／`ned`）只在 agent 經過它們時才生效。受管區塊要求網頁一律經 neb、桌面一律經 ned：**沒裝權限規則時，這是建議**——agent 直接呼叫瀏覽器或桌面工具就繞過了。**裝了權限規則（`python setup.py --user --guard-rules`）之後，直接呼叫會被擋**（實測擋得住：裸名稱、完整路徑的各種寫法、先 cd 再相對路徑、`bash -c` 包裝、PowerShell）；仍繞得過的：把工具名稱拆開再組起來、用 Python 子行程拼出路徑、用 `agent-b*` 這種萬用字元。副作用：只是提到工具名稱的指令（例如 `grep agent-browser`）也會被擋。兩個守門的放行清單是對工具每個子指令與選項逐項對過的（`docs/agent-browser-command-audit.md`、`docs/agent-desktop-command-audit.md`），升級版本要重對。
+網頁與桌面的守門（`neb`／`ned`）只在 agent 經過它們時才生效。受管區塊要求網頁一律經 neb、桌面一律經 ned：**沒裝權限規則時，這是建議**——agent 直接呼叫瀏覽器或桌面工具就繞過了。**裝了權限規則（`python setup.py --user --guard-rules`）之後，直接呼叫會被擋**（實測擋得住：裸名稱、完整路徑的各種寫法、先 cd 再相對路徑、`bash -c` 包裝、PowerShell）；仍繞得過的：把工具名稱拆開再組起來、用 Python 子行程拼出路徑、用 `agent-b*` 這種萬用字元。副作用：只是提到工具名稱的指令（例如 `grep agent-browser`）也會被擋。**正在開發 no-errands 本身的機器，不要在使用者層級套用這條規則**（或等開發告一段落再開）：grep、git commit 訊息、跑測試，只要指令裡出現那兩個名稱都會被擋，而且 deny 沒辦法在專案層級蓋掉。兩個守門的放行清單是對工具每個子指令與選項逐項對過的（`docs/agent-browser-command-audit.md`、`docs/agent-desktop-command-audit.md`），升級版本要重對。
 瀏覽器的守門只認得公開的聊天／郵件網站（Gmail、Slack、LINE 網頁版……）和政策檔裡登記的 Mattermost 網址；**自架在內網、或經 SSH 通道從 `localhost` 開的聊天或信箱服務，目前會被當成一般網站、不設防**。現在只有 Mattermost 能登記（政策檔的 `mattermost.url`）；任意網址的登記方式還在做。
 
 ## 我們量到的效果（老實版）
