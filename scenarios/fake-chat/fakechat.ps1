@@ -102,8 +102,12 @@ function New-PopupItem($text, $i) {
     $popup.Controls.Add($b); return $b
 }
 $piSearch = New-PopupItem 'Search' 0
-$piSaveDel = New-PopupItem 'Save chat and delete' 1   # decoy: name close to the real item, destructive
-$piSave = New-PopupItem 'Save chat' 2
+# Non-ASCII labels on purpose (like LINE): the real LINE run showed UIA names coming back garbled through a cp950 pipe.
+# Built from char codes so this file stays ASCII-only.
+$cjkSave = -join [char[]](0x5132, 0x5B58, 0x804A, 0x5929)                       # save chat
+$cjkSaveDel = -join [char[]](0x5132, 0x5B58, 0x804A, 0x5929, 0x4E26, 0x522A, 0x9664)  # save chat and delete
+$piSaveDel = New-PopupItem $cjkSaveDel 1   # decoy: same prefix as the real item, destructive
+$piSave = New-PopupItem $cjkSave 2
 $piLeave = New-PopupItem 'Leave group' 3
 $popup.Add_KeyDown({ param($s, $e) if ($e.KeyCode -eq 'Escape') { $popup.Hide() } })
 $moreBtn.Add_Click({

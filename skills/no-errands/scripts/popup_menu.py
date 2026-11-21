@@ -18,6 +18,8 @@ import ctypes, json, os, subprocess, tempfile, time
 
 DUMP_PS = r"""
 param([long]$Hwnd)
+# stdout is a pipe read as UTF-8 by Python; PowerShell 5.1 would otherwise write the system code page (cp950 on zh-TW)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $items = @()
 try {

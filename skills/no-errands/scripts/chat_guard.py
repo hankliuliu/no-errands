@@ -50,7 +50,7 @@ PROFILES = {
         "menu_path": ["Chat", "Export chat"],
         "export_via": "popup",                 # 像 LINE：標頭的「More」按鈕 → 彈出選單（獨立頂層視窗）→ Save chat
         "menu_button": "More",
-        "popup_export_items": ("Save chat",),
+        "popup_export_items": ("儲存聊天", "Save chat"),
         "close_button": "Close chat",
         "dialog_title": "Save chat history",
         "dialog_filename_ids": {"1001", "1148"},          # 系統檔案對話框的檔名欄 automation id
