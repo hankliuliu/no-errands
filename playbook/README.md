@@ -14,6 +14,7 @@ agent 走通一條路，就寫一頁放這裡，下一個人的 agent 直接照�
 - `apps/line-desktop.md`：LINE 桌面版找到指名對話、確認身分、匯出
 - `apps/chrome-windows-uia.md`：在 Chrome 設定頁用 UIA 切換設定
 - `apps/mattermost.md`：Mattermost 唯讀查詢、經發件匣發文
+- `apps/google-docs.md`：需要登入才看得到的 Google 文件怎麼讀（/mobilebasic）
 - `tasks/linux-no-sudo-browser-libs.md`：Linux 沒有 sudo 時補瀏覽器系統庫
 - `tasks/second-machine-via-wsl.md`：把 WSL 當第二台機器
 - `tasks/office-recalc-and-convert.md`：xlsx 重算、舊版 Office 轉 PDF
