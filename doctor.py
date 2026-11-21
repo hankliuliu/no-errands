@@ -349,7 +349,7 @@ def write_outputs(res, home, dur):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--home", default=os.path.join(os.path.expanduser("~"), ".no-errands"))
+    ap.add_argument("--home", default=os.environ.get("NO_ERRANDS_HOME") or os.path.join(os.path.expanduser("~"), ".no-errands"))
     ap.add_argument("--skip-desktop", action="store_true")
     ap.add_argument("--skip-browser", action="store_true")
     a = ap.parse_args()

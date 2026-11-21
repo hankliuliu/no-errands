@@ -359,7 +359,7 @@ def main():
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--project")
     g.add_argument("--user", action="store_true")
-    ap.add_argument("--home", default=os.path.join(os.path.expanduser("~"), ".no-errands"))
+    ap.add_argument("--home", default=os.environ.get("NO_ERRANDS_HOME") or os.path.join(os.path.expanduser("~"), ".no-errands"))
     ap.add_argument("--claude-dir", default=os.path.join(os.path.expanduser("~"), ".claude"),
                     help="--user 模式的 Claude 設定目錄（測試時務必覆寫到沙盒）")
     ap.add_argument("--uninstall", action="store_true")
