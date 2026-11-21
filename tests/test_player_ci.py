@@ -47,7 +47,7 @@ def main():
     run = os.path.join(td, "run"); os.makedirs(run)
     geom = os.path.join(td, "geom.json")
     json.dump({"step_index": 3, "steps_total": 12, "role": "長官", "status": "running", "step_id": "s03",
-               "captions": [{"text": "字幕測試ABC", "s": 30}], "layout": {"bar": [100, 500, 1000, 170]}},
+               "captions": [{"text": "字幕測試ABC", "s": 30}], "layout": {"bar": [20, 450, 900, 170]}},
               open(os.path.join(run, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
     json.dump({"state": "playing", "advance": "auto", "next_seq": 0}, open(os.path.join(run, "control.json"), "w"))
     env = dict(os.environ, NO_ERRANDS_HOME=home, NE_PLAYER_GEOM=geom, PYTHONIOENCODING="utf-8")
@@ -64,7 +64,7 @@ def main():
     p = launch()
     try:
         g = wait(lambda: rd(geom).get("window") and rd(geom), 15)
-        check("1 播放器開在 layout.bar 的位置", g and abs(g["window"][0] - 100) <= 2 and abs(g["window"][1] - 500) <= 2, g.get("window"))
+        check("1 播放器開在 layout.bar 的位置", g and abs(g["window"][0] - 20) <= 2 and abs(g["window"][1] - 450) <= 2, g.get("window"))
         check("1 字幕顯示 now.json 的字幕", g.get("caption_text") == "字幕測試ABC", g.get("caption_text"))
         fg0 = u.GetForegroundWindow()
         click(*g["pause"])
@@ -79,13 +79,13 @@ def main():
         x, y = g["caption"]
         u.SetCursorPos(x, y); u.mouse_event(0x0002, 0, 0, 0, 0)
         for k in range(1, 21):
-            u.SetCursorPos(x + 10 * k, y - 5 * k); time.sleep(0.02)
+            u.SetCursorPos(x + 3 * k, y - 6 * k); time.sleep(0.02)     # CI 螢幕只有 1024 寬：往右只拖一點，按鈕都留在螢幕內
         u.mouse_event(0x0004, 0, 0, 0, 0)
         g2 = wait(lambda: rd(geom).get("window") != g["window"] and rd(geom), 5)
         time.sleep(1.5)
         g2 = rd(geom)
         dx, dy = g2["window"][0] - g["window"][0], g2["window"][1] - g["window"][1]
-        check("4 拖動字幕 → 整個視窗往拖動方向移動", dx > 60 and dy < -30, (g["window"], g2.get("window")))
+        check("4 拖動字幕 → 整個視窗往拖動方向移動", dx > 20 and dy < -40, (g["window"], g2.get("window")))
         check("4 按鈕跟著字幕一起移動（位移相同）", abs((g2["pause"][0] - g["pause"][0]) - dx) <= 3
               and abs((g2["pause"][1] - g["pause"][1]) - dy) <= 3, (g["pause"], g2.get("pause"), dx, dy))
         saved = wait(lambda: rd(os.path.join(home, "player.json")).get("pos"), 5)
@@ -97,7 +97,7 @@ def main():
         check("5 重開 → 開在拖動後的位置", g3 and abs(g3["window"][0] - g2["window"][0]) <= 4 and abs(g3["window"][1] - g2["window"][1]) <= 4,
               ((g2 or {}).get("window"), (g3 or {}).get("window")))
         click(*g3["home"])
-        g4 = wait(lambda: abs(rd(geom).get("window", [0])[0] - 100) <= 2 and rd(geom), 5)
+        g4 = wait(lambda: abs(rd(geom).get("window", [0])[0] - 20) <= 2 and rd(geom), 5)
         check("5 歸位 → 回到預設位置、清掉記住的位置", g4 and not os.path.exists(os.path.join(home, "player.json")), (g4 or {}).get("window"))
     finally:
         try:

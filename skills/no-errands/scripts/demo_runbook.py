@@ -730,6 +730,19 @@ def runs_dir(rb):
     return os.path.normpath(d if os.path.isabs(d) else os.path.join(rb["_dir"], d))
 
 
+def new_run_dir(root, mode):
+    """每次執行一個資料夾；同一秒內啟動兩次（例：停止後立刻重開）時加序號，不會撞名。"""
+    base = os.path.join(root, time.strftime("%Y%m%d-%H%M%S-") + mode)
+    d, k = base, 1
+    while True:
+        try:
+            os.makedirs(d)
+            return d
+        except FileExistsError:
+            k += 1
+            d = "%s-%d" % (base, k)
+
+
 def runs_root(rb, persist):
     if persist:
         d = runs_dir(rb)
@@ -749,8 +762,7 @@ def execute(rb, mode, a):
     if mode == "live" and "--foreground" not in a:
         # 正式示範：引擎與播放器是獨立的背景行程，指令立刻返回；講者用播放器（或 control 指令）控制
         root = runs_root(rb, persist)
-        run_dir = os.path.join(root, time.strftime("%Y%m%d-%H%M%S-") + mode)
-        os.makedirs(run_dir)
+        run_dir = new_run_dir(root, mode)
         write_control(run_dir, state="playing", advance=advance, next_seq=0)
         passthru = [x for k in ("--from", "--to") if arg(a, k) for x in (k, arg(a, k))]
         kw = {"stdin": subprocess.DEVNULL, "env": dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8")}
@@ -775,7 +787,7 @@ def execute(rb, mode, a):
         run_dir = arg(a, "--run-dir")
         if not run_dir:
             root = runs_root(rb, persist)
-            run_dir = os.path.join(root, time.strftime("%Y%m%d-%H%M%S-") + mode)
+            run_dir = new_run_dir(root, mode)
         os.makedirs(run_dir, exist_ok=True)
         state = {"mode": mode, "runbook_sha256": rb_sha(rb), "struct_sha": struct_sha(rb), "approval": aid, "started": now_s(),
                  "persist": persist, "vars": {}, "steps": [], "next": 0}
