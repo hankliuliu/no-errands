@@ -633,13 +633,13 @@ def _export_menu_popup(prof, win, snap, chat):
     if not pops:
         raise Refused("點了選單按鈕，但沒有出現彈出選單")
     # 新出現的頂層視窗可能不只選單本身（陰影、提示框…）→ 逐一讀，取真的有項目的那個；項目可能還沒建好 → 重試
-    pop, items = None, []
+    pop, items, pop_root = None, [], None
     for _ in range(4):
         for cand in pops:
             res = popup_menu.popup_items(cand["hwnd"])
             its = [i for i in res.get("items", []) if i.get("name")]
             if its:
-                pop, items = cand, its
+                pop, items, pop_root = cand, its, res.get("root")
                 break
         if pop:
             break
@@ -674,7 +674,11 @@ def _export_menu_popup(prof, win, snap, chat):
         popup_menu.close_popup(pop["hwnd"])
         raise Refused("匯出項目目前不可用")
     before_fg = _fg()
-    popup_menu.click_item(pop["hwnd"], want[0])
+    try:
+        popup_menu.click_item(pop["hwnd"], want[0], root=pop_root)
+    except popup_menu.CoordMismatch as e:
+        popup_menu.close_popup(pop["hwnd"])
+        raise Refused("選單項目座標檢查沒過，沒有點：%s" % e)
     if before_fg is not None and _fg() != before_fg:
         FG_EVENTS.append("popup-click")
 

@@ -16,6 +16,18 @@
 """
 import ctypes, json, os, subprocess, tempfile, time
 
+# 座標一律用實體像素：UIA 回報的是實體像素，而沒宣告 DPI 感知的程序在縮放 150% 的螢幕上，
+# GetWindowRect／ScreenToClient 會給「縮放後」的邏輯座標 → 投遞的點擊落在錯的位置
+# （真機實測：點擊落在選單外，選單關掉、什麼都沒發生；換個版面就可能落在別的項目上）。
+if os.name == "nt":
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))   # PER_MONITOR_AWARE_V2
+    except Exception:
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            pass
+
 DUMP_PS = r"""
 param([long]$Hwnd)
 # stdout is a pipe read as UTF-8 by Python; PowerShell 5.1 would otherwise write the system code page (cp950 on zh-TW)
@@ -24,12 +36,13 @@ Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $items = @()
 try {
   $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Hwnd)
+  $rr = $root.Current.BoundingRectangle
   $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
   foreach ($e in $all) {
     $r = $e.Current.BoundingRectangle
     $items += @{ name = $e.Current.Name; type = ($e.Current.ControlType.ProgrammaticName -replace 'ControlType.',''); rect = @([int]$r.Left, [int]$r.Top, [int]$r.Right, [int]$r.Bottom); enabled = $e.Current.IsEnabled }
   }
-  ConvertTo-Json -Compress -Depth 4 @{ ok = $true; items = $items }
+  ConvertTo-Json -Compress -Depth 4 @{ ok = $true; items = $items; root = @([int]$rr.Left, [int]$rr.Top, [int]$rr.Right, [int]$rr.Bottom) }
 } catch { ConvertTo-Json -Compress @{ ok = $false; error = $_.Exception.Message } }
 """
 
@@ -89,13 +102,25 @@ def _deepest_child(hwnd, sx, sy):
     return cur
 
 
-def click_item(hwnd, item):
+class CoordMismatch(Exception):
+    pass
+
+
+def click_item(hwnd, item, root=None):
     """點彈出選單的項目，不移動實體游標：
-    項目是按鈕子視窗（Win32 / WinForms）→ 對它投遞 BM_CLICK；否則（Qt 等自繪）→ 對最深的視窗投遞滑鼠訊息。"""
+    項目是按鈕子視窗（Win32 / WinForms）→ 對它投遞 BM_CLICK；否則（Qt 等自繪）→ 對最深的視窗投遞滑鼠訊息。
+    點之前確認座標系一致（UIA 的視窗外框 = Win32 的視窗外框）、項目中心在視窗裡、換算後的點在目標的客戶區裡；
+    任何一項不成立就丟 CoordMismatch，不點。"""
     import ctypes.wintypes as wt
     u32 = _u32()
     l, t, r, b = item["rect"]
     sx, sy = (l + r) // 2, (t + b) // 2
+    wr = wt.RECT(); u32.GetWindowRect(hwnd, ctypes.byref(wr))
+    win = [wr.left, wr.top, wr.right, wr.bottom]
+    if root and any(abs(x - y) > 3 for x, y in zip(root, win)):
+        raise CoordMismatch("UIA 與 Win32 的視窗外框不一致（%s vs %s）：座標系不同（DPI 縮放？），不點" % (root, win))
+    if not (win[0] <= sx < win[2] and win[1] <= sy < win[3]):
+        raise CoordMismatch("項目中心不在選單視窗裡（%s 不在 %s）：不點" % ([sx, sy], win))
     target = _deepest_child(hwnd, sx, sy)
     cls = ctypes.create_unicode_buffer(128); u32.GetClassNameW(target, cls, 128)
     if target != hwnd and "button" in cls.value.lower():
@@ -103,6 +128,9 @@ def click_item(hwnd, item):
         return {"via": "BM_CLICK", "class": cls.value}
     pt = wt.POINT(sx, sy)
     u32.ScreenToClient(target, ctypes.byref(pt))
+    cr = wt.RECT(); u32.GetClientRect(target, ctypes.byref(cr))
+    if not (0 <= pt.x < cr.right and 0 <= pt.y < cr.bottom):
+        raise CoordMismatch("換算後的點不在目標的客戶區裡（%s，客戶區 %dx%d）：不點" % ([pt.x, pt.y], cr.right, cr.bottom))
     lp = ((pt.y & 0xFFFF) << 16) | (pt.x & 0xFFFF)
     u32.PostMessageW(target, 0x0200, 0, lp)          # WM_MOUSEMOVE（給該視窗，不是游標）
     time.sleep(0.05)
