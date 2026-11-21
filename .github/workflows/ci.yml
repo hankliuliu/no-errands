@@ -190,3 +190,15 @@ jobs:
             wizard.*
             dialogs.txt
           if-no-files-found: ignore
+      - name: B5 demo mode (headed browser + desktop, step screenshots -> guide.md)
+        continue-on-error: true
+        run: python tests/demo_lab.py --home ../wiz-home --out demo-out --i-am-ci | tee demo.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: demo-guide
+          path: |
+            demo-out/guide.md
+            demo-out/*.png
+            demo.txt
+          if-no-files-found: ignore
