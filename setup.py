@@ -109,6 +109,10 @@ def install_binaries(home, steps):
     json.dump(state, open(state_p, "w", encoding="utf-8"))
     return paths
 
+def neb_cmd(home):
+    return ned_cmd(home).replace("ned.py", "neb.py")
+
+
 def ned_cmd(home):
     py = sys.executable
     cfg_p = os.path.join(home, "config.json")
@@ -201,15 +205,16 @@ def managed_block(home, paths, checks=None, repo=None):
         "1. 先用最輕的手段：檔案 / CLI / curl 能解就不開瀏覽器、不開桌面工具。",
         "2. 回報完成前自己驗收一次（截圖或讀回）；單步回 ok ≠ 任務正確。",
         "以下工具本機已實測可用，直接照抄（不必先讀任何說明）：",
-        status("browser", "- 看網頁（一輪完成）：`\"%s\" batch \"open <url>\" \"screenshot <絕對路徑.png>\" \"close\"`" % ab),
-        status("browser", "- 操作網頁：`\"%s\" open <url>`→`snapshot -i -c`→`click '#sel'` / `fill '#sel' 文字`→`get text '#sel'`→`close`" % ab),
+        # 所有網頁一律經 neb（一般網站原樣通過、每次多約 0.1 秒）：不讓模型判斷哪個網站敏感，中途跳轉到敏感網域也有人看
+        status("browser", "- 看網頁（一輪完成）：`%s batch \"open <url>\" \"screenshot <絕對路徑.png>\" \"close\"`" % neb_cmd(home)),
+        status("browser", "- 操作網頁：`%s open <url>`→`... snapshot -i -c`→`... click @ref` / `... fill @ref 文字`→`... get text @ref`→`... close`"
+               % neb_cmd(home)),
         status("profile", "- 登入過的站免再登入：上述指令加 `--profile \"%s\"`" % prof),
         status("desktop", "- 看桌面視窗：`%s <App.exe> screenshot <絕對路徑.png>`" % ned_cmd(home)),
         status("desktop", "- 操作桌面：`%s <App.exe> snapshot -i --compact`→`... click '@ref'` / `... set-value '@ref' 文字`→`... get '@ref' --property value`（ned 會鎖定 app 範圍）" % ned_cmd(home)),
         "- 政策：%s（`%s show`；只在使用者明確要求時才改）" % (pol_mod.summary(pol), pol_cmd),
-        "- 通訊/郵件/金融類 app 與網站：未授權就不讀不碰；要碰先在對話中取得使用者指名同意。桌面 app 經 ned，"
-        "**網站（郵件、聊天、社群）一律經 neb，不直接呼叫 agent-browser**：`%s --profile \"%s\" open <url>`→`... snapshot -i`→`... click @ref`"
-        "（未授權的拒絕；授權了也只讀，不輸入、不執行腳本、不點送出類按鈕）。" % (ned_cmd(home).replace("ned.py", "neb.py"), prof),
+        "- **網頁一律經 neb、桌面一律經 ned，不直接呼叫 agent-browser／agent-desktop。** 通訊/郵件/金融類 app 與網站："
+        "未授權的會被拒絕，要碰先在對話中取得使用者指名同意；授權了也只讀（不輸入、不執行腳本、不點送出類按鈕）。",
         "- **你不能自己送出任何訊息**：要傳給別人的內容寫進一個文字檔，起草到核准發件匣："
         "`%s \"%s\" draft --service <fake|mattermost> --to <對象> --body-file <檔> --why \"<來由>\"`，"
         "回傳有 id 且 `... status <id>` 為 pending 才可說草稿已在發件匣；把網址告訴使用者，最多 `... wait <id>` 一次（上限 120 秒），沒結果就**結束回合**，不要自己寫迴圈查詢。發件匣頁面是你的禁區，不要開。"
@@ -246,6 +251,13 @@ def guard_rules(home):
     tf = (pol.get("mattermost") or {}).get("token_file")
     if tf:
         deny.append("Read(%s)" % rule_path(tf))
+    # 守門從「建議」變成「只有這條路」：不准直接呼叫兩個執行檔（ned／neb 用子行程呼叫，不受權限規則影響）。
+    # 2026-11-22 巢狀 claude -p（haiku）實測：萬用字元規則擋得住裸名稱、.exe、引號 Windows 路徑、正斜線與 /c/ 路徑、
+    # 先 cd 再相對路徑、bash -c 包裝、變數存整段路徑、PowerShell 呼叫運算子與先 Set-Location；neb 照常放行。
+    # 擋不住：把名稱拆開組（${A}-${B}.exe）、python 子行程拼字串、glob（agent-b*.exe）。只提到名稱的指令也會被擋（例如 grep）。
+    for tool in ("agent-browser", "agent-desktop"):
+        deny.append("Bash(*%s*)" % tool)
+        deny.append("PowerShell(*%s*)" % tool)
     for app in ("line", "mattermost", "teams", "slack", "outlook", "messages", "mail"):
         ask.append("Bash(%s \"%s\" %s:*)" % (py_bin, os.path.join(home, "bin", "chat_guard.py"), app))
     ask.append("Bash(%s \"%s\" grant:*)" % (py_bin, os.path.join(home, "bin", "policy.py")))
