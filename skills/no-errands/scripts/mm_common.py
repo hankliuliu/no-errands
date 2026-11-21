@@ -34,7 +34,7 @@ def read_kv_file(path):
         for sep in ("：", "=", ":"):
             k, s, v = line.partition(sep)
             k = k.strip()
-            if s and k and len(k) <= 24 and not k.lower().startswith("http") and (" " not in k or sep == "："):
+            if s and k and len(k) <= 24 and not k.lower().startswith("http") and (" " not in k or sep in ("：", ":")):
                 kv[k.lower()] = v.strip().strip('"').strip("'")
                 break
         else:

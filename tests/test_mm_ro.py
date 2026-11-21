@@ -89,6 +89,10 @@ def main():
         check("search（POST API）被拒絕", rc == 3, o)
         check("被拒絕的請求都沒有送到伺服器", len(SEEN) == n_before, SEEN[n_before:])
         check("伺服器從未收到非 GET", all(x[0] == "GET" for x in SEEN), SEEN)
+        # 英文介面複製下來的格式（半形冒號、鍵名有空格）
+        open(tok, "w", encoding="utf-8").write("Token Description: test\nToken ID: zyxwvutsrqponmlkjihgfedcba\nAccess Token: %s\n" % TOKEN)
+        o, rc = run("whoami")
+        check("whoami（英文頁面格式 Access Token: …）", o.get("ok") and o.get("username") == "tester", o)
         check("所有輸出都不含 token", not any(TOKEN in t for t in outputs))
     finally:
         srv.shutdown()
