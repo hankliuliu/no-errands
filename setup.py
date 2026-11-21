@@ -137,6 +137,28 @@ def load_policy_mod():
     import policy
     return policy
 
+OWN_MARK = ".installed-by-no-errands"
+
+
+def skill_is_ours(skill_dst, home):
+    """同名 skill 目錄是不是我們裝的：有標記檔，或記在我們的 config.json 安裝清單裡。"""
+    if not os.path.isdir(skill_dst):
+        return True   # 不存在 → 可以裝
+    if os.path.exists(os.path.join(skill_dst, OWN_MARK)):
+        return True
+    try:
+        cfg = json.load(open(os.path.join(home, "config.json"), encoding="utf-8"))
+        return any(os.path.abspath(i.get("skill", "")) == os.path.abspath(skill_dst) for i in cfg.get("installs", []))
+    except Exception:
+        return False
+
+
+def install_skill(skill_dst):
+    shutil.rmtree(skill_dst, ignore_errors=True)
+    shutil.copytree(os.path.join(REPO, "skills", "no-errands"), skill_dst)
+    open(os.path.join(skill_dst, OWN_MARK), "w", encoding="utf-8").write("installed by no-errands setup.py" + chr(10))
+
+
 def skill_tree_hash(d):
     h = hashlib.sha256()
     for root, _, files in sorted(os.walk(d)):
@@ -242,30 +264,58 @@ def apply_rules(path, rules, remove=False):
     return {"ok": True, "changed": changed, "removed" if remove else "added": changed}
 
 
+def _read_raw(path):
+    with open(path, encoding="utf-8", newline="") as f:   # 不轉換換行：逐位元組保留使用者的檔案
+        return f.read()
+
+
+def _write_raw(path, text):
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+
+CRLF, LF = chr(13) + chr(10), chr(10)
+
+
 def upsert_block(md_path, block):
-    text = open(md_path, encoding="utf-8").read() if os.path.exists(md_path) else ""
+    """只動受管區塊；區塊以外逐位元組保留（含行尾空白與 CRLF）。新加時在原文後面接「空行 + 區塊 + 換行」。"""
+    text = _read_raw(md_path) if os.path.exists(md_path) else ""
+    nl = CRLF if CRLF in text else LF
+    block = block.replace(LF, nl)
     if MARK_S in text and MARK_E in text:
         pre = text.split(MARK_S)[0]
         post = text.split(MARK_E, 1)[1]
         text = pre + block + post
+    elif text:
+        if not text.endswith(LF):
+            text += nl
+        text = text + nl + block + nl
     else:
-        text = (text.rstrip() + "\n\n" if text.strip() else "") + block + "\n"
-    open(md_path, "w", encoding="utf-8", newline="\n").write(text)
+        text = block + nl
+    _write_raw(md_path, text)
+
 
 def remove_block(md_path):
+    """移除受管區塊，以及新加時多接的那一個空行與結尾換行——原檔逐位元組還原。"""
     if not os.path.exists(md_path):
         return False
-    text = open(md_path, encoding="utf-8").read()
+    text = _read_raw(md_path)
     if MARK_S not in text:
         return False
+    nl = CRLF if CRLF in text else LF
     pre = text.split(MARK_S)[0]
     post = text.split(MARK_E, 1)[1] if MARK_E in text else ""
-    out = (pre.rstrip() + "\n" + post.lstrip()).strip()
-    if out:
-        open(md_path, "w", encoding="utf-8", newline="\n").write(out + "\n")
+    if pre.endswith(nl + nl):
+        pre = pre[: -len(nl)]
+    if post.startswith(nl):
+        post = post[len(nl):]
+    out = pre + post
+    if out.strip():
+        _write_raw(md_path, out)
     else:
         os.remove(md_path)
     return True
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -302,8 +352,7 @@ def main():
         synced = []
         paths = {t: os.path.join(home, "bin", exe_name(t)) for t in ("agent-desktop", "agent-browser")}
         for inst in cfg.get("installs", []):
-            shutil.rmtree(inst["skill"], ignore_errors=True)
-            shutil.copytree(os.path.join(REPO, "skills", "no-errands"), inst["skill"])
+            install_skill(inst["skill"])   # 只同步記在我們清單裡的目標
             upsert_block(inst["target"], managed_block(home, paths, checks=None, repo=REPO))
             synced.append(inst["target"])
         cfg["skill_hash"] = skill_tree_hash(os.path.join(REPO, "skills", "no-errands"))
@@ -324,9 +373,12 @@ def main():
 
     if a.uninstall:
         s1 = remove_block(md_path)
-        s2 = os.path.isdir(skill_dst)
+        s2 = os.path.isdir(skill_dst) and skill_is_ours(skill_dst, home)
         if s2:
             shutil.rmtree(skill_dst)
+        elif os.path.isdir(skill_dst):
+            steps.append({"step": "uninstall:skill", "ok": True, "skipped": "同名 skill 目錄不是我們裝的，保留不動",
+                          "path": skill_dst})
         steps.append({"step": "uninstall", "ok": True, "removed_block": s1, "removed_skill": s2,
                       "note": "%s 保留（bin/、browser-profile/、playbook-local/ 屬使用者資產），要全清就整個刪掉它" % home})
     else:
@@ -339,8 +391,13 @@ def main():
         steps.append({"step": "install:scripts+policy", "ok": True, "scripts": scripts,
                       "policy": os.path.join(home, "policy.json"),
                       "policy_created": created, "note": "既有 policy.json 不覆寫"})
-        shutil.rmtree(skill_dst, ignore_errors=True)
-        shutil.copytree(os.path.join(REPO, "skills", "no-errands"), skill_dst)
+        if not skill_is_ours(skill_dst, home):
+            steps.append({"step": "install:skill", "ok": False, "path": skill_dst,
+                          "error": "已有同名 skill 目錄「no-errands」，而且不是本工具裝的：中止，不覆蓋",
+                          "recovery": "確認那個目錄是什麼；要換成本工具的版本，先自己改名或移走它再重跑"})
+            print(json.dumps({"ok": False, "home": home, "steps": steps}, ensure_ascii=False, indent=1))
+            sys.exit(1)
+        install_skill(skill_dst)
         steps.append({"step": "install:skill", "ok": True, "path": skill_dst,
                       "hash": skill_tree_hash(skill_dst)})
         upsert_block(md_path, managed_block(home, paths, checks=None, repo=REPO))

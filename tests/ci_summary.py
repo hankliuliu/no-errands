@@ -35,7 +35,7 @@ if os.path.exists("doctor.json"):
 else:
     add("doctor.json", False, "missing")
 
-for f, label in (("outbox.txt", "outbox tests"), ("ned.txt", "ned tests"), ("mm.txt", "mm_ro tests"), ("neb.txt", "neb tests"), ("lineprof.txt", "LINE profile (offline)"), ("guard.txt", "guard rules"), ("office.txt", "office tests"), ("token.txt", "token flow (headless)"), ("b3.txt", "chat_guard B3"),
+for f, label in (("outbox.txt", "outbox tests"), ("ned.txt", "ned tests"), ("mm.txt", "mm_ro tests"), ("neb.txt", "neb tests"), ("lineprof.txt", "LINE profile (offline)"), ("guard.txt", "guard rules"), ("coexist.txt", "coexistence (P0.8)"), ("office.txt", "office tests"), ("token.txt", "token flow (headless)"), ("b3.txt", "chat_guard B3"),
                  ("n4pos.txt", "N4 positive control"), ("idle.txt", "idle gate")):
     if not os.path.exists(f):
         if f in ("b3.txt", "n4pos.txt", "idle.txt") and not os_name.startswith("windows"):

@@ -66,6 +66,7 @@ jobs:
           "$PY" tests/test_neb.py | tee neb.txt
           "$PY" tests/test_line_profile.py | tee lineprof.txt
           "$PY" tests/test_guard_rules.py | tee guard.txt
+          "$PY" tests/test_coexist.py | tee coexist.txt
           "$PY" tests/test_office.py | tee office.txt
           AB="$NE_HOME/bin/agent-browser"; [ -f "$AB.exe" ] && AB="$AB.exe"
           "$PY" tests/test_token_flow.py --ab "$AB" | tee token.txt
@@ -119,6 +120,7 @@ jobs:
             neb.txt
             lineprof.txt
             guard.txt
+            coexist.txt
             office.txt
             token.txt
             b3.*
