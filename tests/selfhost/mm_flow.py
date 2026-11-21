@@ -192,6 +192,23 @@ def main():
         check("e 有未讀（讀之前）", (chan.get("total_msg_count") or 0) > (m0.get("msg_count") or 0), (chan.get("total_msg_count"), m0.get("msg_count")))
         check("e 讀貼文後 last_viewed_at 與 msg_count 不變", m0.get("last_viewed_at") == m1.get("last_viewed_at")
               and m0.get("msg_count") == m1.get("msg_count"), (m0.get("last_viewed_at"), m1.get("last_viewed_at")))
+        # f. gather（聊天收集）：貼文 → 同步 → 編輯與刪除 → 再同步（只發 GET；編輯與刪除由測試腳本用管理員 API 代為製造）
+        p_a = api(base, "POST", "/posts", bob_tok, {"channel_id": ts["id"], "message": "gather probe A %d" % time.time()})
+        p_b = api(base, "POST", "/posts", bob_tok, {"channel_id": ts["id"], "message": "gather probe B %d" % time.time()})
+        o = tool("gather.py", "add", "--service", "mattermost", "--chat", ts["id"], "--since", time.strftime("%Y-%m-%d"))
+        gid = o.get("target")
+        o = tool("gather.py", "sync", "--target", gid or "")
+        r0 = (o.get("results") or [{}])[0]
+        check("f gather 第一次同步收到今天的貼文", r0.get("ok") and r0.get("total", 0) >= 2, o)
+        api(base, "PUT", "/posts/%s/patch" % p_a["id"], bob_tok, {"message": "gather probe A edited"})
+        api(base, "DELETE", "/posts/%s" % p_b["id"], bob_tok)
+        time.sleep(1.5)
+        o = tool("gather.py", "sync", "--target", gid or "")
+        r1 = (o.get("results") or [{}])[0]
+        rows = {m["id"]: m for m in (tool("gather.py", "read", "--target", gid or "").get("messages") or [])}
+        check("f 再同步：編輯過的貼文更新成新內容", rows.get(p_a["id"], {}).get("text") == "gather probe A edited", r1)
+        check("f 再同步：刪除的貼文標成已刪除（不默默消失）", rows.get(p_b["id"], {}).get("deleted") is True, r1)
+
         # 收掉發件匣伺服器
         try:
             for line in open(os.path.join(home, "outbox", "server.log"), encoding="utf-8"):
