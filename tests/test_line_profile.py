@@ -48,6 +48,18 @@ check("header_members：別的對話的標頭不算 → None", cg.header_members
 check("LINE profile 不再要求首行含名稱、改用發言者數", not P.get("verify_export_first_line_contains_chat")
       and P.get("verify_export_senders_within_members"))
 
+# gather 的「往上載入歷史」：只能捲目前對話的訊息區（聊天清單含其他對話預覽，不可捲）
+_chat = {"role": "listbox", "name": "", "children": [{"role": "button", "name": "a, 4人"} for _ in range(5)]}
+_msgs = {"role": "listbox", "name": "", "children": [{"role": "listitem", "name": "m"} for _ in range(5)]}
+def _scroll(node, allow):
+    try:
+        cg.assert_allowed(P, "scroll", node, (), {"zone": "main", "allow": allow}); return True
+    except cg.Refused:
+        return False
+check("訊息區＋history-scroll → 可以捲", _scroll(_msgs, "history-scroll"))
+check("聊天清單（子項是按鈕）→ 不可捲", not _scroll(_chat, "history-scroll"))
+check("沒有明確允許 → 不可捲", not _scroll(_msgs, None))
+
 # 靜態檢查：chat_guard 用 prof["k"]（缺了會 KeyError）讀的鍵，每個 profile 都要有，或前 8 行內有 prof.get("k") 守著。
 # 為什麼：真機 LINE 匯出存檔後因 prof["dialog_title"]（假聊天才有的鍵）當掉；CI 只跑假聊天所以抓不到。
 import inspect, re as _re

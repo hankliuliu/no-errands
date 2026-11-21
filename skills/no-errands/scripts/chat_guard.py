@@ -270,6 +270,12 @@ def assert_allowed(prof, action, node, parents, ctx):
         raise Refused("禁區元素（訊息輸入框/送出/表情等）：永遠不可操作")
     if role in prof["forbidden_roles_main"]:
         raise Refused("主視窗的文字輸入框一律不碰（不代發）")
+    if action == "scroll":
+        # 往上載入歷史（gather 的範圍實驗與補齊用）：只能捲目前對話的訊息區；聊天清單（含其他對話的預覽）不行
+        if ctx.get("allow") == "history-scroll" and role in ("list", "listbox") and not _is_chat_list(node) \
+                and not any(_is_chat_list(p_) for p_ in parents):
+            return
+        raise Refused("捲動只允許在目前對話的訊息區（往上載入歷史），不可捲聊天清單")
     if action != "click":
         raise Refused("主視窗只允許語意點擊（不輸入任何文字）")
     in_list = any(_is_list(prof, p_) for p_ in parents)
@@ -369,6 +375,8 @@ def guarded(prof, action, node, parents, ctx, text=None):
             ad("click", node["ref_id"])
         elif action == "set-value":
             ad("set-value", node["ref_id"], text)
+        elif action == "scroll":
+            ad("scroll", node["ref_id"], "--direction", "up", "--amount", str(text or 25))
     finally:
         after = _fg()
         if before is not None and after is not None and before != after:
@@ -439,12 +447,15 @@ def cmd_read(app, prof, chat, file_):
     out({"ok": True, "source": "window", "messages": msgs})
 
 
-def cmd_export(app, prof, dest, chat=None):
+def cmd_export(app, prof, dest, chat=None, load_hist=False):
     dest = os.path.abspath(dest)
     os.makedirs(dest, exist_ok=True)
     win = find_window(prof)
     snap = snapshot(win)
     if prof.get("export_via") == "popup":
+        if load_hist:   # gather：先把對話往上捲到底，讓匯出涵蓋畫面能載入的最早訊息
+            EXPORT_CTX["history"] = load_history(prof, win)
+            snap = snapshot(win)
         _export_menu_popup(prof, win, snap, chat)
     # 1) 選單 → 匯出（選單列版）
     for step in ([] if prof.get("export_via") == "popup" else prof["menu_path"]):
@@ -675,9 +686,45 @@ def cmd_export(app, prof, dest, chat=None):
         n = sum(1 for _ in f)
     ledger(app, "export", True, chat=chat)
     out({"ok": True, "path": target, "bytes": os.path.getsize(target), "lines": n,
+         "history": EXPORT_CTX.get("history"),
          "verified": verified,
          "saved_via": ("default-name-in-%s-then-moved" % moved_from) if moved_from else "typed-path",
          "dialog_folder_known": bool(dialog_folder)})
+
+
+def _is_chat_list(node):
+    """聊天清單：子項目幾乎都是按鈕（每個對話一顆，名稱打包著預覽）。LINE 的訊息區也是 listbox，但子項目不是按鈕。"""
+    kids = node.get("children") or []
+    return node.get("role") in ("list", "listbox") and len(kids) >= 3 and \
+        sum(1 for k in kids if k.get("role") == "button") >= 0.8 * len(kids)
+
+
+def load_history(prof, win, max_rounds=80, settle=1.2):
+    """把目前對話往上捲到不再載入更早的訊息為止。回傳 {"rounds", "items_before", "items_after", "stable"}（只有數字）。"""
+    def msg_list():
+        full = snapshot(win, interactive=False)
+        for node, parents in walk(full["tree"]):
+            if node.get("role") in ("list", "listbox") and not _is_chat_list(node) \
+                    and not any(_is_chat_list(p_) for p_ in parents) and node.get("ref_id"):
+                return node, parents
+        return None, None
+    node, parents = msg_list()
+    if not node:
+        raise Refused("找不到目前對話的訊息區，無法往上載入歷史")
+    count = lambda n: len(n.get("children") or [])
+    before = count(node); last = before; stable = 0; rounds = 0
+    while rounds < max_rounds and stable < 4:
+        rounds += 1
+        guarded(prof, "scroll", node, parents, {"zone": "main", "allow": "history-scroll"}, text=25)
+        time.sleep(settle)
+        n2, p2 = msg_list()
+        if not n2:
+            break
+        node, parents = n2, p2
+        c = count(node)
+        stable = stable + 1 if c == last else 0
+        last = c
+    return {"rounds": rounds, "items_before": before, "items_after": last, "stable": stable >= 4}
 
 
 def _export_menu_popup(prof, win, snap, chat):
@@ -810,7 +857,7 @@ def main():
         elif sub == "read":
             cmd_read(app, prof, arg(a, "--chat"), arg(a, "--file"))
         elif sub == "export":
-            cmd_export(app, prof, arg(a, "--to") or ".", arg(a, "--chat"))
+            cmd_export(app, prof, arg(a, "--to") or ".", arg(a, "--chat"), load_hist="--load-history" in a)
         elif sub == "close":
             cmd_close(app, prof)
         elif sub == "act" and len(a) >= 3 and a[2] in ("click", "set-value"):

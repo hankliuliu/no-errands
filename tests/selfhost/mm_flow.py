@@ -62,14 +62,27 @@ def main():
         for it in a.snapshot():
             if it["role"] == "radio" and re.search(r"true", it["name"], re.I):
                 tgt = it   # 第一組 true 不一定是 PAT；改用文字定位
-        snap_txt = a.run("snapshot").stdout
-        m = re.search(r'group "Enable Personal Access Tokens:?".*?radio "True"[^\n]*?\bref=(e\d+)', snap_txt, re.S | re.I)
-        if m:
-            a.run("click", "@" + m.group(1))
-        else:   # 診斷：印出「Enable Personal Access Tokens」這個設定本身的結構（測試伺服器）
-            i = snap_txt.lower().find("enable personal access tokens")
-            print("admin-console-PAT-setting:", snap_txt[max(0, i - 200): i + 900] if i >= 0 else "(title not found) " + snap_txt[:600])
-        a.click("button", r"^save$")
+        # 管理頁面是 SPA：剛載入時 Save 列還沒畫出來（CI 偶發「找不到按鈕 ^save$」）→ 等、重試，必要時重開頁面重點一次
+        saved = False
+        for attempt in range(3):
+            if attempt:
+                a.run("open", base + "/admin_console/integrations/integration_management")
+                a.run("wait", "--load", "networkidle")
+                time.sleep(2)
+            snap_txt = a.run("snapshot").stdout
+            m = re.search(r'group "Enable Personal Access Tokens:?".*?radio "True"[^\n]*?\bref=(e\d+)', snap_txt, re.S | re.I)
+            if m:
+                a.run("click", "@" + m.group(1))
+            else:   # 診斷：印出「Enable Personal Access Tokens」這個設定本身的結構（測試伺服器）
+                i = snap_txt.lower().find("enable personal access tokens")
+                print("admin-console-PAT-setting:", snap_txt[max(0, i - 200): i + 900] if i >= 0 else "(title not found) " + snap_txt[:600])
+            if a.find("button", r"^save$", tries=15):
+                a.click("button", r"^save$")
+                saved = True
+                break
+            print("save button not found (attempt %d); retrying" % (attempt + 1))
+        if not saved:
+            print("admin console: Save button never appeared after 3 attempts")
         admin_tok = login_token(base, adm, admpw)
         cfg = api(base, "GET", "/config", admin_tok)
         check("a 管理介面打開 PAT（伺服器設定為 true）", cfg["ServiceSettings"].get("EnableUserAccessTokens") is True,
