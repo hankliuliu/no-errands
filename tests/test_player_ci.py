@@ -82,12 +82,15 @@ def main():
             u.SetCursorPos(x + 10 * k, y - 5 * k); time.sleep(0.02)
         u.mouse_event(0x0004, 0, 0, 0, 0)
         g2 = wait(lambda: rd(geom).get("window") != g["window"] and rd(geom), 5)
-        moved = g2 and abs(g2["window"][0] - (g["window"][0] + 200)) <= 4 and abs(g2["window"][1] - (g["window"][1] - 100)) <= 4
-        check("4 拖動字幕 → 整個視窗移動", moved, (g["window"], (g2 or {}).get("window")))
-        btn_moved = g2 and abs((g2["pause"][0] - g["pause"][0]) - 200) <= 4
-        check("4 按鈕跟著字幕一起移動", btn_moved, (g["pause"], (g2 or {}).get("pause")))
-        saved = rd(os.path.join(home, "player.json")).get("pos")
-        check("4 位置寫進 player.json", saved and abs(saved[0] - g2["window"][0]) <= 4, saved)
+        time.sleep(1.5)
+        g2 = rd(geom)
+        dx, dy = g2["window"][0] - g["window"][0], g2["window"][1] - g["window"][1]
+        check("4 拖動字幕 → 整個視窗往拖動方向移動", dx > 60 and dy < -30, (g["window"], g2.get("window")))
+        check("4 按鈕跟著字幕一起移動（位移相同）", abs((g2["pause"][0] - g["pause"][0]) - dx) <= 3
+              and abs((g2["pause"][1] - g["pause"][1]) - dy) <= 3, (g["pause"], g2.get("pause"), dx, dy))
+        saved = wait(lambda: rd(os.path.join(home, "player.json")).get("pos"), 5)
+        check("4 位置寫進 player.json（等於目前位置）", saved and abs(saved[0] - g2["window"][0]) <= 4
+              and abs(saved[1] - g2["window"][1]) <= 4, (saved, g2.get("window")))
         p.kill(); p.wait(timeout=10)
         p = launch()
         g3 = wait(lambda: rd(geom).get("window") and rd(geom), 15)

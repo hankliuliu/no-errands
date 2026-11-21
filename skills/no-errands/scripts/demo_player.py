@@ -70,6 +70,7 @@ class Player:
         self.bg, self.fg, self.acc = "#15171c", "#f2f2f2", "#5b9cf6"
         r.configure(bg=self.bg)
         self.now, self.cap_i, self.cap_t0, self.step_seen = {}, 0, time.time(), None
+        self._moved, self._homed = False, False
         self.frozen_at = None
         self.bar = tk.Canvas(r, height=5, bg="#2a2d35", highlightthickness=0)
         self.bar.pack(fill="x", side="top")
@@ -152,6 +153,7 @@ class Player:
             json.dump({"pos": [int(x), int(y), int(w), int(h)], "ts": time.time()}, f)
 
     def home(self):
+        self._homed, self._moved = True, False
         try:
             os.remove(pos_file())
         except FileNotFoundError:
@@ -160,12 +162,28 @@ class Player:
 
     def drag_start(self, e):
         self._dx, self._dy = e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y()
+        self._moved, self._homed = True, False
 
     def drag_move(self, e):
         self.root.geometry("+%d+%d" % (e.x_root - self._dx, e.y_root - self._dy))
+        if time.time() - getattr(self, "_last_save", 0) > 0.3:      # 拖動途中也存（放開事件可能沒送到）
+            self._last_save = time.time()
+            self.save_pos()
 
     def drag_end(self, e):
         self.save_pos()
+
+    def keep_pos(self):
+        """畫面更新時：位置跟記住的不同（拖動後沒存到）就補存。歸位後不存。"""
+        if getattr(self, "_homed", False):
+            return
+        try:
+            cur = [self.root.winfo_x(), self.root.winfo_y()]
+            saved = (read_json(pos_file()).get("pos") or [None, None])[:2]
+            if self._moved and cur != saved:
+                self.save_pos()
+        except Exception:
+            pass
 
     def no_activate(self):
         """Windows：點播放器不會搶走鍵盤焦點（WS_EX_NOACTIVATE｜TOOLWINDOW）。"""
@@ -236,6 +254,7 @@ class Player:
         self.bar.delete("all")
         if n:
             self.bar.create_rectangle(0, 0, int(w * i / n), 5, fill=self.acc, width=0)
+        self.keep_pos()
         self.root.after(250, self.tick)
 
     def run(self):
