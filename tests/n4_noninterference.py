@@ -73,6 +73,7 @@ def main():
     with open(os.path.join(home, "policy.json"), encoding="utf-8") as f:
         pol = json.load(f)
     pol.setdefault("outbox", {})["port"] = 8797
+    pol["idle_min_s"] = 0   # 測試：閒置閘門不等（輸入監看仍在）
     json.dump(pol, open(os.path.join(home, "policy.json"), "w", encoding="utf-8"))
 
     samples_p = os.path.join(tmp, "samples.jsonl")

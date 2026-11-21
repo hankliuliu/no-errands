@@ -118,6 +118,8 @@ def main():
         o = cg("locate", "--chat", "Alpha Team")
         check("閘門：未授權 app → 拒", o.get("refused") is True, o)
         pol("grant", "fake-chat")
+        _p = os.path.join(home, "policy.json"); _d = json.load(open(_p, encoding="utf-8")); _d["idle_min_s"] = 0
+        json.dump(_d, open(_p, "w", encoding="utf-8"), ensure_ascii=False)   # 測試：閒置閘門不等（輸入監看仍在）
         pol("whitelist", "add", "Alpha Team")
 
         # B3-1

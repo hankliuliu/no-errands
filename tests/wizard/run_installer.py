@@ -54,25 +54,32 @@ def main():
                 "Notepad++" in (w.get("title") or "") and "Setup" in (w.get("title") or "")]
         if not wins:
             continue
-        w = wins[0]
-        snap = ad("snapshot", "--window-id", w["id"], "-i", "--compact")
-        nodes = list(walk(snap.get("data", {}).get("tree", {})))
-        names = [n.get("name") for n in nodes if n.get("role") == "button"]
-        fin = [n for n in nodes if n.get("role") == "button" and n.get("name") in FINISH_NAMES]
-        if fin:
-            for n in nodes:   # uncheck "Run Notepad++" so nothing extra launches
-                if n.get("role") == "checkbox" and any(hh in (n.get("name") or "") for hh in RUN_CHECKBOX_HINTS):
-                    r = ad("uncheck", n["ref_id"]); LOG["steps"].append({"uncheck": n.get("name"), "ok": r.get("ok")})
-            r = ad("click", fin[0]["ref_id"]); LOG["steps"].append({"click": fin[0].get("name"), "ok": r.get("ok")})
-            finished = True
+        acted = False
+        for w in sorted(wins, key=lambda x: (x.get("bounds") or {}).get("width", 9999)):   # 小的（提示框）先處理
+            snap = ad("snapshot", "--window-id", w["id"], "-i", "--compact")
+            nodes = list(walk(snap.get("data", {}).get("tree", {})))
+            names = [n.get("name") for n in nodes if n.get("role") == "button"]
+            fin = [n for n in nodes if n.get("role") == "button" and n.get("name") in FINISH_NAMES]
+            if fin:
+                for n in nodes:   # uncheck "Run Notepad++" so nothing extra launches
+                    if n.get("role") == "checkbox" and any(hh in (n.get("name") or "") for hh in RUN_CHECKBOX_HINTS):
+                        r = ad("uncheck", n["ref_id"]); LOG["steps"].append({"uncheck": n.get("name"), "ok": r.get("ok")})
+                r = ad("click", fin[0]["ref_id"]); LOG["steps"].append({"click": fin[0].get("name"), "ok": r.get("ok")})
+                finished = True
+                break
+            nxt = [n for n in nodes if n.get("role") == "button" and n.get("name") in NEXT_NAMES
+                   and "disabled" not in str(n.get("states") or []).lower()]
+            if nxt:
+                r = ad("click", nxt[0]["ref_id"])
+                LOG["steps"].append({"title": w.get("title"), "click": nxt[0].get("name"), "ok": r.get("ok"),
+                                     "buttons": names[:6], "windows": len(wins)})
+                acted = True
+                break
+            LOG["steps"].append({"title": w.get("title"), "no_action": True, "buttons": names[:8], "windows": len(wins)})
+        if finished:
             break
-        nxt = [n for n in nodes if n.get("role") == "button" and n.get("name") in NEXT_NAMES
-               and "disabled" not in str(n.get("states") or []).lower()]
-        if nxt:
-            r = ad("click", nxt[0]["ref_id"])
-            LOG["steps"].append({"title": w.get("title"), "click": nxt[0].get("name"), "ok": r.get("ok"), "buttons": names[:6]})
-        else:
-            LOG["steps"].append({"title": w.get("title"), "waiting": True, "buttons": names[:6]})
+        if acted:
+            time.sleep(1.5)   # 讓精靈換頁（安裝中會停在同一頁一陣子）
     try:
         proc.wait(timeout=60)
     except subprocess.TimeoutExpired:
