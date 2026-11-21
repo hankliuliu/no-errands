@@ -43,6 +43,11 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb at-spi2-core libreoffice-calc libreoffice-writer zenity dbus-x11 openbox > /dev/null
 
+      - name: macOS LibreOffice (Office recalc/convert test)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: brew install --cask --quiet libreoffice > /dev/null 2>&1; ls /Applications/LibreOffice.app/Contents/MacOS/soffice
+
       - name: Codex CLI (Linux; to confirm the real CLI installs and runs)
         if: runner.os == 'Linux'
         continue-on-error: true

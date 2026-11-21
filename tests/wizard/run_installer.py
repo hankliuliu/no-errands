@@ -54,28 +54,89 @@ def clean(s):
     return (s or "").replace("&", "").strip()
 
 
-def bm_click(pid, name):
-    """在該程序所有頂層視窗的子視窗裡找文字相符的 Button，直接投遞 BM_CLICK。"""
-    found = []
-    ENUM = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+def _text(h):
+    t = ctypes.create_unicode_buffer(256); u32.GetWindowTextW(h, t, 256); return t.value
 
-    def child(h, _):
-        cls = ctypes.create_unicode_buffer(64); u32.GetClassNameW(h, cls, 64)
-        t = ctypes.create_unicode_buffer(128); u32.GetWindowTextW(h, t, 128)
-        if cls.value == "Button" and clean(t.value) == clean(name) and u32.IsWindowVisible(h):
-            found.append(h)
-        return True
-    child_cb = ENUM(child)
+
+def _cls(h):
+    c = ctypes.create_unicode_buffer(64); u32.GetClassNameW(h, c, 64); return c.value
+
+
+ENUM = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+
+
+def top_windows(pids):
+    """該程序群的可見頂層視窗（含 list-windows 濾掉的 owned 視窗，例如 Inno 的精靈）。"""
+    out = []
 
     def top(h, _):
         p = wt.DWORD(); u32.GetWindowThreadProcessId(h, ctypes.byref(p))
-        if p.value == pid:
-            u32.EnumChildWindows(h, child_cb, 0)
+        if p.value in pids and u32.IsWindowVisible(h):
+            out.append({"hwnd": h, "title": _text(h), "class": _cls(h), "pid": p.value,
+                        "owner": bool(u32.GetWindow(h, 4))})
         return True
-    u32.EnumWindows(ENUM(top), 0)
-    for h in found:
+    cb = ENUM(top)
+    u32.EnumWindows(cb, 0)
+    return out
+
+
+def children(hwnd):
+    found = []
+
+    def child(h, _):
+        if u32.IsWindowVisible(h):
+            found.append({"hwnd": h, "name": clean(_text(h)), "class": _cls(h), "enabled": bool(u32.IsWindowEnabled(h))})
+        return True
+    cb = ENUM(child)
+    u32.EnumChildWindows(hwnd, cb, 0)
+    return found
+
+
+def buttons_of(hwnd):
+    return [c for c in children(hwnd) if "button" in c["class"].lower()]
+
+
+def bm_click(pid, name):
+    """在該程序所有頂層視窗的子視窗裡找文字相符的按鈕（Button / TNewButton…），直接投遞 BM_CLICK。"""
+    hs = [b["hwnd"] for w in top_windows({pid}) for b in buttons_of(w["hwnd"]) if b["name"] == clean(name)]
+    for h in hs:
         u32.PostMessageW(h, 0x00F5, 0, 0)   # BM_CLICK
-    return len(found)
+    return len(hs)
+
+
+def wm_command(h):
+    """真的點一下按鈕，最後就是父視窗收到 WM_COMMAND(BN_CLICKED)。直接投遞它：不需要前景、不注入輸入。
+    BM_CLICK 在對話框不是作用中視窗時可能失效（MSDN 註明），WM_COMMAND 不受影響。"""
+    parent = u32.GetParent(h)
+    cid = u32.GetDlgCtrlID(h)
+    return bool(u32.PostMessageW(parent, 0x0111, cid & 0xFFFF, h))
+
+
+def wm_command_by_name(pid, name):
+    hs = [b["hwnd"] for w in top_windows({pid}) for b in buttons_of(w["hwnd"]) if b["name"] == clean(name)]
+    return sum(wm_command(h) for h in hs)
+
+
+def checked(h):
+    return u32.SendMessageW(h, 0x00F0, 0, 0) == 1   # BM_GETCHECK
+
+
+def child_pids(pid):
+    """安裝程式常會再起一個程序（Inno 的 setup.tmp、NSIS 自我提權）→ 一併納入。"""
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                              "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }"],
+                             capture_output=True, text=True, timeout=30).stdout.split()
+        pairs = list(zip(map(int, out[0::2]), map(int, out[1::2])))
+    except Exception:
+        return {pid}
+    res, grew = {pid}, True
+    while grew:
+        grew = False
+        for c, par in pairs:
+            if par in res and c not in res:
+                res.add(c); grew = True
+    return res
 
 
 def page_key(nodes):
@@ -103,7 +164,44 @@ def main():
         wins = [w for w in (ad("list-windows").get("data") or [])
                 if w.get("pid") == proc.pid or "Setup" in (w.get("title") or "") or "安裝" in (w.get("title") or "")]
         if not wins:
-            if proc.poll() is not None and LOG["steps"]:
+            # list-windows 看不到（例如 Inno 精靈是隱藏應用程式視窗擁有的 owned 視窗）→ Win32 列舉＋WM_COMMAND
+            pids = child_pids(proc.pid)
+            tops = [t for t in top_windows(pids) if t["title"]]
+            if tops and not LOG.get("win32_seen"):
+                LOG["win32_seen"] = [{k: t[k] for k in ("title", "class", "owner")} for t in tops][:6]
+            if not tops and time.time() - t0 > 30 and "diag_listwindows" not in LOG:
+                LOG["diag_listwindows"] = [(w.get("title"), w.get("pid")) for w in (ad("list-windows").get("data") or [])][:10]
+                LOG["diag_pids"] = sorted(pids)
+            for t in sorted(tops, key=lambda x: len(buttons_of(x["hwnd"])), reverse=True):
+                kids = children(t["hwnd"])
+                bs = [c for c in kids if "button" in c["class"].lower()]
+                if not bs:
+                    continue
+                key = (t["title"], tuple(sorted(c["name"] for c in kids))[:16])
+                stall = stall + 1 if key == last_key else 0
+                last_key = key
+                for b in bs:   # 授權頁「我接受」
+                    if any(hh in b["name"] for hh in ACCEPT_HINTS) and not checked(b["hwnd"]):
+                        wm_command(b["hwnd"]); LOG["steps"].append({"win32": "accept", "name": b["name"]})
+                fin = [b for b in bs if b["name"] in FINISH_NAMES and b["enabled"]]
+                if fin:
+                    for b in bs:   # 「執行 / 檢視」勾選框取消
+                        if any(hh in b["name"] for hh in RUN_HINTS) and checked(b["hwnd"]):
+                            wm_command(b["hwnd"])
+                    wm_command(fin[0]["hwnd"]); finished = True
+                    LOG["steps"].append({"win32": "Finish"}); LOG["methods_used"].append("win32_wm_command:Finish")
+                    break
+                nxt = [b for b in bs if b["name"] in NEXT_NAMES and b["enabled"]]
+                if nxt:
+                    wm_command(nxt[0]["hwnd"])
+                    LOG["steps"].append({"win32": nxt[0]["name"], "page": t["title"], "class": nxt[0]["class"], "stall": stall})
+                    LOG["methods_used"].append("win32_wm_command:%s" % nxt[0]["name"])
+                else:
+                    LOG["steps"].append({"win32_page": t["title"], "buttons": [(b["name"], b["enabled"]) for b in bs][:8]})
+                break
+            if finished:
+                break
+            if not tops and proc.poll() is not None and LOG["steps"]:
                 break
             continue
         for w in sorted(wins, key=lambda x: (x.get("bounds") or {}).get("width", 9999)):
@@ -134,14 +232,20 @@ def main():
             if stall == 0:
                 escalate = 0
             if stall >= 3 and escalate == 0:
-                k = bm_click(w["pid"], name); escalate = 1
+                k = wm_command_by_name(w["pid"], name); escalate = 1
+                LOG["steps"].append({"page": w.get("title"), "method": "WM_COMMAND", "button": name, "posted": k})
+                LOG["methods_used"].append("wm_command:%s" % name)
+            elif stall >= 5 and escalate == 1:
+                k = bm_click(w["pid"], name); escalate = 2
                 LOG["steps"].append({"page": w.get("title"), "method": "BM_CLICK", "button": name, "hwnds": k})
                 LOG["methods_used"].append("bm_click:%s" % name)
-            elif stall >= 6 and escalate == 1:
-                ad("focus-window", "--window-id", w["id"])   # 實體點擊會落在最上層的視窗 → 先把安裝程式拉到前景（只在 CI）
+            elif stall >= 7 and escalate == 2:
+                # 實體點擊會落在最上層的視窗 → 先把安裝程式拉到前景（只在 CI）
+                fw = ad("focus-window", "--window-id", w["id"]).get("ok")
                 time.sleep(0.5)
-                r = ad("click", "--headed", nxt[0]["ref_id"]); escalate = 2
-                LOG["steps"].append({"page": w.get("title"), "method": "physical(--headed)", "button": name, "ok": r.get("ok")})
+                r = ad("click", "--headed", nxt[0]["ref_id"]); escalate = 3
+                LOG["steps"].append({"page": w.get("title"), "method": "physical(--headed)", "button": name,
+                                     "ok": r.get("ok"), "focus_ok": fw})
                 LOG["methods_used"].append("physical:%s" % name)
             else:
                 r = ad("click", nxt[0]["ref_id"])
@@ -161,6 +265,7 @@ def main():
                 break
     LOG["removed"] = not os.path.exists(spec["target"])
     LOG["ok"] = LOG["finished_clicked"] and LOG["installed"] and LOG["removed"]
+    LOG["methods_used"] = sorted(set(LOG["methods_used"]))
     LOG["steps"] = LOG["steps"][-40:]
     print(json.dumps(LOG, ensure_ascii=False, indent=1))
     if arg("--out"):
