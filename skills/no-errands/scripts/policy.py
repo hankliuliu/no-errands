@@ -170,6 +170,12 @@ def norm_host(host):
     """主機名正規化：小寫、去結尾的點與 IPv6 方括號；loopback 的各種寫法（localhost、127.x.x.x、::1、0.0.0.0）
     一律變成 "loopback"——同一台機器、同一個埠不能換個寫法就不設防。"""
     h = (host or "").strip().lower().rstrip(".").strip("[]")
+    if h and all(c in "0123456789abcdefx." for c in h) and any(c.isdigit() for c in h):
+        try:                                    # 十進位／十六進位／簡寫的 IPv4（2130706433、0x7f000001、127.1）
+            import socket
+            h = socket.inet_ntoa(socket.inet_aton(h))
+        except (OSError, ValueError):
+            pass
     if h in ("localhost", "::1", "0.0.0.0", "0:0:0:0:0:0:0:1", "::") or h.endswith(".localhost") \
             or (h.startswith("127.") and all(p.isdigit() for p in h.split("."))) or h.startswith("::ffff:127."):
         return "loopback"

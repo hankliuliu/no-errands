@@ -12,6 +12,8 @@ agent 可用的子指令（只有這三個；沒有 send）：
       → pending | sent | rejected（附使用者的退回原因）；60 秒內查同一 id 超過 3 次會附 stop_polling
   outbox.py wait <id> [--timeout 秒]
       → 有上限（120 秒）的等待；一有結果就回，逾時回 pending 與「現在結束回合」
+  outbox.py withdraw <id> [--why 原因]
+      → 撤回自己還沒被決定的草稿（只能讓東西不送出；已核准的劇本請使用者在歷史頁撤銷）
 
 人或安裝程式用的：
   outbox.py serve            # 前景啟動伺服器（draft 會自動在背景啟動它）
@@ -28,7 +30,7 @@ runbook → 示範劇本的目標主機（例 localhost:8065），內文檔是 d
 Host/Origin，並擋下自動化瀏覽器。這擋得住「過度熱心」的 agent 順手按核准，**不是**對抗
 惡意程式的安全邊界——能在你電腦上任意執行程式的東西，本來就能做任何事。
 """
-import hashlib, json, os, secrets, socket, subprocess, sys, threading, time, urllib.error
+import hashlib, json, os, re, secrets, socket, subprocess, sys, threading, time, urllib.error
 import urllib.parse, urllib.request, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -150,6 +152,20 @@ def runbook_days(doc):
         return RUNBOOK_DAYS
 
 
+def rebuild_pattern(shown, vars_):
+    """由「顯示用文字」（變數寫成 «名稱»）與各變數格式重建 neb 會用的正規表示式；
+    卡片顯示的就是這兩樣，所以清單裡的 pattern 必須與重建結果完全相同（防止顯示與強制不一致）。"""
+    parts, pos = [], 0
+    for k, m in enumerate(re.finditer(r"«([A-Za-z_]\w*)»", shown)):
+        if m.group(1) not in vars_:
+            raise ValueError("變數 %s 沒有格式" % m.group(1))
+        parts.append(re.escape(shown[pos:m.start()]))
+        parts.append("(?P<v_%s_%d>%s)" % (m.group(1), k, vars_[m.group(1)]))
+        pos = m.end()
+    parts.append(re.escape(shown[pos:]))
+    return "".join(parts)
+
+
 def parse_runbook_body(body):
     doc = json.loads(body)
     if doc.get("kind") != RUNBOOK_KIND:
@@ -164,8 +180,11 @@ def parse_runbook_body(body):
         for i in s.get("inputs") or []:
             if not i.get("at") or not i.get("fields"):
                 raise ValueError("輸入要有網址路徑（at）與欄位名稱")
-            if i.get("text") is None and not ("(?P<" in str(i.get("pattern", ""))):
-                raise ValueError("變動的輸入必須用具名群組宣告格式")
+            if i.get("text") is None:
+                if not i.get("shown") or not isinstance(i.get("vars"), dict) or not i["vars"]:
+                    raise ValueError("變動的輸入必須附顯示文字（shown）與各變數的格式（vars）")
+                if rebuild_pattern(i["shown"], i["vars"]) != i.get("pattern"):
+                    raise ValueError("變動輸入的 pattern 與卡片上顯示的文字＋變數格式不一致")
         for k in (s.get("keys") or []) + (s.get("clicks") or []):
             if not isinstance(k, dict) or not k.get("at"):
                 raise ValueError("按鍵與點擊要有網址路徑（at）")
@@ -325,7 +344,8 @@ const KEY=__KEY__;const ROBOT=!!navigator.webdriver;if(ROBOT)document.getElement
 let data={pending:[],sent:[],rejected:[],approved:[],revoked:[]};let sig="";
 function rbTable(d){let doc;try{doc=JSON.parse(d.body)}catch(e){return '<div class="err">清單格式錯誤</div>'}
   const rows=doc.sends.map(s=>{const c=[],at=new Set();
-    (s.inputs||[]).forEach(i=>{at.add(i.at);c.push(`在 ${esc(i.at)}｜欄位「${esc((i.fields||[]).join("／"))}」← ${i.text!=null?esc(i.text):`<span class="var">符合格式 ${esc(i.pattern)}</span>`}`)});
+    const shown=i=>esc(i.shown).replace(/«([A-Za-z_]\w*)»/g,(m,n)=>`<span class="var">«${n}：格式 ${esc((i.vars||{})[n])}，不含空白、最長 64 字»</span>`);
+    (s.inputs||[]).forEach(i=>{at.add(i.at);c.push(`在 ${esc(i.at)}｜欄位「${esc((i.fields||[]).join("／"))}」← ${i.text!=null?esc(i.text):shown(i)}`)});
     (s.keys||[]).forEach(k=>{at.add(k.at);c.push(`在 ${esc(k.at)}｜按鍵 ${esc(k.key)}（只在焦點欄位與內容都等於上面核准的輸入時）`)});
     (s.clicks||[]).forEach(k=>{at.add(k.at);c.push(`在 ${esc(k.at)}｜按「${esc(k.name)}」`)});
     return `<tr><td>${esc(s.step)}</td><td>${esc(s.account)}</td><td class="c">${[...at].map(esc).join("\n")}</td><td class="c">${c.join("\n")}<div class="agent">agent 的說明（不是強制內容）：${esc(s.kind)}｜${esc(s.where)}${(s.vary||[]).length?"｜"+esc(s.vary.join("；")):""}</div></td></tr>`}).join("");
@@ -744,12 +764,28 @@ def cmd_wait(a):
         time.sleep(1)
 
 
+def cmd_withdraw(a):
+    """agent 撤回自己還沒被決定的草稿（安全方向：只能讓東西不送出）。已核准／已送出的不能撤回。"""
+    if len(a) < 2:
+        _out({"ok": False, "error": "用法：outbox.py withdraw <id> [--why 原因]"}, 2)
+    with LOCK:
+        st, rec = find(a[1])
+        if st != "pending":
+            _out({"ok": False, "error": "只能撤回待核准的草稿（目前：%s）" % (st or "不存在")}, 3)
+        rec.update(decided=time.strftime("%Y-%m-%d %H:%M:%S"), decided_via="agent-withdraw", withdrawn=True,
+                   reject_reason="agent 撤回：" + (_arg(a, "--why", "") or "")[:300])
+        move(rec, "pending", "rejected")
+    _out({"ok": True, "id": rec["id"], "state": "rejected", "withdrawn": True})
+
+
 def main():
     a = sys.argv[1:]
     if not a or a[0] in ("-h", "--help"):
         print(__doc__); sys.exit(2)
     if a[0] == "draft":
         cmd_draft(a)
+    elif a[0] == "withdraw":
+        cmd_withdraw(a)
     elif a[0] == "status":
         cmd_status(a)
     elif a[0] == "wait":

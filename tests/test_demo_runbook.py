@@ -168,7 +168,8 @@ def main():
         run(POL, "grant", "demo-mm", "--reason", "test")
         # loopback 的各種寫法、userinfo 都視為同一台
         for u in ("http://127.0.0.1:8065/t", "http://x@localhost:8065/t", "http://[::1]:8065/t", "http://0.0.0.0:8065/t",
-                  "http://LOCALHOST.:8065/t", "http://127.1.2.3:8065/t"):
+                  "http://LOCALHOST.:8065/t", "http://127.1.2.3:8065/t", "http://2130706433:8065/t",
+                  "http://0x7f000001:8065/t", "http://127.1:8065/t"):
             neb("demo_a", "open", u); neb("demo_a", "snapshot", "-i")
             rc, o = neb("demo_a", "fill", "@e1", "x")
             check("同一台換寫法（%s）也受保護 → fill 拒" % u.split("//")[1].split("/")[0], rc == 3, o)
@@ -205,6 +206,12 @@ def main():
         bdp = os.path.join(home, "bd.json"); json.dump(bd, open(bdp, "w", encoding="utf-8"), ensure_ascii=False)
         rc, o, _ = run(OUTBOX, "draft", "--service", "runbook", "--to", "localhost:8065", "--body-file", bdp)
         check("清單裡的變動輸入沒有具名群組 → 發件匣拒收", rc == 2, o)
+        bd = json.loads(json.dumps(doc))
+        s2b = [s for s in bd["sends"] if s["step"] == "s2"][0]
+        s2b["inputs"][0]["pattern"] = s2b["inputs"][0]["pattern"].replace("C-[0-9a-f]{8}", ".+")
+        json.dump(bd, open(bdp, "w", encoding="utf-8"), ensure_ascii=False)
+        rc, o, _ = run(OUTBOX, "draft", "--service", "runbook", "--to", "localhost:8065", "--body-file", bdp)
+        check("pattern 與卡片顯示的文字＋變數格式不一致 → 發件匣拒收", rc == 2 and "不一致" in o.get("error", ""), o)
         bd = json.loads(json.dumps(doc)); bd["sends"][0]["keys"] = ["Enter"]
         json.dump(bd, open(bdp, "w", encoding="utf-8"), ensure_ascii=False)
         rc, o, _ = run(OUTBOX, "draft", "--service", "runbook", "--to", "localhost:8065", "--body-file", bdp)
@@ -229,7 +236,7 @@ def main():
         aid = o.get("id")
         code, page = http(base)
         check("頁面：強制的網址路徑與內容、agent 說明分開、真正的格式、可執行次數",
-              "網址路徑（強制）" in page and "agent 的說明（不是強制內容）" in page and "符合格式" in page
+              "網址路徑（強制）" in page and "agent 的說明（不是強制內容）" in page and "不含空白、最長 64 字»" in page
               and "select class=\"runs\"" in page)
         (code, t), p1 = approve(aid, action="edit", text="x")
         check("劇本不能在頁面上修改後核准", code == 400, t)
@@ -319,6 +326,20 @@ def main():
         rc3, o = neb("demo_a", "fill", "@e1", "/case help", "--runbook-approval", aid1, "--step", "s1",
                      extra_env={"NE_RB_REUSE_GAP_S": "9999"})
         check("環境變數不能把重試視窗調寬", rc3 == 3, o)
+        rc, o, _ = rbj("preflight", rbp, "--approval", aid1)
+        rem = [c for c in o.get("checks", []) if c["check"].startswith("每個送出步驟還剩")]
+        check("preflight：有步驟次數用完 → 失敗並指出哪一步", rem and not rem[0]["ok"] and "s1" in rem[0]["detail"], rem)
+        rc, o, _ = rbj("preflight", rbp, "--approval", aid1, "--demo-at", "2099-01-01 10:00")
+        exp = [c for c in o.get("checks", []) if c["check"].startswith("核准到期")]
+        check("preflight：核准會在預定示範前到期 → 失敗", exp and not exp[0]["ok"], exp)
+
+        # ---------- agent 撤回自己的草稿
+        rc, o, _ = rbj("request-approval", rbp)
+        rc, w, _ = run(OUTBOX, "withdraw", o["id"], "--why", "改用新版")
+        rc2, st_, _ = run(OUTBOX, "status", o["id"])
+        check("agent 撤回待核准的草稿 → 不再能核准", rc == 0 and st_.get("state") == "rejected", (w, st_))
+        rc, w, _ = run(OUTBOX, "withdraw", aid)
+        check("已核准的劇本 agent 不能撤回（要使用者撤銷）", rc == 3, w)
 
         # ---------- login 規則
         rc, o, _ = rbj("login", rbp, "--account", "demo_b", "--secret-cmd", "echo " + SECRET)

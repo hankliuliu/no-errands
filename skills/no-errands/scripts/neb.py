@@ -107,6 +107,29 @@ def ab_json(base_cmd, js):
         return None
 
 
+def runbook_usage(aid, gap=REUSE_GAP_S):
+    """preflight 用：{步驟: {動作鍵: 已執行次數}}（同 uses_of 的算法）。"""
+    seen = {}
+    try:
+        with open(LEDGER, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                if e.get("runbook") == aid and e.get("runbook_ok") and e.get("key"):
+                    k = (str(e.get("step")), e["key"])
+                    n, last = seen.get(k, (0, None))
+                    t = e.get("t", 0)
+                    seen[k] = (n + 1 if last is None or t - last > gap else n, t)
+    except FileNotFoundError:
+        pass
+    out = {}
+    for (st, key), (n, _) in seen.items():
+        out.setdefault(st, {})[key] = n
+    return out
+
+
 def pattern_ok(pat, text):
     """變數規則：整段相符，且每個具名群組的值都過硬上限；沒有具名群組＝不接受（不靠 pattern 自律）。"""
     try:

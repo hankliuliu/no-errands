@@ -131,7 +131,8 @@ def sends_of(rb):
                     pat, shown = var_pattern(rb, act["text"])
                     ent = {"at": at, "fields": sorted(names_of(act["target"]))}
                     if pat:
-                        ent.update(pattern=pat, shown=shown)
+                        vs = {n: rb["vars"][n]["pattern"] for n in VAR_RE.findall(act["text"])}
+                        ent.update(pattern=pat, shown=shown, vars=vs)
                     else:
                         ent["text"] = act["text"]
                     if ent not in inputs:
@@ -564,8 +565,24 @@ def preflight(rb, a):
         br.close_all()
     aid = arg(a, "--approval")
     if aid:
-        ok, why = check_approval(rb, aid)
-        add("劇本核准有效且內容相符", ok, "" if ok else why)
+        ok, rec = check_approval(rb, aid)
+        add("劇本核准有效且內容相符", ok, "" if ok else rec)
+        if ok:
+            import neb
+            ap = rec["approval"]
+            usage = neb.runbook_usage(aid)
+            rem = {s["step"]: int(ap.get("max_runs") or 1) - max((usage.get(str(s["step"])) or {0: 0}).values())
+                   for s in json.loads(rec["body"])["sends"]}
+            low = min(rem.values()) if rem else 0
+            add("每個送出步驟還剩至少 1 次（上限 %s）" % ap.get("max_runs"), low >= 1,
+                "最少的是 %s：剩 %d 次" % (min(rem, key=rem.get), low) if rem else "")
+            demo_at = arg(a, "--demo-at")             # 預定的示範時間（本機時間 YYYY-MM-DD HH:MM）
+            if demo_at:
+                try:
+                    t = time.mktime(time.strptime(demo_at, "%Y-%m-%d %H:%M"))
+                    add("核准到期（%s）晚於預定示範時間" % ap.get("expires"), ap.get("expires_ts", 0) > t, demo_at)
+                except ValueError:
+                    add("預定示範時間格式", False, "要 YYYY-MM-DD HH:MM")
     allok = all(r["ok"] for r in res)
     out({"ok": allok, "checks": res}, 0 if allok else 1)
 
