@@ -59,6 +59,11 @@ def main():
         outputs.append(page)
         toks = re.findall(r"\b[0-9a-f]{40}\b", page)
         check("4 頁面顯示了新 token（一次性）", len(toks) >= 1)
+        if not toks:   # 診斷：這是測試伺服器，頁面上沒有 token 可外洩
+            b.dump()
+            raw = b.run("snapshot").stdout
+            print("form-area:", " | ".join(l.strip() for l in raw.splitlines()
+                                           if re.search(r"scope|permission|select|combobox|option|token|error|flash", l, re.I))[:1500])
         cfg = os.path.join(td, ".env")
         open(cfg, "w").write("OTHER=keep\nGITEA_TOKEN=%s\n" % (toks[0] if toks else ""))
         b.close()

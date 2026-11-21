@@ -66,6 +66,9 @@ def main():
         m = re.search(r'Enable Personal Access Tokens.*?radio "true" \[ref=(e\d+)\]', snap_txt, re.S | re.I)
         if m:
             a.run("click", "@" + m.group(1))
+        else:   # 診斷：印出 PAT 設定附近的結構（測試伺服器）
+            i = snap_txt.lower().find("personal access")
+            print("admin-console-near-PAT:", snap_txt[max(0, i - 300): i + 700] if i >= 0 else snap_txt[:1200])
         a.click("button", r"^save$")
         admin_tok = login_token(base, adm, admpw)
         cfg = api(base, "GET", "/config", admin_tok)
