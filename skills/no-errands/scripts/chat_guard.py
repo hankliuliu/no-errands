@@ -476,14 +476,19 @@ def cmd_export(app, prof, dest, chat=None, load_hist=False):
     # 2) 等系統另存新檔對話框
     titles = tuple(prof.get("dialog_titles") or ()) + ((prof["dialog_title"],) if prof.get("dialog_title") else ())
     dlg = None
-    for _ in range(25):
+    for _ in range(75):   # 真機第 2 次重試時 5 秒內沒等到 → 放寬到 15 秒
         time.sleep(0.2)
         cands = [w for w in ad("list-windows") if w.get("title") in titles and w.get("pid") == win.get("pid")]
         if len(cands) == 1:
             dlg = cands[0]
             break
     if not dlg:
-        raise Refused("另存新檔對話框沒有出現（或不唯一）")
+        diag = {"popup_click": EXPORT_CTX.get("popup_click"), "same_title_windows": len(cands)}
+        try:
+            diag["pid_windows"] = sorted({w.get("class") for w in popup_menu.popup_windows(win.get("pid"))}) if popup_menu else None
+        except Exception:
+            pass
+        raise Refused("另存新檔對話框沒有出現（或不唯一）；診斷：%s" % json.dumps(diag, ensure_ascii=False))
     def _fn(roles):
         return find_node(dsnap, lambda n: n.get("role") in roles and str(
             (n.get("native_id") or {}).get("value", "")) in prof["dialog_filename_ids"]
@@ -699,31 +704,41 @@ def _is_chat_list(node):
         sum(1 for k in kids if k.get("role") == "button") >= 0.8 * len(kids)
 
 
-def load_history(prof, win, max_rounds=80, settle=1.2):
-    """把目前對話往上捲到不再載入更早的訊息為止。回傳 {"rounds", "items_before", "items_after", "stable"}（只有數字）。"""
+def load_history(prof, win, max_rounds=80, settle=1.5):
+    """把目前對話往上捲到不再載入更早的訊息。用 UIA 找訊息區的位置（子項不是按鈕的那個 List；聊天清單的子項是按鈕），
+    再對主視窗投遞 WM_MOUSEWHEEL（不動實體游標）。回傳只有數字：{"rounds","items_before","items_after","stable"}。"""
+    if popup_menu is None or os.name != "nt":
+        raise Refused("往上載入歷史目前只支援 Windows")
+    pid = win.get("pid")
+    tops = sorted(popup_menu.popup_windows(pid), key=lambda w: (w["rect"][2] - w["rect"][0]) * (w["rect"][3] - w["rect"][1]))
+    if not tops:
+        raise Refused("找不到 app 的主視窗")
+    hwnd = tops[-1]["hwnd"]
+
     def msg_list():
-        full = snapshot(win, interactive=False)
-        for node, parents in walk(full["tree"]):
-            if node.get("role") in ("list", "listbox") and not _is_chat_list(node) \
-                    and not any(_is_chat_list(p_) for p_ in parents) and node.get("ref_id"):
-                return node, parents
-        return None, None
-    node, parents = msg_list()
-    if not node:
+        cands = [l for l in popup_menu.list_rects(hwnd) if l.get("children", 0) >= 1 and l.get("buttons", 0) < 0.5 * l["children"]]
+        if not cands:
+            return None
+        return max(cands, key=lambda l: (l["rect"][2] - l["rect"][0]) * (l["rect"][3] - l["rect"][1]))
+    ml = msg_list()
+    if not ml:
         raise Refused("找不到目前對話的訊息區，無法往上載入歷史")
-    count = lambda n: len(n.get("children") or [])
-    before = count(node); last = before; stable = 0; rounds = 0
+    before = last = ml["children"]; stable = rounds = 0
     while rounds < max_rounds and stable < 4:
         rounds += 1
-        guarded(prof, "scroll", node, parents, {"zone": "main", "allow": "history-scroll"}, text=25)
+        cx, cy = (ml["rect"][0] + ml["rect"][2]) // 2, (ml["rect"][1] + ml["rect"][3]) // 2
+        try:
+            popup_menu.wheel_up(hwnd, cx, cy, 10)
+        except popup_menu.CoordMismatch as e:
+            raise Refused("訊息區座標檢查沒過，沒有捲：%s" % e)
         time.sleep(settle)
-        n2, p2 = msg_list()
-        if not n2:
+        check_interrupt()
+        ml2 = msg_list()
+        if not ml2:
             break
-        node, parents = n2, p2
-        c = count(node)
-        stable = stable + 1 if c == last else 0
-        last = c
+        ml = ml2
+        stable = stable + 1 if ml["children"] == last else 0
+        last = ml["children"]
     return {"rounds": rounds, "items_before": before, "items_after": last, "stable": stable >= 4}
 
 
@@ -792,7 +807,7 @@ def _export_menu_popup(prof, win, snap, chat):
         raise Refused("匯出項目目前不可用")
     before_fg = _fg()
     try:
-        popup_menu.click_item(pop["hwnd"], want[0], root=pop_root)
+        EXPORT_CTX["popup_click"] = popup_menu.click_item(pop["hwnd"], want[0], root=pop_root)
     except popup_menu.CoordMismatch as e:
         popup_menu.close_popup(pop["hwnd"])
         raise Refused("選單項目座標檢查沒過，沒有點：%s" % e)

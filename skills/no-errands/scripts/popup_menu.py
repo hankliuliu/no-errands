@@ -145,3 +145,52 @@ def close_popup(hwnd):
     u32 = _u32()
     u32.PostMessageW(hwnd, 0x0100, 0x1B, 0)
     u32.PostMessageW(hwnd, 0x0101, 0x1B, 0xC0000000)
+
+
+LISTS_PS = r"""
+param([long]$Hwnd)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+try {
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Hwnd)
+  $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::List)
+  $out = @()
+  foreach ($l in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
+    $r = $l.Current.BoundingRectangle
+    $kids = $l.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+    $btn = 0; foreach ($k in $kids) { if ($k.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) { $btn++ } }
+    $out += @{ rect = @([int]$r.Left, [int]$r.Top, [int]$r.Right, [int]$r.Bottom); children = $kids.Count; buttons = $btn }
+  }
+  ConvertTo-Json -Compress -Depth 4 @{ ok = $true; lists = $out }
+} catch { ConvertTo-Json -Compress @{ ok = $false; error = $_.Exception.Message } }
+"""
+
+
+def list_rects(hwnd, timeout=30):
+    """視窗裡每個 UIA List 的位置、子項數、其中按鈕數（不回任何名稱）。"""
+    with tempfile.TemporaryDirectory() as td:
+        ps1 = os.path.join(td, "lists.ps1")
+        open(ps1, "w", encoding="ascii").write(LISTS_PS)
+        try:
+            p = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, str(hwnd)],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return []
+    try:
+        d = json.loads(p.stdout.strip().splitlines()[-1])
+        ls = d.get("lists") or []
+        return [ls] if isinstance(ls, dict) else ls
+    except Exception:
+        return []
+
+
+def wheel_up(hwnd, sx, sy, notches=10):
+    """對視窗投遞 WM_MOUSEWHEEL（往上）。座標是螢幕座標，Qt 依它分派給底下的元件；實體游標不動。"""
+    import ctypes.wintypes as wt
+    u32 = _u32()
+    wr = wt.RECT(); u32.GetWindowRect(hwnd, ctypes.byref(wr))
+    if not (wr.left <= sx < wr.right and wr.top <= sy < wr.bottom):
+        raise CoordMismatch("滾輪座標不在視窗裡（%s 不在 %s）" % ([sx, sy], [wr.left, wr.top, wr.right, wr.bottom]))
+    wparam = ((120 * notches) & 0xFFFF) << 16
+    lparam = ((sy & 0xFFFF) << 16) | (sx & 0xFFFF)
+    return bool(u32.PostMessageW(hwnd, 0x020A, wparam, lparam))
