@@ -55,6 +55,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--home", required=True)
     ap.add_argument("--out")
+    ap.add_argument("--standin", action="store_true",
+                    help="CI only: open an ordinary 'user' window and bring it to the front first, so the test "
+                         "measures whether we steal focus FROM it (a runner has no user window otherwise)")
     a = ap.parse_args()
     src_bin = os.path.join(a.home, "bin")
     tmp = tempfile.mkdtemp(prefix="ne-n4-")
@@ -76,6 +79,24 @@ def main():
     stop_p = os.path.join(tmp, "stop")
     state = os.path.join(tmp, "fakechat")
     typed_p = os.path.join(tmp, "typed.json")
+    standin = None
+    if a.standin:
+        import ctypes
+        sps = os.path.join(tmp, "standin.ps1")
+        open(sps, "w", encoding="ascii").write("\n".join([
+            "Add-Type -AssemblyName System.Windows.Forms",
+            "$f = New-Object System.Windows.Forms.Form",
+            "$f.Text = 'STANDIN-USER'; $f.Width = 500; $f.Height = 300",
+            "[System.Windows.Forms.Application]::Run($f)", ""]))
+        standin = subprocess.Popen(["powershell", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", sps])
+        hw = 0
+        for _ in range(50):
+            time.sleep(0.2)
+            hw = ctypes.windll.user32.FindWindowW(None, "STANDIN-USER")
+            if hw:
+                break
+        ctypes.windll.user32.SetForegroundWindow(hw)
+        time.sleep(0.8)
     sampler = ps_start("sampler.ps1", "-Out", samples_p, "-Seconds", "240", "-IntervalMs", "50", "-StopFile", stop_p)
     time.sleep(1.5)
     our_pids = set()
@@ -178,6 +199,8 @@ def main():
             sampler.wait(timeout=10)
         except Exception:
             sampler.kill()
+        if standin:
+            standin.kill()
         if fake:
             for pid in list(our_pids):
                 run(["taskkill", "/PID", str(pid), "/F"])

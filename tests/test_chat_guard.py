@@ -61,7 +61,7 @@ def main():
         except Exception:
             o = {"raw": p.stdout[-300:], "err": p.stderr[-300:]}
         STEPS.append({"step": " ".join(args[:3]), "ok": o.get("ok"), "secs": round(time.time() - t0, 1),
-                      "fg_changed": before["hwnd"] != after["hwnd"],
+                      "fg_changed": before["hwnd"] != after["hwnd"], "fg_after_ours": after["ours"],
                       "cursor_moved": (before["x"], before["y"]) != (after["x"], after["y"])})
         return o
 

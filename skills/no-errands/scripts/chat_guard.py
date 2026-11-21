@@ -47,6 +47,8 @@ PROFILES = {
         "dialog_filename_ids": {"1001", "1148"},          # 系統檔案對話框的檔名欄 automation id
         "dialog_save_ids": {"1"},                         # 「存檔」鈕
         "dialog_cancel_ids": {"2"},                       # 「取消」鈕
+        "overwrite_confirm_titles": ("Confirm Save As", "確認另存新檔"),
+        "confirm_no_ids": {"CommandButton_7", "7"},       # 覆寫確認的「否」（IDNO=7）
         # 身分驗證：app 產生的預設檔名與匯出檔第一行都要含目標對話名稱（只比對、不輸出）
         "verify_export_filename_contains_chat": True,
         "verify_export_first_line_contains_chat": True,
@@ -73,7 +75,9 @@ def ad(*args, timeout=30):
         raise RuntimeError("agent-desktop 輸出無法解析（rc=%d）" % p.returncode)
     if not d.get("ok"):
         err = d.get("error") or {}
-        raise RuntimeError("agent-desktop %s 失敗：%s" % (args[0], err.get("code") or err))
+        det = err.get("details") or {}
+        raise RuntimeError("agent-desktop %s 失敗：%s%s" % (args[0], err.get("code") or err,
+                           (" (%s)" % det.get("kind")) if det.get("kind") else ""))
     return d.get("data")
 
 
@@ -90,6 +94,11 @@ def ledger(app, sub, allowed, reason="", chat=None):
 
 
 def out(obj, code=0):
+    # 語意操作也可能讓 app 自己把視窗拉到前景（UIA press 會觸發某些 app 的啟用；是否成功取決於
+    # Windows 的前景鎖）。照實回報，讓 agent 告訴使用者。
+    if FG_EVENTS:
+        obj["foreground_taken"] = True
+        obj["foreground_taken_by"] = FG_EVENTS[:5]
     print(json.dumps(obj, ensure_ascii=False, indent=1))
     sys.exit(code)
 
@@ -172,12 +181,31 @@ def find_node(snap, pred):
     return None, None
 
 
+FG_EVENTS = []   # 每次操作後前景是否被換走（只記 handle 是否改變，不記標題）
+
+
+def _fg():
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        return ctypes.windll.user32.GetForegroundWindow()
+    except Exception:
+        return None
+
+
 def guarded(prof, action, node, parents, ctx, text=None):
     assert_allowed(prof, action, node, parents, ctx)
-    if action == "click":
-        ad("click", node["ref_id"])
-    elif action == "set-value":
-        ad("set-value", node["ref_id"], text)
+    before = _fg()
+    try:
+        if action == "click":
+            ad("click", node["ref_id"])
+        elif action == "set-value":
+            ad("set-value", node["ref_id"], text)
+    finally:
+        after = _fg()
+        if before is not None and after is not None and before != after:
+            FG_EVENTS.append(action)
 
 
 # ---------------------------------------------------------------- 子指令
@@ -278,8 +306,15 @@ def cmd_export(app, prof, dest, chat=None):
             raise Refused("另存新檔對話框不回應無障礙查詢（app 在點擊處理中開了模態對話框，UIA 被卡住）。"
                           "不改用鍵盤；請使用者自己按存檔或取消，這個 app 的匯出要另找路徑")
         raise
-    fname, fparents = find_node(dsnap, lambda n: n.get("role") in ("textfield", "combobox") and str(
-        (n.get("native_id") or {}).get("value", "")) in prof["dialog_filename_ids"] and "SetValue" in (n.get("available_actions") or []))
+    def _fn(roles):
+        return find_node(dsnap, lambda n: n.get("role") in roles and str(
+            (n.get("native_id") or {}).get("value", "")) in prof["dialog_filename_ids"]
+            and "SetValue" in (n.get("available_actions") or []))
+    # 先找內層的 Edit（textfield）：對外層 ComboBox set-value，有些 Windows 版本的對話框存檔時不採用
+    # （CI 的 Windows Server 實測：欄位讀回是我們的路徑，卻用預設檔名存到預設資料夾）
+    fname, fparents = _fn(("textfield",))
+    if not fname:
+        fname, fparents = _fn(("combobox",))
     save, sparents = find_node(dsnap, lambda n: n.get("role") == "button" and str(
         (n.get("native_id") or {}).get("value", "")) in prof["dialog_save_ids"])
     if not fname or not save:
@@ -305,7 +340,52 @@ def cmd_export(app, prof, dest, chat=None):
             cancel_and_refuse("預設檔名不含指名對話名稱（或讀不到）：開著的可能不是目標對話，已按取消、沒有存檔")
     target = os.path.join(dest, "chat-export-%s.txt" % time.strftime("%Y%m%d-%H%M%S"))
     guarded(prof, "set-value", fname, fparents, {"zone": "dialog"}, text=target)
+    try:
+        readback = (ad("get", fname["ref_id"], "--property", "value") or {}).get("value")
+    except RuntimeError:
+        readback = None
+    if readback != target:
+        cancel_and_refuse("檔名欄寫入後讀回不符，不存檔（已按取消）")
     guarded(prof, "click", save, sparents, {"zone": "dialog"})
+    # 不覆寫：若跳出「確認另存新檔」（檔案已存在），按「否」並停手
+    time.sleep(0.6)
+    conf = [w for w in ad("list-windows") if w.get("pid") == win.get("pid")
+            and w.get("title") in prof.get("overwrite_confirm_titles", ())]
+    if not conf:
+        # 有些版本的確認框長在另存新檔對話框的樹裡：對話框還開著、而且出現「否」鈕 → 同樣處理
+        still = [w for w in ad("list-windows") if w.get("title") == prof["dialog_title"] and w.get("pid") == win.get("pid")]
+        if still:
+            try:
+                if find_node(snapshot(still[0]), lambda n: n.get("role") == "button"
+                             and n.get("name") in ("No", "&No", "否", "否(N)", "否(&N)"))[0]:
+                    conf = still
+            except RuntimeError:
+                pass
+    if conf:
+        try:
+            NO_NAMES = ("No", "&No", "否", "否(N)", "否(&N)")
+            def is_no(n):
+                return n.get("role") == "button" and (str((n.get("native_id") or {}).get("value", ""))
+                                                      in prof.get("confirm_no_ids", set()) or n.get("name") in NO_NAMES)
+            no_btn = None
+            for w in conf + [x for x in ad("list-windows") if x.get("title") == prof["dialog_title"]
+                             and x.get("pid") == win.get("pid")]:
+                no_btn, _ = find_node(snapshot(w), is_no)
+                if no_btn:
+                    break
+            if no_btn:
+                ad("click", no_btn["ref_id"])
+                time.sleep(0.4)
+            d2 = [w for w in ad("list-windows") if w.get("title") == prof["dialog_title"] and w.get("pid") == win.get("pid")]
+            if d2:
+                s2 = snapshot(d2[0])
+                c2, _ = find_node(s2, lambda n: n.get("role") == "button" and str(
+                    (n.get("native_id") or {}).get("value", "")) in prof["dialog_cancel_ids"])
+                if c2:
+                    ad("click", c2["ref_id"])
+        except Exception:
+            pass
+        raise Refused("目標檔已存在而跳出覆寫確認：按了「否」與取消，沒有覆寫任何檔案")
     for _ in range(50):
         time.sleep(0.2)
         if os.path.exists(target) and os.path.getsize(target) > 0:

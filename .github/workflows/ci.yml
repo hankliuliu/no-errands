@@ -73,7 +73,7 @@ jobs:
         if: runner.os == 'Windows'
         continue-on-error: true
         run: |
-          python tests/n4_noninterference.py --home "$NE_HOME" --out n4.json | tee n4.txt
+          python tests/n4_noninterference.py --home "$NE_HOME" --out n4.json --standin | tee n4.txt
           python tests/n4_positive_control.py --i-am-ci | tee n4pos.txt
 
       - name: uninstall
