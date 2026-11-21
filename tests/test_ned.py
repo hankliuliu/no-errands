@@ -53,6 +53,21 @@ def main():
         check("未授權郵件 app → 拒", rc == 3, o)
         o, rc = ned("not a/valid;name", "snapshot")
         check("非正規 app 名 → 拒", rc == 3, o)
+        # 三平台名稱：macOS 顯示名稱 / bundle id、Linux 名稱都要被正規化成敏感類別
+        for nm in ("Microsoft Outlook", "com.apple.MobileSMS", "Messages", "Mail", "FaceTime", "jp.naver.line.mac",
+                   "LINE.app", "telegram-desktop", "signal-desktop", "Thunderbird", "org.gnome.Evolution", "Slack"):
+            o, rc = ned(nm, "snapshot", "-i")
+            check("三平台敏感名稱拒絕：" + nm, rc == 3 and "同意閘門" in o.get("error", ""), o)
+        for nm in ("Google Chrome", "gnome-calculator", "com.apple.TextEdit"):
+            o, rc = ned(nm, "snapshot", "-i")
+            check("一般 app（含空白/bundle id）放行：" + nm, rc == 0, o)
+        for nm in (r"C:\x\a.exe", "../evil", "a\"b", " Notepad.exe"):
+            o, rc = ned(nm, "snapshot")
+            check("路徑/引號/前後空白 → 拒：" + repr(nm), rc == 3, o)
+        subprocess.run([sys.executable, os.path.join(SC, "policy.py"), "grant", "line", "--reason", "test"],
+                       env=env, capture_output=True)
+        o, rc = ned("jp.naver.line.mac", "snapshot", "-i")
+        check("grant line 也認得 macOS bundle id（仍受未讀保護）", rc == 3 and "未讀保護" in o.get("error", ""), o)
         o, rc = ned("Notepad.exe", "click", "@sforeign9:e1")
         check("外來 ref → 拒", rc == 3 and "不是由 ned 產生" in o.get("error", ""), o)
         o, rc = ned("Notepad.exe", "focus", "@splain1:e1")

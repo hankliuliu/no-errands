@@ -83,7 +83,7 @@ jobs:
           "$PY" setup.py --uninstall --user --home "$NE_HOME" --claude-dir "$NE_CLAUDE" | tee uninstall.json
           test ! -d "$NE_CLAUDE/skills/no-errands" && echo "skill removed"
 
-      - name: summary
+      - name: summary (real results; fails the job if anything actually failed)
         if: always()
         env:
           NE_OS: ${{ matrix.os }}
@@ -91,7 +91,11 @@ jobs:
           NE_OUTBOX: ${{ steps.outbox.outcome }}
           NE_B3: ${{ steps.b3.outcome }}
           NE_N4: ${{ steps.n4.outcome }}
-        run: (python3 tests/ci_summary.py 2>/dev/null || python tests/ci_summary.py) >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          PY=$(command -v python3 || command -v python)
+          set +e; "$PY" tests/ci_summary.py > ci-summary.md; rc=$?; set -e
+          cat ci-summary.md >> "$GITHUB_STEP_SUMMARY"; cat ci-summary.md
+          exit $rc
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -105,4 +109,5 @@ jobs:
             b3.*
             n4*
             uninstall.json
+            ci-summary.md
           if-no-files-found: ignore

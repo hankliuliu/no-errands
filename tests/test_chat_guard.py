@@ -114,9 +114,26 @@ def main():
         o = cg("read", "--chat", "Alpha Team")
         check("B3-1 read 讀到訊息", o.get("ok") and "Ann: morning all" in (o.get("messages") or []), o)
         exp = os.path.join(home, "export")
-        o = cg("export", "--to", exp)
+        o = cg("export", "--chat", "Alpha Team", "--to", exp)
         check("B3-1 export 經另存新檔對話框寫出 .txt", o.get("ok") and o.get("lines", 0) >= 2
               and os.path.exists(o.get("path", "")), o)
+        check("B3-1 export 通過預設檔名與首行身分驗證", (o.get("verified") or {}).get("default_filename") is True
+              and (o.get("verified") or {}).get("first_line") is True, o)
+        # B3-5 身分驗證失敗的兩種情況
+        exp5 = os.path.join(home, "export5")
+        trigger({"op": "exportname", "name": "[NE] Chat with Someone Else.txt"})
+        o = cg("export", "--chat", "Alpha Team", "--to", exp5)
+        check("B3-5 預設檔名不含目標 → 拒、按取消", o.get("refused") is True and "預設檔名" in o.get("error", ""), o)
+        check("B3-5 預設檔名不符時沒有產生任何檔案", not os.path.isdir(exp5) or os.listdir(exp5) == [],
+              os.listdir(exp5) if os.path.isdir(exp5) else None)
+        lw = json.loads(subprocess.run([a.ad, "list-windows"], capture_output=True, text=True, encoding="utf-8").stdout)
+        check("B3-5 取消後另存新檔對話框已關閉", not any(w.get("title") == "Save chat history" for w in lw.get("data", [])))
+        trigger({"op": "reset"})
+        trigger({"op": "firstline", "text": "# Someone Else"})
+        o = cg("export", "--chat", "Alpha Team", "--to", exp5)
+        check("B3-5 首行不含目標 → 拒", o.get("refused") is True and "第一行" in o.get("error", ""), o)
+        check("B3-5 首行不符的檔案已被刪除", os.listdir(exp5) == [], os.listdir(exp5))
+        trigger({"op": "reset"})
         if o.get("ok"):
             r = cg("read", "--file", o["path"])
             check("B3-1 read --file 讀匯出檔", r.get("ok") and "Ann: morning all" in (r.get("lines") or []), r)

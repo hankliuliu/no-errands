@@ -49,14 +49,39 @@ DEFAULTS = {
     "outbox": {"port": 8765},
 }
 
-# app 別名 → 正規名（ned 用程序名比對；chat_guard/outbox 用服務名）
+# app 別名 → 正規名。三平台：Windows 程序名、macOS 顯示名稱與 bundle id、Linux list-apps 名稱與 desktop id。
+# 比對前一律小寫、去掉 .exe / .app / .desktop。
 APP_ALIASES = {
-    "line": {"line.exe", "lineapp.exe", "line"},
-    "mattermost": {"mattermost.exe", "mattermost"},
-    "teams": {"teams.exe", "ms-teams.exe", "teams"},
-    "outlook": {"outlook.exe", "olk.exe", "hxoutlook.exe", "outlook"},
+    # 通訊
+    "line": {"line", "lineapp", "line.exe", "jp.naver.line.mac", "jp.naver.line"},
+    "mattermost": {"mattermost", "com.mattermost.desktop", "mattermost-desktop"},
+    "teams": {"teams", "ms-teams", "microsoft teams", "microsoft teams (work or school)", "com.microsoft.teams",
+              "com.microsoft.teams2", "teams-for-linux"},
+    "slack": {"slack", "com.tinyspeck.slackmacgap", "com.slack.slack"},
+    "telegram": {"telegram", "telegram desktop", "telegram-desktop", "ru.keepcoder.telegram", "org.telegram.desktop"},
+    "whatsapp": {"whatsapp", "net.whatsapp.whatsapp", "desktop.whatsapp", "whatsapp-for-linux"},
+    "discord": {"discord", "com.hnc.discord", "com.discordapp.discord"},
+    "wechat": {"wechat", "weixin", "com.tencent.xinwechat"},
+    "signal": {"signal", "signal-desktop", "org.whispersystems.signal-desktop"},
+    "skype": {"skype", "com.skype.skype", "skypeforlinux"},
+    "messenger": {"messenger", "com.facebook.archon"},
+    "messages": {"messages", "com.apple.mobilesms", "com.apple.ichat"},          # macOS 訊息
+    "facetime": {"facetime", "com.apple.facetime"},
+    # 郵件
+    "outlook": {"outlook", "olk", "hxoutlook", "microsoft outlook", "com.microsoft.outlook"},
+    "mail": {"mail", "com.apple.mail", "hxmail"},
+    "thunderbird": {"thunderbird", "org.mozilla.thunderbird", "betterbird"},
+    "evolution": {"evolution", "org.gnome.evolution"},
+    "geary": {"geary", "org.gnome.geary"},
+    # 金融（常見台灣網銀/券商桌面端另行補充）
+    "moneymanager": {"moneymanager"},
     "fake-chat": {"fake-chat", "fakechat"},   # 測試靶
 }
+SENSITIVE_APPS = {"line", "mattermost", "teams", "slack", "telegram", "whatsapp", "discord", "wechat", "signal",
+                  "skype", "messenger", "messages", "facetime", "outlook", "mail", "thunderbird", "evolution",
+                  "geary", "moneymanager"}
+CHAT_APPS = {"line", "mattermost", "teams", "slack", "telegram", "whatsapp", "discord", "wechat", "signal",
+             "skype", "messenger", "messages", "fake-chat"}
 
 
 def path(home=None):
@@ -102,10 +127,13 @@ def ensure(home=None):
 
 def canonical_app(name):
     n = (name or "").strip().lower()
+    for suf in (".exe", ".app", ".desktop"):
+        if n.endswith(suf):
+            n = n[: -len(suf)]
     for canon, names in APP_ALIASES.items():
         if n in names or n == canon:
             return canon
-    return n[:-4] if n.endswith(".exe") else n
+    return n
 
 
 def is_granted(pol, app):

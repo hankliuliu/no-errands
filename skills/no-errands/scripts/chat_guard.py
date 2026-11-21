@@ -5,7 +5,7 @@
   chat_guard.py <app> locate --chat <精確名稱>
   chat_guard.py <app> open   --chat <精確名稱> [--expect <指紋>]
   chat_guard.py <app> read   --chat <精確名稱> | --file <匯出的 .txt>
-  chat_guard.py <app> export --to <資料夾>
+  chat_guard.py <app> export --chat <精確名稱> --to <資料夾>   # 驗預設檔名與首行
   chat_guard.py <app> close
   chat_guard.py <app> act click|set-value --target <元素名稱> [--text <文字>]   # 只為驗證守門；幾乎都會被擋
 
@@ -46,6 +46,10 @@ PROFILES = {
         "dialog_title": "Save chat history",
         "dialog_filename_ids": {"1001", "1148"},          # 系統檔案對話框的檔名欄 automation id
         "dialog_save_ids": {"1"},                         # 「存檔」鈕
+        "dialog_cancel_ids": {"2"},                       # 「取消」鈕
+        # 身分驗證：app 產生的預設檔名與匯出檔第一行都要含目標對話名稱（只比對、不輸出）
+        "verify_export_filename_contains_chat": True,
+        "verify_export_first_line_contains_chat": True,
     },
 }
 
@@ -139,7 +143,9 @@ def assert_allowed(prof, action, node, parents, ctx):
             return
         if action == "click" and role == "button" and nid in prof["dialog_save_ids"]:
             return
-        raise Refused("另存新檔對話框只允許：檔名欄 set-value、存檔鈕 click")
+        if action == "click" and role == "button" and nid in prof["dialog_cancel_ids"]:
+            return
+        raise Refused("另存新檔對話框只允許：檔名欄 set-value、存檔鈕或取消鈕 click")
     # 主視窗：禁區優先
     if name in prof["forbidden_names"]:
         raise Refused("禁區元素（訊息輸入框/送出/表情等）：永遠不可操作")
@@ -233,7 +239,7 @@ def cmd_read(app, prof, chat, file_):
     out({"ok": True, "source": "window", "messages": msgs})
 
 
-def cmd_export(app, prof, dest):
+def cmd_export(app, prof, dest, chat=None):
     dest = os.path.abspath(dest)
     os.makedirs(dest, exist_ok=True)
     win = find_window(prof)
@@ -278,19 +284,65 @@ def cmd_export(app, prof, dest):
         (n.get("native_id") or {}).get("value", "")) in prof["dialog_save_ids"])
     if not fname or not save:
         raise Refused("這不像系統檔案對話框（找不到檔名欄或存檔鈕），不操作")
+    cancel, cparents = find_node(dsnap, lambda n: n.get("role") == "button" and str(
+        (n.get("native_id") or {}).get("value", "")) in prof["dialog_cancel_ids"])
+
+    def cancel_and_refuse(why):
+        if cancel:
+            try:
+                guarded(prof, "click", cancel, cparents, {"zone": "dialog"})
+            except Exception:
+                pass
+        raise Refused(why)
+
+    # 身分驗證 1：app 帶進來的預設檔名要含目標對話名稱（在讀到任何內容之前）
+    if prof.get("verify_export_filename_contains_chat"):
+        try:
+            default_name = (ad("get", fname["ref_id"], "--property", "value") or {}).get("value") or ""
+        except RuntimeError:
+            default_name = ""
+        if not chat or chat not in default_name:
+            cancel_and_refuse("預設檔名不含指名對話名稱（或讀不到）：開著的可能不是目標對話，已按取消、沒有存檔")
     target = os.path.join(dest, "chat-export-%s.txt" % time.strftime("%Y%m%d-%H%M%S"))
     guarded(prof, "set-value", fname, fparents, {"zone": "dialog"}, text=target)
     guarded(prof, "click", save, sparents, {"zone": "dialog"})
-    for _ in range(25):
+    for _ in range(50):
         time.sleep(0.2)
         if os.path.exists(target) and os.path.getsize(target) > 0:
             break
     if not os.path.exists(target):
-        raise Refused("按下存檔後沒有看到檔案")
+        # 診斷（只含系統對話框的 UI 字串）：對話框還在嗎？上面有哪些按鈕？
+        diag = {"dialog_still_open": False}
+        try:
+            still = [w for w in ad("list-windows") if w.get("title") == prof["dialog_title"]
+                     and w.get("pid") == win.get("pid")]
+            diag["dialog_still_open"] = bool(still)
+            other = [w.get("title") for w in ad("list-windows") if w.get("pid") == win.get("pid")
+                     and w.get("title") not in (prof["dialog_title"], prof["window_title"])]
+            diag["other_windows_same_pid"] = other[:3]
+            if still:
+                s2 = snapshot(still[0])
+                diag["dialog_buttons"] = [n.get("name") for n, _ in walk(s2["tree"])
+                                          if n.get("role") == "button" and n.get("name")][:8]
+                fv = find_node(s2, lambda n: n.get("role") in ("textfield", "combobox") and str(
+                    (n.get("native_id") or {}).get("value", "")) in prof["dialog_filename_ids"])[0]
+                if fv:
+                    diag["filename_field_equals_target"] = (ad("get", fv["ref_id"], "--property", "value") or {}).get("value") == target
+        except Exception as e:
+            diag["diag_error"] = str(e)[:120]
+        raise Refused("按下存檔後沒有看到檔案；診斷：%s" % json.dumps(diag, ensure_ascii=False))
+    # 身分驗證 2：只讀第一行比對；不符就刪檔、不再讀任何一行
+    if prof.get("verify_export_first_line_contains_chat"):
+        with open(target, encoding="utf-8-sig") as f:
+            first = f.readline()
+        if chat not in first:
+            os.remove(target)
+            raise Refused("匯出檔第一行不含指名對話名稱：已刪除檔案（沒有讀其他內容）")
     with open(target, encoding="utf-8-sig") as f:
         n = sum(1 for _ in f)
-    ledger(app, "export", True)
-    out({"ok": True, "path": target, "bytes": os.path.getsize(target), "lines": n})
+    ledger(app, "export", True, chat=chat)
+    out({"ok": True, "path": target, "bytes": os.path.getsize(target), "lines": n,
+         "verified": {"default_filename": True, "first_line": True}})
 
 
 def cmd_close(app, prof):
@@ -342,7 +394,7 @@ def main():
         elif sub == "read":
             cmd_read(app, prof, arg(a, "--chat"), arg(a, "--file"))
         elif sub == "export":
-            cmd_export(app, prof, arg(a, "--to") or ".")
+            cmd_export(app, prof, arg(a, "--to") or ".", arg(a, "--chat"))
         elif sub == "close":
             cmd_close(app, prof)
         elif sub == "act" and len(a) >= 3 and a[2] in ("click", "set-value"):

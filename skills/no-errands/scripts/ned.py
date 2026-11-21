@@ -7,7 +7,8 @@
      讓跨 app 誤操作在機制上不可能、讓敏感 app 直接被拒。
 
 規則：
-- <App.exe> 必須是正規程序名（英數._- 結尾 .exe / .app / 無副檔名小寫），其他拼法拒絕。
+- <App> 必須是正規名稱：Windows 程序名、macOS 顯示名稱或 bundle id、Linux list-apps 名稱；
+  含路徑分隔、引號、分號等一律拒絕。敏感判定用三平台別名表正規化（policy.APP_ALIASES）。
 - 敏感類別（通訊/郵件/金融）：未列入政策檔 granted_apps → 拒絕（同意閘門）。
   已授權 → 只放行觀察類子指令；通訊類在未讀保護開啟時連觀察也拒絕（清單會露出未讀預覽），
   改走 chat_guard（只碰指名對話）。任何會改狀態的動作（click/set-value…）一律走 chat_guard。
@@ -25,17 +26,11 @@ HOME = policy.HOME  # 同一套解析：env → 本檔所在的 <home>/bin → ~
 STATE = os.path.join(HOME, "ned-state.json")
 LEDGER = os.path.join(HOME, "ned-ledger.jsonl")
 
-SENSITIVE = {
-    # 通訊
-    "line.exe", "lineapp.exe", "teams.exe", "ms-teams.exe", "telegram.exe",
-    "whatsapp.exe", "discord.exe", "slack.exe", "mattermost.exe", "wechat.exe",
-    "messenger.exe", "signal.exe", "skype.exe",
-    # 郵件
-    "outlook.exe", "olk.exe", "thunderbird.exe", "mail.exe", "hxoutlook.exe",
-    # 金融（常見台灣網銀/券商桌面端另行補充）
-    "moneymanager.exe",
-}
-APP_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,60}(\.exe)?$")
+SENSITIVE = policy.SENSITIVE_APPS        # 正規名（三平台別名見 policy.APP_ALIASES）
+CHAT_APPS = policy.CHAT_APPS
+# Windows 程序名（Notepad.exe）、macOS 顯示名稱或 bundle id（Google Chrome、com.apple.mail）、
+# Linux list-apps 名稱（gnome-calculator）。允許空白，不允許路徑分隔、引號、分號等。
+APP_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,79}$")
 REF_RE = re.compile(r"@(s[0-9a-z]+):e\d+")
 # ref 動作子指令（需要 app 一致性檢查）
 REF_CMDS = {"click", "double-click", "triple-click", "right-click", "type", "set-value",
@@ -44,8 +39,6 @@ REF_CMDS = {"click", "double-click", "triple-click", "right-click", "type", "set
 APP_CMDS = {"snapshot", "find", "screenshot", "list-windows"}  # 自動綁 --app
 PASS_CMDS = {"launch", "close-app", "wait", "status", "version", "skills"}
 OBSERVE_CMDS = {"snapshot", "find", "screenshot", "list-windows", "get", "is", "status", "version"}
-CHAT_APPS = {"line", "mattermost", "teams", "telegram", "whatsapp", "discord", "slack",
-             "wechat", "messenger", "signal", "skype", "fake-chat"}
 FOCUS_CMDS = {"focus", "type", "hover", "drag"}   # 會搶焦點或動滑鼠鍵盤
 OUTBOX_MARK = "NE-OUTBOX"                           # 發件匣頁面標題與 a11y 名稱都含此字串
 
@@ -82,15 +75,13 @@ def main():
     rest = sys.argv[3:]
     ad = os.path.join(HOME, "bin", "agent-desktop.exe" if os.name == "nt" else "agent-desktop")
 
-    if not APP_RE.match(app):
-        refuse(app, sub, "app 名不是正規程序名（如 Notepad.exe）；其他拼法一律拒絕")
-    base = app.lower()
-    if not base.endswith(".exe"):
-        base += ".exe"
+    if not APP_RE.match(app) or app != app.strip() or "  " in app:
+        refuse(app, sub, "app 名不是正規名稱（Windows 程序名、macOS 顯示名稱/bundle id、Linux list-apps 名稱）；"
+                         "其他拼法一律拒絕")
     pol = policy.load(HOME)
-    canon = policy.canonical_app(base)
-    if base in SENSITIVE or canon in CHAT_APPS:
-        if not policy.is_granted(pol, base):
+    canon = policy.canonical_app(app)
+    if canon in SENSITIVE or canon in CHAT_APPS:
+        if not policy.is_granted(pol, app):
             refuse(app, sub, "敏感類別（通訊/郵件/金融）預設禁區：使用者尚未在對話中指名授權此 app"
                              "（同意閘門）。先在對話中說明要用哪個 app、讀什麼、不做什麼並取得同意，"
                              "再由使用者要求下執行 policy.py grant")

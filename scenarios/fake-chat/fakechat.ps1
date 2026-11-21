@@ -106,6 +106,8 @@ $send = New-Object System.Windows.Forms.Button
 $send.Text = 'Send'; $send.AccessibleName = 'Send'; $send.Left = 646; $send.Top = 396; $send.Width = 84
 
 $script:current = $null
+$script:exportNameOverride = $null
+$script:firstLineOverride = $null
 $script:buttons = @{}
 $script:selfEdit = $false
 
@@ -165,9 +167,13 @@ $script:exportAction = {
     $dlg = New-Object System.Windows.Forms.SaveFileDialog
     $dlg.Title = 'Save chat history'
     $dlg.Filter = 'Text files (*.txt)|*.txt'
-    $dlg.FileName = ('chat-' + ($script:current.name -replace '[^A-Za-z0-9]', '_') + '.txt')
+    # Like LINE: the default file name carries the chat name (test hook can override it).
+    $dlg.FileName = ('[NE] Chat with ' + $script:current.name + '.txt')
+    if ($script:exportNameOverride) { $dlg.FileName = $script:exportNameOverride }
     if ($dlg.ShowDialog($f) -eq [System.Windows.Forms.DialogResult]::OK) {
-        $lines = @('# ' + $script:current.name) + @($script:current.msgs)
+        $first = '# ' + $script:current.name
+        if ($script:firstLineOverride) { $first = $script:firstLineOverride }
+        $lines = @($first) + @($script:current.msgs)
         [IO.File]::WriteAllText($dlg.FileName, (($lines -join "`r`n") + "`r`n"), $utf8)
         Write-JsonLine $eventFile @{ kind = 'export'; chat = $script:current.name; path = $dlg.FileName; lines = $lines.Count }
     }
@@ -191,6 +197,9 @@ $timer.Add_Tick({
             foreach ($line in ($raw -split "`n")) {
                 if ($line.Trim().Length -eq 0) { continue }
                 $t = $line | ConvertFrom-Json
+                if ($t.op -eq 'exportname') { $script:exportNameOverride = $t.name; continue }
+                if ($t.op -eq 'firstline') { $script:firstLineOverride = $t.text; continue }
+                if ($t.op -eq 'reset') { $script:exportNameOverride = $null; $script:firstLineOverride = $null; continue }
                 $c = $chats | Where-Object { $_.name -eq $t.chat } | Select-Object -First 1
                 if (-not $c) { continue }
                 if ($t.op -eq 'message') {

@@ -115,7 +115,7 @@ def main():
             step("shared:open", lambda: cgo("open", "--chat", "Alpha Team"))
             step("shared:read", lambda: cgo("read", "--chat", "Alpha Team"))
             step("shared:screenshot-window", lambda: (run([AD, "screenshot", shot, "--window-id", win_b()["id"]]).returncode == 0, ""))
-            step("shared:export", lambda: cgo("export", "--to", os.path.join(tmp, "exp")))
+            step("shared:export", lambda: cgo("export", "--chat", "Alpha Team", "--to", os.path.join(tmp, "exp")))
             step("shared:close", lambda: cgo("close"))
         pad.wait(timeout=60)
         t_shared1 = now_ms()
@@ -124,7 +124,7 @@ def main():
 
         # ---------- 第二部分
         step("solo:ad-screenshot --window-id", lambda: (run([AD, "screenshot", shot, "--window-id", win_b()["id"]]).returncode == 0, ""))
-        step("solo:chat_guard export (save dialog)", lambda: (cgo("open", "--chat", "Alpha Team")[0] and cgo("export", "--to", os.path.join(tmp, "exp2"))[0], ""))
+        step("solo:chat_guard export (save dialog)", lambda: (cgo("open", "--chat", "Alpha Team")[0] and cgo("export", "--chat", "Alpha Team", "--to", os.path.join(tmp, "exp2"))[0], ""))
         cgo("close")
         CALC_TITLES = ("小算盤", "Calculator")
 
@@ -193,12 +193,25 @@ def main():
     base = samples[0] if samples else {}
 
     def analyze(t0, t1):
+        """干擾 = 這一步期間前景「變成」我們的視窗（轉換），不是「本來就是」我們的視窗。
+        （CI runner 沒有使用者視窗，我們的視窗一旦成為前景就會一直是；只看存在會每步誤報。）"""
+        before = [s for s in samples if s["t"] < t0 - 100]
+        prev = before[-1] if before else None
         win = [s for s in samples if t0 - 100 <= s["t"] <= t1 + 300]
-        fg_ours = any(s["ours"] or s["pid"] in our_pids for s in win)
-        fg_other = len({s["hwnd"] for s in win}) > 1
-        cur = len({(s["x"], s["y"]) for s in win}) > 1
-        return {"samples": len(win), "interference": fg_ours, "fg_changed_other": fg_other and not fg_ours,
-                "cursor_moved": cur}
+        to_ours, to_other = False, False
+        last = prev
+        for smp in win:
+            if last is not None and smp["hwnd"] != last["hwnd"]:
+                if smp["ours"] or smp["pid"] in our_pids:
+                    to_ours = True
+                else:
+                    to_other = True
+            last = smp
+        seq = ([prev] if prev else []) + win
+        cur = len({(x["x"], x["y"]) for x in seq}) > 1
+        return {"samples": len(win), "interference": to_ours, "fg_changed_other": to_other and not to_ours,
+                "cursor_moved": cur,
+                "fg_was_ours_already": bool(prev and (prev["ours"] or prev["pid"] in our_pids))}
 
     for s in STEPS:
         if "t0" in s:
