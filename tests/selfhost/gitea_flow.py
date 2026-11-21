@@ -8,7 +8,7 @@
   3 讀私有內容（全新 profile 讀不到）     4 網頁介面建立 token → 只讀一次 → 寫進設定檔（值不輸出）
   5 用設定檔裡的 token 呼叫 API，確認有效且是同一個使用者
 """
-import json, os, re, shutil, sys, tempfile, urllib.request
+import json, os, re, shutil, sys, tempfile, time, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from abhelp import AB  # noqa: E402
@@ -51,9 +51,26 @@ def main():
 
         b.run("open", base + "/user/settings/applications")
         b.fill("textbox", r"token name|name", "no-errands")
-        for it in b.snapshot():                     # 權限範圍：把 user / repository 設成可讀
+        # 權限範圍收在「Select permissions」折疊區裡（頁面寫明：至少要選一個）→ 先展開，再把 user / repository 設成可讀
+        raw = b.run("snapshot").stdout
+        mm = re.search(r'DisclosureTriangle "Select permissions"[^\n]*?ref=(e\d+)', raw)
+        if mm:
+            b.run("click", "@" + mm.group(1))
+        else:
+            b.run("eval", "document.querySelectorAll('details').forEach(d => d.open = true); 'opened'")
+        time.sleep(1)
+        picked = []
+        for it in b.snapshot():
             if it["role"] in ("combobox", "listbox") and re.search(r"user|repository", it["name"], re.I):
-                b.run("select", it["ref"], "read:" + ("user" if re.search("user", it["name"], re.I) else "repository"))
+                cat = "user" if re.search("user", it["name"], re.I) else "repository"
+                for val in ("read:" + cat, "Read"):
+                    if b.run("select", it["ref"], val).returncode == 0:
+                        picked.append(cat); break
+        print("scopes picked:", picked)
+        if not picked:
+            raw = b.run("snapshot").stdout
+            print("permission-area:", " | ".join(l.strip() for l in raw.splitlines()
+                                                if re.search(r"combobox|option|permission|user|repository", l, re.I))[:1500])
         b.click("button", r"generate token")
         page = b.text()
         outputs.append(page)
