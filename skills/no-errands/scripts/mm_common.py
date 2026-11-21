@@ -10,11 +10,12 @@ token 只存在記憶體：不輸出、不寫檔、不進 log、不放進例外�
 import json, os, urllib.error, urllib.parse, urllib.request
 
 URL_KEYS = ("url", "server", "host", "base_url", "mattermost_url", "mm_url")
-TOKEN_KEYS = ("token", "access_token", "pat", "mattermost_token", "mm_token")
+TOKEN_KEYS = ("token", "access_token", "access token", "存取 token", "存取token", "pat", "mattermost_token", "mm_token")
 
 
 def read_kv_file(path):
-    """回傳 dict（小寫鍵）。支援：JSON 物件；每行 `key=value` / `key: value`；或兩行「網址、token」。"""
+    """回傳 dict（小寫鍵）。支援：JSON 物件；每行 `key=value` / `key: value` / `標籤：值`（全形冒號，
+    鍵可含空白，例如 Mattermost 個人存取 token 頁面複製下來的「存取 Token：…」）；或兩行「網址、token」。"""
     with open(path, encoding="utf-8-sig") as f:
         text = f.read().strip()
     try:
@@ -30,10 +31,10 @@ def read_kv_file(path):
             continue
         if line.lower().startswith("export "):
             line = line[7:].strip()
-        for sep in ("=", ":"):
+        for sep in ("：", "=", ":"):
             k, s, v = line.partition(sep)
             k = k.strip()
-            if s and k and " " not in k and not k.lower().startswith("http"):
+            if s and k and len(k) <= 24 and not k.lower().startswith("http") and (" " not in k or sep == "："):
                 kv[k.lower()] = v.strip().strip('"').strip("'")
                 break
         else:
@@ -56,11 +57,12 @@ def describe_format(path):
             "has_token": any(kv.get(k) for k in TOKEN_KEYS)}
 
 
-def conf(token_file):
+def conf(token_file, url_override=None):
+    """回 (base_url, token)。檔案裡沒有網址時用 url_override（政策檔 mattermost.url）。"""
     if not token_file or not os.path.exists(token_file):
-        raise RuntimeError("Mattermost 設定檔不存在（政策檔 outbox.mattermost_token_file）")
+        raise RuntimeError("Mattermost 設定檔不存在（政策檔 mattermost.token_file）")
     kv = read_kv_file(token_file)
-    url = next((kv[k] for k in URL_KEYS if kv.get(k)), "")
+    url = next((kv[k] for k in URL_KEYS if kv.get(k)), "") or (url_override or "")
     tok = next((kv[k] for k in TOKEN_KEYS if kv.get(k)), "")
     if not url or not tok:
         raise RuntimeError("Mattermost 設定檔格式無法辨識（需要伺服器網址與 token 兩個欄位）")

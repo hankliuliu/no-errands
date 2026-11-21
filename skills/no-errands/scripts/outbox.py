@@ -121,7 +121,8 @@ def resolve_fake(rec, pol):
 
 
 def _mm_conf(pol):
-    return mm_common.conf(pol.get("outbox", {}).get("mattermost_token_file"))
+    mm = pol.get("mattermost", {})
+    return mm_common.conf(mm.get("token_file") or pol.get("outbox", {}).get("mattermost_token_file"), mm.get("url"))
 
 
 def resolve_mattermost(rec, pol):

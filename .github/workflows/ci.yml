@@ -61,6 +61,7 @@ jobs:
           PY=$(python3 -c 'import sys;print(sys.executable)' 2>/dev/null || python -c 'import sys;print(sys.executable)')
           "$PY" tests/test_outbox.py | tee outbox.txt
           "$PY" tests/test_ned.py | tee ned.txt
+          "$PY" tests/test_mm_ro.py | tee mm.txt
 
       - name: chat_guard B3 on fake chat window [Windows]
         id: b3
@@ -106,6 +107,7 @@ jobs:
             doctor.json
             outbox.txt
             ned.txt
+            mm.txt
             b3.*
             n4*
             uninstall.json
