@@ -91,7 +91,7 @@ PROFILES = {
 }
 
 
-def header_ok(prof, snap, chat):
+def header_ok(prof, snap, chat):   # snap 必須是完整 snapshot（-i 會漏掉標籤類靜態文字）
     """目前開著的就是指名對話？（只比對、不輸出名稱）"""
     if prof.get("header_name"):
         return find_node(snap, lambda n: n.get("name") == prof["header_name"](chat))[0] is not None
@@ -371,7 +371,7 @@ def cmd_open(app, prof, chat, expect, pol):
     _, parents = find_node(snap, lambda n: n is node)
     guarded(prof, "click", node, parents, {"zone": "main", "allow": "list-target", "target_chat": chat})
     time.sleep(0.8)
-    if not header_ok(prof, snapshot(win), chat):
+    if not header_ok(prof, snapshot(win, interactive=False), chat):
         raise Refused("開啟後確認不到開著的是指名對話（標頭不符或沒有開成）：停手，不再點任何東西")
     ledger(app, "open", True, "whitelist" if white else "fingerprint", chat)
     out({"ok": True, "opened": True, "via": "whitelist" if white else "fingerprint"})
@@ -585,7 +585,7 @@ def _export_menu_popup(prof, win, snap, chat):
     """標頭的選單按鈕 → 彈出選單（獨立頂層視窗）→ 只點名稱完全等於預期項目的那一項（投遞訊息，不動游標）。"""
     if popup_menu is None or os.name != "nt":
         raise Refused("彈出選單路徑目前只支援 Windows")
-    if not header_ok(prof, snap, chat):
+    if not header_ok(prof, snapshot(win, interactive=False), chat):
         raise Refused("目前開著的不是指名對話：先 open --chat 並確認標頭")
     btn, bparents = find_node(snap, lambda n: n.get("role") == "button" and n.get("name") == prof["menu_button"])
     if not btn:

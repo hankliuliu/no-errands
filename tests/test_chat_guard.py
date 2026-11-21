@@ -36,6 +36,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ad", required=True)
     ap.add_argument("--out")
+    ap.add_argument("--standin", action="store_true",
+                    help="CI only: put an ordinary 'user' window in front first, so focus hand-back has a target")
     a = ap.parse_args()
     home = tempfile.mkdtemp(prefix="ne-cg-test-")
     state = os.path.join(home, "fakechat-state")
@@ -81,6 +83,21 @@ def main():
                 break
         time.sleep(0.3)
 
+    standin = None
+    if a.standin:
+        import ctypes
+        sps = os.path.join(home, "standin.ps1")
+        open(sps, "w", encoding="ascii").write(chr(10).join([
+            "Add-Type -AssemblyName System.Windows.Forms", "$f = New-Object System.Windows.Forms.Form",
+            "$f.Text = 'STANDIN-USER'; $f.Width = 500; $f.Height = 300",
+            "[System.Windows.Forms.Application]::Run($f)", ""]))
+        standin = subprocess.Popen(["powershell", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", sps])
+        for _ in range(50):
+            time.sleep(0.2)
+            hw = ctypes.windll.user32.FindWindowW(None, "STANDIN-USER")
+            if hw:
+                ctypes.windll.user32.SetForegroundWindow(hw); break
+        time.sleep(0.8)
     try:
         before = fg()
         subprocess.run(["powershell", "-NoProfile", "-Command",
@@ -187,6 +204,8 @@ def main():
     finally:
         if pid:
             subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+        if standin:
+            standin.kill()
         time.sleep(0.5)
         shutil.rmtree(home, ignore_errors=True)
     bad = [r for r in RESULTS if not r["ok"]]

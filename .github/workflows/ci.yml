@@ -58,6 +58,7 @@ jobs:
         id: outbox
         continue-on-error: true
         run: |
+          set +e +o pipefail   # 每一支測試都要跑到；紅綠由 ci_summary 判定
           PY=$(python3 -c 'import sys;print(sys.executable)' 2>/dev/null || python -c 'import sys;print(sys.executable)')
           "$PY" tests/test_outbox.py | tee outbox.txt
           "$PY" tests/test_ned.py | tee ned.txt
@@ -72,7 +73,7 @@ jobs:
         id: b3
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: python tests/test_chat_guard.py --ad "$NE_HOME/bin/agent-desktop.exe" --out b3.json | tee b3.txt
+        run: python tests/test_chat_guard.py --ad "$NE_HOME/bin/agent-desktop.exe" --out b3.json --standin | tee b3.txt
 
       - name: N4 non-interference + positive control [Windows]
         id: n4

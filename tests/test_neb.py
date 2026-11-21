@@ -34,7 +34,7 @@ def check(n, c, d=""):
 
 def main():
     home = tempfile.mkdtemp(prefix="ne-neb-")
-    fk = os.path.join(home, "fake_ab.py"); open(fk, "w").write(FAKE)
+    fk = os.path.join(home, "fake_ab.py"); open(fk, "w", encoding="utf-8").write(FAKE)
     json.dump({"mattermost": {"url": "https://mm.example.org"}}, open(os.path.join(home, "policy.json"), "w"))
     env = dict(os.environ, NO_ERRANDS_HOME=home, NE_FAKE_AB_PY=fk, NE_FAKE_DIR=home, PYTHONIOENCODING="utf-8")
 
