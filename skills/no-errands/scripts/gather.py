@@ -383,8 +383,10 @@ def cmd_status(a):
                "gaps": st.get("gaps", [])}
         if earliest and t["since"] < earliest:
             row["warning"] = "起始時間早於目前拿得到的最早訊息：%s 之前的還沒收到（桌面版可能拿不到；可用手機匯出 import 補齊）" % earliest
-        if st.get("last_sync") and time.time() - time.mktime(time.strptime(st["last_sync"], "%Y-%m-%dT%H:%M:%S")) > 7 * 86400:
-            row["stale"] = "超過 7 天沒同步：中間的訊息若超出桌面版能載入的範圍，會形成缺口"
+        if st.get("last_sync") and time.time() - time.mktime(time.strptime(st["last_sync"], "%Y-%m-%dT%H:%M:%S")) > 14 * 86400:
+            # 門檻依 C0 實測：LINE 桌面版的匯出範圍＝已同步到這台電腦的歷史（登入時約回補前三週），捲動不會變多。
+            # 隔太久沒同步，中間的訊息可能超出桌面版保有的範圍 → 形成缺口；14 天留一半餘裕。
+            row["stale"] = "超過 14 天沒同步：中間的訊息可能超出桌面版保有的範圍，會形成缺口"
         rows.append(row)
     out({"ok": True, "targets": rows})
 

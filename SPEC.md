@@ -29,6 +29,7 @@
 | `chat_guard` | 聊天 app：精確定位、標頭驗證身分、禁區（輸入框／送出／貼圖／通話）、彈出選單只點完全相符的項目、另存新檔以預設檔名與首行驗身分、絕不覆寫、閒置閘門與交還前景 | `tests/test_chat_guard.py`、`tests/test_line_profile.py` |
 | 發件匣 `outbox` | 起草→固定頁面→使用者核准→伺服器送出；對象由伺服器解析、修訂雜湊防竄改、自動化瀏覽器不可核准、有上限的等待 | `tests/test_outbox.py`、`tests/selfhost/mm_flow.py` |
 | `mm_ro` | Mattermost 唯讀（只發 GET；讀貼文不動已讀） | `tests/test_mm_ro.py` |
+| `gather` | 聊天收集：起始時間＋增量同步；LINE 經 chat_guard 匯出、序列對齊合併、缺口明講；Mattermost 用 API 游標（含編輯與刪除）；可寫成 context-gather 格式 | `tests/test_gather.py`、`tests/selfhost/mm_flow.py`（f 段） |
 | `idle` | 使用者閒置偵測、途中有輸入就中止交還 | `tests/test_idle.py` |
 | `uac` | 辨識系統權限提示、交接、偵測消失 | `tests/test_uac.py`＋本機實測 |
 | `--guard-rules` | Claude Code 權限規則：擋讀 token 檔、敏感操作要詢問 | `tests/test_guard_rules.py`＋巢狀 agent 實測 |

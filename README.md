@@ -127,6 +127,17 @@ python doctor.py
 
 兩次的教訓是同一句：**能力是真的，所以守門要靠機制，不能只靠寫在文件裡的叮嚀。**
 
+## 聊天收集（gather）
+
+指定聊天室與起始時間，之後的訊息全部收下來，隨時增量更新——不需要 bot、不需要管理員：
+`python ~/.no-errands/bin/gather.py add --service line --chat <聊天室> --since 2026-11-01`，之後 `gather.py sync --all`、`gather.py status`。要讓 context-gather 直接 Grep，加 `--dest <專案>/cache/line/<id>/`（寫成它的每日 md 格式）。
+
+限制（實測）：
+- LINE 桌面版匯出的範圍＝**已同步到這台電腦的歷史**（實測：登入時回補約前三週），往上捲動不會變多；更早的請用手機「匯出聊天記錄」再 `gather.py import`。
+- 匯出要打開對話（會變已讀），所以 LINE 只收白名單裡的聊天室；畫面操作只在你離開座位時做。
+- 附件只記佔位（貼圖、照片、檔案），不下載。LINE 匯出沒有訊息 id，合併靠序列對齊，接不上的地方會明確標成缺口。
+- 定時自動同步還沒做（目前要叫 agent 跑 `sync`）。
+
 ## 支援的平台
 
 驗證方式：Windows 11 本機實測 ＋ GitHub Actions（windows / ubuntu / macos）每次推送自動跑。
