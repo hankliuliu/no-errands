@@ -79,6 +79,8 @@ class Player:
         self.left = tk.Label(body, text="", bg=self.bg, fg=self.acc, font=("Microsoft JhengHei UI", font_size - 4, "bold"),
                              justify="center", width=7)
         self.left.pack(side="left", padx=(0, 12))
+        btns = tk.Frame(body, bg=self.bg)
+        btns.pack(side="right")                            # 先排按鈕：窄螢幕時字幕讓位，按鈕不會被擠出去
         mid = tk.Frame(body, bg=self.bg)
         mid.pack(side="left", fill="both", expand=True)
         self.cap = tk.Label(mid, text="", bg=self.bg, fg=self.fg, font=("Microsoft JhengHei UI", font_size),
@@ -87,8 +89,6 @@ class Player:
         self.stat = tk.Label(mid, text="", bg=self.bg, fg="#9aa0a6", font=("Microsoft JhengHei UI", max(11, font_size // 2)),
                              anchor="w")
         self.stat.pack(fill="x", anchor="w")
-        btns = tk.Frame(body, bg=self.bg)
-        btns.pack(side="right")
         bf = ("Microsoft JhengHei UI", max(12, font_size // 2 + 2), "bold")
         mk = lambda t, cmd: tk.Button(btns, text=t, command=cmd, font=bf, bg="#2a2d35", fg=self.fg,
                                       activebackground="#3a3f4a", activeforeground=self.fg, relief="flat", padx=10, pady=4,
@@ -144,7 +144,7 @@ class Player:
             x, y = int(saved[0]), int(saved[1])
             w, h = int(saved[2]) if len(saved) > 2 else w, int(saved[3]) if len(saved) > 3 else h
         self.root.geometry("%dx%d+%d+%d" % (w, h, x, y))
-        self.cap.configure(wraplength=max(300, w - 560))
+        self.cap.configure(wraplength=max(260, w - 700))
 
     def save_pos(self):
         g = self.root.winfo_geometry()                    # WxH+X+Y
