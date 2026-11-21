@@ -805,6 +805,7 @@ def _export_menu_popup(prof, win, snap, chat):
     if want[0].get("enabled") is False:
         popup_menu.close_popup(pop["hwnd"])
         raise Refused("匯出項目目前不可用")
+    time.sleep(0.4)   # 真機：開完對話後第一次點選單常常沒反應——選單還在淡入、位置還在變；先等它穩定
     before_fg = _fg()
     try:
         EXPORT_CTX["popup_click"] = popup_menu.click_item(pop["hwnd"], want[0], root=pop_root)
@@ -813,6 +814,20 @@ def _export_menu_popup(prof, win, snap, chat):
         raise Refused("選單項目座標檢查沒過，沒有點：%s" % e)
     if before_fg is not None and _fg() != before_fg:
         FG_EVENTS.append("popup-click")
+    # 點了 3 秒內沒出現存檔對話框 → 關掉選單、重來一次（只重來一次）
+    titles = tuple(prof.get("dialog_titles") or ()) + ((prof["dialog_title"],) if prof.get("dialog_title") else ())
+    for _ in range(15):
+        time.sleep(0.2)
+        if any(w.get("title") in titles and w.get("pid") == pid for w in ad("list-windows")):
+            return
+    if not EXPORT_CTX.get("menu_retried"):
+        EXPORT_CTX["menu_retried"] = True
+        try:
+            popup_menu.close_popup(pop["hwnd"])
+        except Exception:
+            pass
+        time.sleep(0.8)
+        return _export_menu_popup(prof, win, snapshot(win), chat)
 
 
 def cmd_close(app, prof):
