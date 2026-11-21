@@ -152,7 +152,7 @@ def check_desktop_posix(r, ad):
         def walk(n):
             if isinstance(n, dict):
                 acts = n.get("available_actions") or []
-                if n.get("role") in ("textfield", "text") and "SetValue" in acts and not refs["edit"]:
+                if n.get("role") in ("textfield", "text", "text_field", "textarea", "searchfield", "combobox") and "SetValue" in acts and not refs["edit"]:
                     refs["edit"] = n.get("ref_id")
                 if n.get("role") == "button" and (n.get("name") or "").replace("_", "") in ("OK", "確定", "好") and not refs["btn"]:
                     refs["btn"] = n.get("ref_id")
@@ -160,7 +160,15 @@ def check_desktop_posix(r, ad):
                     walk(c)
         walk(j.get("data", {}).get("tree", {}))
         if not refs["edit"] or not refs["btn"]:
-            r.update(ok=False, error="測試對話框的無障礙樹缺文字框或 OK 鈕（refs=%s）" % refs)
+            seen = []
+
+            def roles(n):
+                if isinstance(n, dict):
+                    seen.append("%s:%s:%s" % (n.get("role"), (n.get("name") or "")[:12], ",".join(n.get("available_actions") or [])))
+                    for c in n.get("children", []) or []:
+                        roles(c)
+            roles(j.get("data", {}).get("tree", {}))
+            r.update(ok=False, error="測試對話框的無障礙樹缺文字框或 OK 鈕（refs=%s）" % refs, tree_roles=seen[:25])
             return
         jrun([ad, "set-value", refs["edit"], token], 30)
         jrun([ad, "click", refs["btn"]], 30)

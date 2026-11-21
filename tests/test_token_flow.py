@@ -30,6 +30,8 @@ def main():
         p = subprocess.run([ab] + sess + list(a), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
         outputs.append(p.stdout + p.stderr)
         steps.append("%s rc=%d" % (a[0] if a[0] != "fill" else "fill " + a[1], p.returncode))
+        if p.returncode != 0 and not any(x.startswith("FIRST-ERR") for x in steps):
+            steps.append("FIRST-ERR " + " ".join((p.stdout + p.stderr).split())[-240:])   # 這時還沒有 token
         return p
 
     try:
