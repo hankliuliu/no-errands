@@ -620,7 +620,9 @@ def main():
     elif a[0] == "serve":
         serve()
     elif a[0] == "url":
-        print(url_of())
+        # 伺服器重啟或電腦重開後，待核准的草稿還在、伺服器卻沒起來 → 給網址前先確保它在跑
+        up, err = ensure_server(policy.load(HOME))
+        print(url_of() if up else json.dumps({"ok": False, "error": err}, ensure_ascii=False))
     else:
         _out({"ok": False, "error": "沒有這個子指令。agent 只能用 draft 與 status；沒有 send。"}, 2)
 
