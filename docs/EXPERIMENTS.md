@@ -1,5 +1,24 @@
 # EXPERIMENTS.md — no-errands 實驗紀錄（新到舊；沿用實驗室規約：失敗必記、附根因）
 
+## 2026-11-21 · 三平台 CI 與「信任設施」驗證
+- **狀態**：進行中（每次推送自動跑；以 `tests/ci_summary.py` 讀實際輸出判紅綠，不看步驟綠勾）
+- **方法**：GitHub Actions windows-latest / ubuntu-latest（Xvfb＋openbox＋AT-SPI）/ macos-latest；
+  stage-0 → setup（暫存 home 與 claude-dir）→ doctor → 各工具測試 → uninstall。會開視窗的測試只在 CI 跑。
+- **doctor（實際輸出，各平台每一項一行）**：Windows、Ubuntu、macOS 都是 `python / pkg_manager / browsers / browser / profile` ok；
+  `desktop`：Windows 寫入→點擊→讀回一致；Ubuntu 用 zenity 自有對話框、比對對話框自己印出的值一致（需要視窗管理員，否則
+  agent-desktop 無法證明視窗型別）；macOS runner 的輔助使用權限是 granted，自有視窗的寫入→讀回仍在調整。
+- **彈出選單（LINE「選單點不到」的根因）**：Qt 的彈出選單是獨立頂層視窗，agent-desktop 的視窗清單把它濾掉；
+  對該 HWND 做 UIA 讀得到項目名稱與位置；投遞滑鼠訊息、投遞方向鍵＋Enter、UIA Invoke 都能打開存檔對話框，游標不動。
+  UIA Invoke 會被「項目開模態對話框」卡住 → 產品用投遞訊息。
+- **常見對話框**：訊息框 OK、開檔/存檔/列印取消、覆寫確認「否」——5/5。**安裝精靈**：NSIS（Notepad++）語意點擊一路到 Install，
+  Install 點了不換頁，調查中（BM_CLICK、實體點擊、改用 Inno Setup 交叉驗證）。
+- **權限規則**：Windows 的 Claude Code 規則路徑必須寫 `//c/Users/...`（`//C:/...` 比對不到）；寫對之後巢狀 agent 用 Read 或 `cat`
+  讀 token 檔都被拒絕。
+- **共存**：測試抓到兩個真 bug——已有同名 skill 會被直接覆蓋；受管區塊會吃掉原檔最後一行的行尾空白、改掉 CRLF。都已修、有測試。
+- **教訓**：CI 的 bash 預設 `-e -o pipefail`，一支測試失敗會讓同一步後面全部不跑；Windows runner 預設 cp1252，寫含中文的檔案要指定編碼；
+  互動式 snapshot（`-i`）會漏掉標籤類靜態文字。
+- **數字出處**：`journal/evidence/`、CI artifacts（results-*、popup-lab、wizard-lab、demo-guide）
+
 ## 2026-11-21 · 弱模型（haiku）T4：指令寫在受管區塊 vs 寫在 skill 裡
 - **狀態**：完成（每格 n=1，未重複取樣）
 - **考題**：本機 demo 站首頁需登入；agent 專用 browser profile 事先已登入。要求抄出首頁的密令。
