@@ -438,28 +438,40 @@ def cmd_export(app, prof, dest, chat=None):
             break
     if not dlg:
         raise Refused("另存新檔對話框沒有出現（或不唯一）")
-    try:
-        dsnap = snapshot(dlg)
-    except RuntimeError as e:
-        if "TIMEOUT" in str(e):
-            raise Refused("另存新檔對話框不回應無障礙查詢（app 在點擊處理中開了模態對話框，UIA 被卡住）。"
-                          "不改用鍵盤；請使用者自己按存檔或取消，這個 app 的匯出要另找路徑")
-        raise
     def _fn(roles):
         return find_node(dsnap, lambda n: n.get("role") in roles and str(
             (n.get("native_id") or {}).get("value", "")) in prof["dialog_filename_ids"]
             and "SetValue" in (n.get("available_actions") or []))
-    # 先找內層的 Edit（textfield）：對外層 ComboBox set-value，有些 Windows 版本的對話框存檔時不採用
-    # （CI 的 Windows Server 實測：欄位讀回是我們的路徑，卻用預設檔名存到預設資料夾）
-    fname, fparents = _fn(("textfield",))
-    if not fname:
-        fname, fparents = _fn(("combobox",))
-    save, sparents = find_node(dsnap, lambda n: n.get("role") == "button" and str(
-        (n.get("native_id") or {}).get("value", "")) in prof["dialog_save_ids"])
+    # 對話框剛出現時控制項可能還沒建好（慢的機器上第一次 snapshot 只有外框）→ 等到檔名欄與存檔鈕都在
+    fname = save = cancel = None
+    for attempt in range(8):
+        try:
+            dsnap = snapshot(dlg)
+        except RuntimeError as e:
+            if "TIMEOUT" in str(e):
+                raise Refused("另存新檔對話框不回應無障礙查詢（app 在點擊處理中開了模態對話框，UIA 被卡住）。"
+                              "不改用鍵盤；請使用者自己按存檔或取消，這個 app 的匯出要另找路徑")
+            raise
+        # 先找內層的 Edit（textfield）：對外層 ComboBox set-value，有些 Windows 版本的對話框存檔時不採用
+        # （CI 的 Windows Server 實測：欄位讀回是我們的路徑，卻用預設檔名存到預設資料夾）
+        fname, fparents = _fn(("textfield",))
+        if not fname:
+            fname, fparents = _fn(("combobox",))
+        save, sparents = find_node(dsnap, lambda n: n.get("role") == "button" and str(
+            (n.get("native_id") or {}).get("value", "")) in prof["dialog_save_ids"])
+        cancel, cparents = find_node(dsnap, lambda n: n.get("role") == "button" and str(
+            (n.get("native_id") or {}).get("value", "")) in prof["dialog_cancel_ids"])
+        if fname and save:
+            break
+        time.sleep(0.5)
     if not fname or not save:
-        raise Refused("這不像系統檔案對話框（找不到檔名欄或存檔鈕），不操作")
-    cancel, cparents = find_node(dsnap, lambda n: n.get("role") == "button" and str(
-        (n.get("native_id") or {}).get("value", "")) in prof["dialog_cancel_ids"])
+        # 不要把對話框留著（會擋住 app 之後的所有操作）：有取消鈕就按取消
+        if cancel:
+            try:
+                guarded(prof, "click", cancel, cparents, {"zone": "dialog"})
+            except Exception:
+                pass
+        raise Refused("這不像系統檔案對話框（找不到檔名欄或存檔鈕），不操作" + ("（已按取消）" if cancel else "（對話框仍開著，請使用者關掉）"))
 
     def cancel_and_refuse(why):
         if cancel:

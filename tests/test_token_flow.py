@@ -48,13 +48,14 @@ def main():
         b("fill", "#user", "demo"); b("fill", "#pass", "demo123"); b("click", "#signin")
         b("wait", "#tokens")                      # 登入成功的證據：首頁的連結出現
         # 2) agent 接手：開 token 頁、填描述、建立
-        b("open", base + "/tokens"); b("fill", "#desc", "no-errands")
+        b("open", base + "/tokens"); b("wait", "#create"); b("fill", "#desc", "no-errands")
         b("click", "#create")
         if b("wait", "#new-token").returncode != 0:   # 有些平台第一次點擊沒送出 → 記下頁面狀態（沒有 token）再重試一次
             for what in ("url", "title"):
                 g = subprocess.run([ab] + sess + ["get", what], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
                 steps.append("page-%s=%s" % (what, (g.stdout.strip().splitlines() or [""])[-1][:80]))
-            b("open", base + "/tokens"); b("fill", "#desc", "no-errands"); b("click", "#create"); b("wait", "#new-token")
+            # 重試改用在欄位裡按 Enter 送出表單（CDP 送到 headless 頁面，不是系統輸入）
+            b("open", base + "/tokens"); b("wait", "#create"); b("fill", "#desc", "no-errands"); b("press", "Enter"); b("wait", "#new-token")
         # 3) 讀一次 token，直接寫進設定檔；不印出、不經過對話
         cfg = os.path.join(td, ".env")
         open(cfg, "w").write("OTHER=keep\n")
