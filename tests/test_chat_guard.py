@@ -140,6 +140,9 @@ def main():
               and os.path.exists(o.get("path", "")), o)
         check("B3-1 export 通過預設檔名與首行身分驗證", (o.get("verified") or {}).get("default_filename") is True
               and (o.get("verified") or {}).get("first_line") is True, o)
+        RESULTS.append({"name": "B3-1 export 存檔路徑（資訊）", "ok": True,
+                        "detail": "saved_via=%s dialog_folder_known=%s" % (o.get("saved_via"), o.get("dialog_folder_known"))})
+        print("INFO B3-1 export saved_via=%s dialog_folder_known=%s" % (o.get("saved_via"), o.get("dialog_folder_known")))
         # B3-5 身分驗證失敗的兩種情況
         exp5 = os.path.join(home, "export5")
         trigger({"op": "exportname", "name": "[NE] Chat with Someone Else.txt"})

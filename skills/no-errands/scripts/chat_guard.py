@@ -567,7 +567,7 @@ def cmd_export(app, prof, dest, chat=None):
                     fp = os.path.join(d, fn)
                     if os.path.splitext(fn)[0] == stem and os.path.getmtime(fp) >= t_save - 2:
                         shutil.move(fp, target)
-                        moved_from = "default-folder"
+                        moved_from = "dialog-folder" if d == dialog_folder else "common-folder"
                         break
             except OSError:
                 continue
@@ -608,7 +608,8 @@ def cmd_export(app, prof, dest, chat=None):
     ledger(app, "export", True, chat=chat)
     out({"ok": True, "path": target, "bytes": os.path.getsize(target), "lines": n,
          "verified": {"default_filename": True, "first_line": True},
-         "saved_via": "default-folder-then-moved" if moved_from else "typed-path"})
+         "saved_via": ("default-name-in-%s-then-moved" % moved_from) if moved_from else "typed-path",
+         "dialog_folder_known": bool(dialog_folder)})
 
 
 def _export_menu_popup(prof, win, snap, chat):
