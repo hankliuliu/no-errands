@@ -17,6 +17,12 @@ CLI（agent 只在「使用者於對話中明確要求」時才可呼叫 set/gra
   policy.py whitelist add|remove <對話名稱> --reason "..."
   policy.py set unread_protection on|off --reason "..."
   policy.py set visibility background|watch --reason "..."
+  policy.py set demo.persist on|off --reason "..."        # off＝示範一次性：不留紀錄、不改劇本
+  policy.py set demo.learn propose|off --reason "..."
+  policy.py domain add <host[:port]> <app> --reason "..."  # 登記敏感網域（例：經通道的示範主機）
+      [--demo-accounts a,b] [--agent-login a]   # 示範用途：只有這些帳號能跑核准過的劇本；agent-login＝使用者同意 agent 代為登入
+  policy.py set demo.reset_consent <還原指令的 sha256> --reason "<使用者原話>"   # 指令改了就要重新同意
+  policy.py domain remove <host[:port]> --reason "..."
 每次修改寫一筆 ledger（~/.no-errands/policy-ledger.jsonl；白名單名稱只記雜湊）。
 """
 import copy, hashlib, json, os, sys, time
@@ -50,6 +56,12 @@ DEFAULTS = {
     "busy_behavior": "wait_idle",
     "idle_min_s": 180,
     "outbox": {"port": 8765},
+    # 示範劇本（demo_runbook.py）：persist=off → 一次性（不留紀錄、不改劇本）；learn=off → 不提出劇本修改
+    "demo": {"persist": "on", "learn": "propose"},
+    # 使用者登記的敏感網域（例如經 SSH 通道的示範主機 localhost:8065）：neb 把它當敏感網站——
+    # 未授權 → 拒；已授權 → 只讀，輸入與點擊都要有核准過的示範劇本。
+    # 每筆 {"host": "localhost:8065" 或 "example.org", "app": "<正規 app 名>"}
+    "sensitive_domains": [],
 }
 
 # app 別名 → 正規名。三平台：Windows 程序名、macOS 顯示名稱與 bundle id、Linux list-apps 名稱與 desktop id。
@@ -151,6 +163,72 @@ def name_hash(s):
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
 
 
+DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def norm_host(host):
+    """主機名正規化：小寫、去結尾的點與 IPv6 方括號；loopback 的各種寫法（localhost、127.x.x.x、::1、0.0.0.0）
+    一律變成 "loopback"——同一台機器、同一個埠不能換個寫法就不設防。"""
+    h = (host or "").strip().lower().rstrip(".").strip("[]")
+    if h and all(c in "0123456789abcdefx." for c in h) and any(c.isdigit() for c in h):
+        try:                                    # 十進位／十六進位／簡寫的 IPv4（2130706433、0x7f000001、127.1）
+            import socket
+            h = socket.inet_ntoa(socket.inet_aton(h))
+        except (OSError, ValueError):
+            pass
+    if h in ("localhost", "::1", "0.0.0.0", "0:0:0:0:0:0:0:1", "::") or h.endswith(".localhost") \
+            or (h.startswith("127.") and all(p.isdigit() for p in h.split("."))) or h.startswith("::ffff:127."):
+        return "loopback"
+    return h
+
+
+def split_reg(reg):
+    """登記值 'host[:port]' → (正規化主機, 埠或 None)。"""
+    reg = (reg or "").strip().lower()
+    if reg.startswith("["):                                   # [::1]:8065
+        host, _, rest = reg[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+    elif reg.count(":") == 1:
+        host, port = reg.split(":")
+    else:
+        host, port = reg, ""
+    return norm_host(host), (int(port) if port.isdigit() else None)
+
+
+def url_host_port(url):
+    """網址 → (正規化主機, 埠)。用 hostname/port（userinfo 不影響），補預設埠。"""
+    import urllib.parse
+    u = urllib.parse.urlparse(url or "")
+    try:
+        port = u.port
+    except ValueError:
+        port = None
+    return norm_host(u.hostname or ""), port or DEFAULT_PORTS.get((u.scheme or "").lower())
+
+
+def sensitive_domain_entry(pol, host, port):
+    """(正規化主機, 埠) 是否為使用者登記的敏感網域 → 回登記項目或 None。
+    登記值帶埠號時主機與埠都要相同；不帶埠號時比對主機名（含子網域）。"""
+    for ent in pol.get("sensitive_domains") or []:
+        h, p = split_reg(str(ent.get("host", "")))
+        if not h:
+            continue
+        if p is not None:
+            if host == h and port == p:
+                return ent
+        elif host == h or (h != "loopback" and host.endswith("." + h)):
+            return ent
+    return None
+
+
+def sensitive_domain_app(pol, netloc_or_url):
+    """相容舊呼叫：接受網址或 host[:port]。"""
+    s = netloc_or_url or ""
+    host, port = url_host_port(s) if "://" in s else split_reg(s)
+    ent = sensitive_domain_entry(pol, host, port)
+    return canonical_app(ent.get("app", ent.get("host"))) if ent else None
+
+
 def summary(pol):
     apps = "、".join(pol.get("granted_apps") or []) or "（無）"
     up = pol.get("chat", {}).get("unread_protection", "on")
@@ -181,6 +259,11 @@ def main(argv=None):
     reason = ""
     if "--reason" in a:
         i = a.index("--reason"); reason = a[i + 1]; del a[i:i + 2]
+    demo_accts = agent_login = None
+    if "--demo-accounts" in a:
+        i = a.index("--demo-accounts"); demo_accts = [x for x in a[i + 1].split(",") if x]; del a[i:i + 2]
+    if "--agent-login" in a:
+        i = a.index("--agent-login"); agent_login = [x for x in a[i + 1].split(",") if x]; del a[i:i + 2]
     if not a or a[0] in ("-h", "--help"):
         print(__doc__); sys.exit(2)
     cmd = a[0]
@@ -214,6 +297,28 @@ def main(argv=None):
         pol["chat"]["unread_protection"] = a[2]; detail = {"unread_protection": a[2]}
     elif cmd == "set" and len(a) == 3 and a[1] == "visibility" and a[2] in ("background", "watch"):
         pol["visibility"] = a[2]; detail = {"visibility": a[2]}
+    elif cmd == "set" and len(a) == 3 and a[1] == "demo.persist" and a[2] in ("on", "off"):
+        pol.setdefault("demo", {})["persist"] = a[2]; detail = {"demo.persist": a[2]}
+    elif cmd == "set" and len(a) == 3 and a[1] == "demo.learn" and a[2] in ("propose", "off"):
+        pol.setdefault("demo", {})["learn"] = a[2]; detail = {"demo.learn": a[2]}
+    elif cmd == "domain" and len(a) == 4 and a[1] == "add":
+        ents = [e for e in pol.get("sensitive_domains") or [] if str(e.get("host", "")).lower() != a[2].lower()]
+        ent = {"host": a[2].lower(), "app": canonical_app(a[3])}
+        if demo_accts is not None:          # 示範用途：只有這些帳號能執行核准過的劇本
+            ent.update(demo=True, demo_accounts=demo_accts,
+                       agent_login=[x for x in (agent_login or []) if x in demo_accts])
+        ents.append(ent)
+        pol["sensitive_domains"] = ents
+        detail = {"domain_add": a[2].lower(), "app": canonical_app(a[3]), "demo_accounts": ent.get("demo_accounts"),
+                  "agent_login": ent.get("agent_login")}
+    elif cmd == "set" and len(a) == 3 and a[1] == "demo.reset_consent":
+        pol.setdefault("demo", {})["reset_consent"] = {"commands_sha256": a[2], "reason": reason,
+                                                       "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        detail = {"demo.reset_consent": a[2][:16]}
+    elif cmd == "domain" and len(a) == 3 and a[1] == "remove":
+        pol["sensitive_domains"] = [e for e in pol.get("sensitive_domains") or []
+                                    if str(e.get("host", "")).lower() != a[2].lower()]
+        detail = {"domain_remove": a[2].lower()}
     else:
         _out({"ok": False, "error": "看不懂的指令；見 policy.py --help"}, 2)
     save(pol, home)

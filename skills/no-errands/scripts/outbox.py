@@ -12,12 +12,17 @@ agent 可用的子指令（只有這三個；沒有 send）：
       → pending | sent | rejected（附使用者的退回原因）；60 秒內查同一 id 超過 3 次會附 stop_polling
   outbox.py wait <id> [--timeout 秒]
       → 有上限（120 秒）的等待；一有結果就回，逾時回 pending 與「現在結束回合」
+  outbox.py withdraw <id> [--why 原因]
+      → 撤回自己還沒被決定的草稿（只能讓東西不送出；已核准的劇本請使用者在歷史頁撤銷）
 
 人或安裝程式用的：
   outbox.py serve            # 前景啟動伺服器（draft 會自動在背景啟動它）
   outbox.py url              # 印出頁面網址
 
-對象（to）：fake → 假聊天視窗裡的聯絡人名稱；mattermost → 頻道 id 或 @使用者名稱（私訊）。
+對象（to）：fake → 假聊天視窗裡的聯絡人名稱；mattermost → 頻道 id 或 @使用者名稱（私訊）；
+runbook → 示範劇本的目標主機（例 localhost:8065），內文檔是 demo_runbook.py 產生的送出清單 JSON。
+  runbook 沒有送出轉接器：核准＝寫一份 approval 記錄（劇本雜湊、清單雜湊、到期時間，預設 7 天），
+  之後 neb 只放行與清單逐字相符的輸入與點擊；status 回 approved / expired / revoked。歷史頁可撤銷。
 頁面上顯示的「送到」標籤由伺服器自己用唯讀查詢解析，不採用 agent 提供的任何文字；
 解析不出來就不能核准。
 
@@ -25,7 +30,7 @@ agent 可用的子指令（只有這三個；沒有 send）：
 Host/Origin，並擋下自動化瀏覽器。這擋得住「過度熱心」的 agent 順手按核准，**不是**對抗
 惡意程式的安全邊界——能在你電腦上任意執行程式的東西，本來就能做任何事。
 """
-import hashlib, json, os, secrets, socket, subprocess, sys, threading, time, urllib.error
+import hashlib, json, os, re, secrets, socket, subprocess, sys, threading, time, urllib.error
 import nowin  # noqa: E402,F401  Windows：子程序不開主控台視窗（使用者回報視窗一直彈出）
 import urllib.parse, urllib.request, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,9 +41,12 @@ import mm_common  # noqa: E402
 
 HOME = policy.HOME
 BOX = os.path.join(HOME, "outbox")
-STATES = ("pending", "sent", "rejected")
-SERVICES = ("fake", "mattermost")
+STATES = ("pending", "sent", "rejected", "approved", "revoked")   # approved/revoked 只用於 runbook
+SERVICES = ("fake", "mattermost", "runbook")
 MAX_BODY = 20000
+MAX_RUNBOOK_BODY = 200000
+RUNBOOK_KIND = "no-errands-runbook-sends"
+RUNBOOK_DAYS = 7
 LOCK = threading.Lock()
 RESOLVE_CACHE = {}  # (service, to) -> (ts, result)
 RESOLVE_TTL_OK, RESOLVE_TTL_FAIL = 300, 15
@@ -131,11 +139,186 @@ def resolve_mattermost(rec, pol):
     return {"label": "Mattermost：" + mm_common.resolve_target(base, tok, rec["to"])["label"]}
 
 
-RESOLVERS = {"fake": resolve_fake, "mattermost": resolve_mattermost}
+def sends_sha256(sends):
+    """送出清單的正規化雜湊（排序鍵、無空白）；demo_runbook.py 與 neb 用同一個算法。"""
+    return hashlib.sha256(json.dumps(sends, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def runbook_days(doc):
+    """到期天數由伺服器決定：清單可要求更短，上限 RUNBOOK_DAYS（7）天。"""
+    try:
+        return max(1, min(RUNBOOK_DAYS, int(doc.get("days") or RUNBOOK_DAYS)))
+    except (TypeError, ValueError):
+        return RUNBOOK_DAYS
+
+
+def rebuild_pattern(shown, vars_):
+    """由「顯示用文字」（變數寫成 «名稱»）與各變數格式重建 neb 會用的正規表示式；
+    卡片顯示的就是這兩樣，所以清單裡的 pattern 必須與重建結果完全相同（防止顯示與強制不一致）。"""
+    for n, p in vars_.items():
+        # 每個格式要能單獨編譯、不含具名群組：單獨合法的格式放進群組就跳不出去（擋 `a)(?:.*)(?P<q>b` 這類）
+        try:
+            if re.compile(str(p)).groupindex:
+                raise ValueError("變數 %s 的格式不能含具名群組" % n)
+        except re.error:
+            raise ValueError("變數 %s 的格式不是單獨合法的正規表示式" % n)
+    parts, pos = [], 0
+    for k, m in enumerate(re.finditer(r"«([A-Za-z_]\w*)»", shown)):
+        if m.group(1) not in vars_:
+            raise ValueError("變數 %s 沒有格式" % m.group(1))
+        parts.append(re.escape(shown[pos:m.start()]))
+        parts.append("(?P<v_%s_%d>%s)" % (m.group(1), k, vars_[m.group(1)]))
+        pos = m.end()
+    parts.append(re.escape(shown[pos:]))
+    return "".join(parts)
+
+
+def parse_runbook_body(body):
+    doc = json.loads(body)
+    if doc.get("kind") != RUNBOOK_KIND:
+        raise ValueError("不是示範劇本的送出清單（kind 不符）")
+    if not isinstance(doc.get("sends"), list) or not doc["sends"]:
+        raise ValueError("送出清單是空的")
+    if not doc.get("target") or not doc.get("runbook_sha256"):
+        raise ValueError("缺 target 或 runbook_sha256")
+    if doc.get("suggested_runs") is not None:
+        try:
+            ok = 1 <= int(doc["suggested_runs"]) <= 10
+        except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            raise ValueError("建議的可執行次數必須是 1–10")
+    for s in doc["sends"]:
+        if not s.get("account") or not s.get("step"):
+            raise ValueError("每一筆送出都要有 step 與 account")
+        for i in s.get("inputs") or []:
+            if not i.get("at") or not i.get("fields"):
+                raise ValueError("輸入要有網址路徑（at）與欄位名稱")
+            if i.get("text") is None:
+                if not i.get("shown") or not isinstance(i.get("vars"), dict) or not i["vars"]:
+                    raise ValueError("變動的輸入必須附顯示文字（shown）與各變數的格式（vars）")
+                if rebuild_pattern(i["shown"], i["vars"]) != i.get("pattern"):
+                    raise ValueError("變動輸入的 pattern 與卡片上顯示的文字＋變數格式不一致")
+        for k in (s.get("keys") or []) + (s.get("clicks") or []):
+            if not isinstance(k, dict) or not k.get("at"):
+                raise ValueError("按鍵與點擊要有網址路徑（at）")
+    return doc
+
+
+def resolve_runbook(rec, pol):
+    """示範劇本：不查網路；只確認清單格式，以及目標主機等於草稿的 to。"""
+    doc = parse_runbook_body(rec["body"])
+    if str(doc["target"]).lower() != rec["to"].strip().lower():
+        raise RuntimeError("清單裡的目標主機（%s）與草稿對象不同" % doc["target"])
+    accts = sorted({s.get("account", "?") for s in doc["sends"]})
+    return {"label": "示範劇本「%s」→ %s（帳號：%s；%d 個送出步驟）" % (
+        doc.get("title", ""), doc["target"], "、".join(accts), len(doc["sends"]))}
+
+
+def runbook_diff(new_doc, old_doc):
+    """伺服器自己算的「與上次核准的差異」（只是顯示，不改強制內容；不採用 agent 的說明）。"""
+    def items(s):
+        out = set()
+        for i in s.get("inputs") or []:
+            out.add(("輸入", i.get("at"), "／".join(i.get("fields") or []),
+                     i["text"] if i.get("text") is not None else "«%s»" % i.get("shown")))
+        for k in s.get("keys") or []:
+            out.add(("按鍵", k.get("at"), k.get("key"), ""))
+        for c in s.get("clicks") or []:
+            out.add(("點擊", c.get("at"), c.get("name"), ""))
+        return out
+    old = {str(s["step"]): s for s in old_doc.get("sends") or []}
+    new = {str(s["step"]): s for s in new_doc.get("sends") or []}
+    lines = []
+    if str(old_doc.get("target")).lower() != str(new_doc.get("target")).lower():
+        lines.append("目標主機改變：%s → %s" % (old_doc.get("target"), new_doc.get("target")))
+    for sid in new:
+        if sid not in old:
+            lines.append("新增步驟 %s（帳號 %s，%d 個輸入、%d 個點擊、%d 個按鍵）" % (
+                sid, new[sid].get("account"), len(new[sid].get("inputs") or []), len(new[sid].get("clicks") or []),
+                len(new[sid].get("keys") or [])))
+    for sid in old:
+        if sid not in new:
+            lines.append("移除步驟 %s" % sid)
+    texts_changed = False
+    for sid in new:
+        if sid not in old:
+            continue
+        a, b = items(old[sid]), items(new[sid])
+        if old[sid].get("account") != new[sid].get("account"):
+            lines.append("步驟 %s 換帳號：%s → %s" % (sid, old[sid].get("account"), new[sid].get("account")))
+        for x in sorted(b - a):
+            same_field_text = any(y[0] == "輸入" and y[1] == x[1] and y[3] == x[3] for y in a) if x[0] == "輸入" else False
+            if x[0] == "輸入" and same_field_text:
+                lines.append("步驟 %s：欄位名稱候選改為「%s」（輸入文字沒變）" % (sid, x[2]))
+            else:
+                if x[0] == "輸入":
+                    texts_changed = True
+                lines.append("步驟 %s：新增%s %s「%s」%s" % (sid, x[0], x[1], x[2], ("← " + x[3]) if x[3] else ""))
+        for x in sorted(a - b):
+            if x[0] == "輸入" and any(y[0] == "輸入" and y[1] == x[1] and y[3] == x[3] for y in b):
+                continue
+            if x[0] == "輸入":
+                texts_changed = True
+            lines.append("步驟 %s：移除%s %s「%s」" % (sid, x[0], x[1], x[2]))
+    if not lines:
+        lines.append("送出內容與上次核准的完全相同")
+    elif not texts_changed and not any(l.startswith(("新增步驟", "目標主機")) for l in lines):
+        lines.append("所有輸入文字都沒有變")
+    return lines
+
+
+def last_approved_runbook(target, exclude_id=None):
+    best = None
+    for st in ("approved", "revoked"):
+        for r in list_state(st):
+            if r.get("service") == "runbook" and r.get("id") != exclude_id \
+                    and str(r.get("to", "")).lower() == str(target).lower():
+                if best is None or (r.get("decided") or "") > (best.get("decided") or ""):
+                    best = r
+    return best
+
+
+def runs_default(rec):
+    """卡片上要選的東西預設就是建議值：清單的建議 > 同一目標主機上次核准的次數（沿用）> 3。回 (次數, 理由)。"""
+    try:
+        bd = json.loads(rec["body"])
+    except Exception:
+        bd = {}
+    if bd.get("suggested_runs") is not None:
+        return int(bd["suggested_runs"]), str(bd.get("suggested_runs_why") or "agent 的建議")[:200]
+    prev = last_approved_runbook(rec.get("to"), rec.get("id"))
+    if prev and (prev.get("approval") or {}).get("max_runs"):
+        return int(prev["approval"]["max_runs"]), "沿用上次核准的次數"
+    return 3, "預設"
+
+
+def runbook_approval(aid, now=None):
+    """neb 與 demo_runbook 用：回 (ok, rec 或錯誤訊息)。只有 approved、未到期的才算有效。"""
+    st, rec = find(str(aid or ""))
+    if rec is None or rec.get("service") != "runbook":
+        return False, "找不到這份劇本核准（id 不存在）"
+    if st == "revoked":
+        return False, "這份劇本核准已被撤銷，需重新核准"
+    if st != "approved":
+        return False, "這份劇本還沒核准（狀態：%s）" % st
+    exp = (rec.get("approval") or {}).get("expires_ts", 0)
+    if (now or time.time()) >= exp:
+        return False, "這份劇本核准已到期（%s），需重新核准" % rec["approval"].get("expires")
+    return True, rec
+
+
+RESOLVERS = {"fake": resolve_fake, "mattermost": resolve_mattermost, "runbook": resolve_runbook}
 
 
 def resolve(rec, pol, fresh=False):
     """回 {resolved: True, label} 或 {resolved: False, resolve_error}。"""
+    if rec["service"] == "runbook":           # 標籤取決於內文，不快取
+        try:
+            return {"resolved": True, "label": resolve_runbook(rec, pol)["label"]}
+        except Exception as e:
+            return {"resolved": False, "resolve_error": str(e)[:200]}
     key = (rec["service"], rec["to"])
     now = time.time()
     hit = RESOLVE_CACHE.get(key)
@@ -237,6 +420,11 @@ input.reason{flex:1;min-width:160px;font:inherit;padding:7px 10px;border:1px sol
 pre{white-space:pre-wrap;margin:6px 0 0;font:inherit;background:var(--bg);border-radius:8px;padding:8px 10px}
 .err{color:var(--no);font-size:13px}
 #robot{border-color:var(--no)}
+table.rb{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}table.rb th,table.rb td{border-top:1px solid var(--line);padding:5px 6px;text-align:left;vertical-align:top}
+table.rb td.c{white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace}.var{color:var(--warn)}
+.agent{color:var(--mute);font-size:12px;font-style:italic;font-family:system-ui,sans-serif;margin-top:4px;white-space:normal}
+.st-approved{color:var(--ok)}.st-revoked{color:var(--no)}
+.diff{border:2px solid var(--acc);border-radius:8px;padding:8px 12px;margin:8px 0;font-size:14px}.diff ul{margin:4px 0 0;padding-left:20px}
 </style></head><body>
 <header><h1>📮 不求人發件匣</h1>
 <nav><a href="#pending" id="t-p" class="on">待核准<span class="badge" id="cnt">0</span></a><a href="#history" id="t-h">歷史</a></nav></header>
@@ -247,7 +435,19 @@ pre{white-space:pre-wrap;margin:6px 0 0;font:inherit;background:var(--bg);border
 </main>
 <script>
 const KEY=__KEY__;const INST=__INST__;const ROBOT=!!navigator.webdriver;if(ROBOT)document.getElementById("robot").hidden=false;
-let data={pending:[],sent:[],rejected:[]};let sig="";
+let data={pending:[],sent:[],rejected:[],approved:[],revoked:[]};let sig="";
+function rbTable(d){let doc;try{doc=JSON.parse(d.body)}catch(e){return '<div class="err">清單格式錯誤</div>'}
+  const rows=doc.sends.map(s=>{const c=[],at=new Set();
+    const shown=i=>esc(i.shown).replace(/«([A-Za-z_]\w*)»/g,(m,n)=>`<span class="var">«${n}：格式 ${esc((i.vars||{})[n])}，不含空白、最長 64 字»</span>`);
+    (s.inputs||[]).forEach(i=>{at.add(i.at);c.push(`在 ${esc(i.at)}｜欄位「${esc((i.fields||[]).join("／"))}」← ${i.text!=null?esc(i.text):shown(i)}`)});
+    (s.keys||[]).forEach(k=>{at.add(k.at);c.push(`在 ${esc(k.at)}｜按鍵 ${esc(k.key)}（只在焦點欄位與內容都等於上面核准的輸入時）`)});
+    (s.clicks||[]).forEach(k=>{at.add(k.at);c.push(`在 ${esc(k.at)}｜按「${esc(k.name)}」`)});
+    return `<tr><td>${esc(s.step)}</td><td>${esc(s.account)}</td><td class="c">${[...at].map(esc).join("\n")}</td><td class="c">${c.join("\n")}<div class="agent">agent 的說明（不是強制內容）：${esc(s.kind)}｜${esc(s.where)}${(s.vary||[]).length?"｜"+esc(s.vary.join("；")):""}</div></td></tr>`}).join("");
+  return `<div class="note">目標主機：<b>${esc(doc.target)}</b>｜清單雜湊 ${esc(String(doc.runbook_sha256).slice(0,12))}｜核准後 <b>${esc(d.days_effective)}</b> 天內有效（伺服器上限 7 天），可在「歷史」撤銷。執行時只允許下表「在哪個網址路徑、對哪個欄位、輸入什麼、按什麼」，任何不同都會被擋下、需重新核准。變數值另有硬上限：不含空白與換行、最長 64 字。</div>
+  ${d.diff_vs?`<div class="diff"><b>與上次核准（${esc(d.diff_vs.decided||d.diff_vs.id)}）的差異</b>（伺服器比對兩份清單算出；完整清單在下面）<ul>${d.diff_vs.lines.map(l=>`<li>${esc(l)}</li>`).join("")}</ul></div>`:'<div class="note">這個目標主機沒有核准過的劇本：請看完整清單。</div>'}
+  <div class="agent">劇本標題（agent 寫的）：${esc(doc.title)}</div>
+  <table class="rb"><tr><th>步驟</th><th>帳號</th><th>網址路徑（強制）</th><th>確切內容（強制）</th></tr>${rows}</table>
+  <div class="row">可執行次數：<select class="runs">${[1,2,3,4,5,6,7,8,9,10].map(n=>`<option value="${n}"${n===(d.runs_default||3)?" selected":""}>${n} 次</option>`).join("")}</select><span class="note">已預選建議值（${esc(d.runs_why||"預設")}）；每個送出動作超過這個次數就要重新核准。通常不用改，直接核准即可。</span></div>`}
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function tab(){return location.hash==="#history"?"history":"pending"}
@@ -256,7 +456,7 @@ async function load(){
   if(data.instance&&data.instance!==INST){location.reload();return}  // 伺服器換了：舊頁面的密鑰已失效，重新載入
   $("#cnt").textContent=data.pending.length;
   document.title=(data.pending.length?"("+data.pending.length+") ":"")+"NE-OUTBOX 不求人發件匣";
-  const s=tab()+JSON.stringify(data.pending.map(d=>d.id+d.rev+d.resolved))+JSON.stringify([...data.sent,...data.rejected].map(d=>d.id+d.state));
+  const s=tab()+JSON.stringify(data.pending.map(d=>d.id+d.rev+d.resolved))+JSON.stringify([...data.sent,...data.rejected,...(data.approved||[]),...(data.revoked||[])].map(d=>d.id+d.state));
   if(s!==sig){sig=s;render()}
 }
 function who(d){
@@ -269,7 +469,11 @@ function render(){
   const v=$("#view");
   if(tab()==="pending"){
     if(!data.pending.length){v.innerHTML='<div class="empty">目前沒有等你核准的訊息。</div>';return}
-    v.innerHTML=data.pending.map(d=>`<div class="card" data-id="${esc(d.id)}">${meta(d)}
+    v.innerHTML=data.pending.map(d=>d.service==="runbook"?`<div class="card" data-id="${esc(d.id)}">${meta(d)}
+      ${d.why?`<div class="why">agent 的來由：${esc(d.why)}</div>`:""}${rbTable(d)}
+      <div class="row"><button class="ok" data-a="approve">核准整份劇本</button>
+      <input class="reason" placeholder="退回原因（選填，agent 會看到）"><button class="no" data-a="reject">退回</button></div>
+      <div class="err"></div></div>`:`<div class="card" data-id="${esc(d.id)}">${meta(d)}
       ${d.why?`<div class="why">agent 的來由：${esc(d.why)}</div>`:""}
       <textarea aria-label="訊息內文">${esc(d.body)}</textarea>
       <div class="edited">已修改：送出的會是修改後的版本</div>
@@ -278,26 +482,35 @@ function render(){
       <div class="err">${d.last_error?"上次送出失敗："+esc(d.last_error):""}</div></div>`).join("");
     v.querySelectorAll(".card").forEach(c=>{
       const d=data.pending.find(x=>x.id===c.dataset.id),ta=c.querySelector("textarea"),ok=c.querySelector("[data-a=approve]");
-      ta.addEventListener("input",()=>{const ch=ta.value!==d.body;c.querySelector(".edited").classList.toggle("on",ch);ok.textContent=ch?"修改後送出":"核准送出"});
+      if(ta)ta.addEventListener("input",()=>{const ch=ta.value!==d.body;c.querySelector(".edited").classList.toggle("on",ch);ok.textContent=ch?"修改後送出":"核准送出"});
       c.querySelectorAll("button").forEach(b=>b.addEventListener("click",()=>decide(c,d,b.dataset.a)));
       if(!d.resolved)ok.disabled=true;
       if(ROBOT)c.querySelectorAll("button").forEach(b=>b.disabled=true);
     });
   }else{
-    const h=[...data.sent,...data.rejected].sort((a,b)=>(b.decided||"").localeCompare(a.decided||""));
+    const h=[...data.sent,...data.rejected,...(data.approved||[]),...(data.revoked||[])].sort((a,b)=>(b.decided||"").localeCompare(a.decided||""));
     if(!h.length){v.innerHTML='<div class="empty">還沒有紀錄。</div>';return}
-    v.innerHTML=h.map(d=>`<div class="card">${meta(d)}
+    v.innerHTML=h.map(d=>d.service==="runbook"?`<div class="card" data-id="${esc(d.id)}">${meta(d)}
+      <div class="st-${d.state}"><b>${d.state==="approved"?"劇本已核准（到期 "+esc((d.approval||{}).expires)+"）":d.state==="revoked"?"劇本核准已撤銷 · "+esc(d.revoked):"劇本已退回"}</b> · ${esc(d.decided)}</div>
+      ${d.state==="approved"?`<div class="row"><button class="no" data-a="revoke">撤銷這份核准</button></div><div class="err"></div>`:""}
+      ${d.reject_reason?`<div class="note">退回原因：${esc(d.reject_reason)}</div>`:""}</div>`:`<div class="card">${meta(d)}
       <div class="st-${d.state}"><b>${d.state==="sent"?(d.edited?"已送出（你修改過）":"已送出"):"已退回"}</b> · ${esc(d.decided)}</div>
       ${d.state==="sent"?`<pre>${esc(d.sent_text)}</pre>`:`<pre>${esc(d.body)}</pre>${d.reject_reason?`<div class="note">退回原因：${esc(d.reject_reason)}</div>`:""}`}
       </div>`).join("");
+    v.querySelectorAll("[data-a=revoke]").forEach(b=>b.addEventListener("click",async()=>{
+      const c=b.closest(".card");b.disabled=true;
+      try{const r=await fetch("api/decide",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:c.dataset.id,action:"revoke",key:KEY})});
+        const j=await r.json();if(!j.ok){c.querySelector(".err").textContent=j.error||"失敗";b.disabled=false;return}}catch(e){b.disabled=false;return}
+      sig="";load()}));
   }
 }
 function banner(msg){let b=document.getElementById("ne-banner");if(!b){b=document.createElement("div");b.id="ne-banner";b.setAttribute("role","alert");b.style.cssText="position:sticky;top:0;z-index:9;background:#b3261e;color:#fff;padding:12px 16px;font-weight:600;border-radius:8px;margin:8px 0";document.body.prepend(b)}b.textContent="沒有送出："+msg}
 async function decide(c,d,a){
-  const ta=c.querySelector("textarea"),text=ta.value,err=c.querySelector(".err");
+  const ta=c.querySelector("textarea"),text=ta?ta.value:d.body,err=c.querySelector(".err");
   if(a==="approve"&&!text.trim()){err.textContent="內文是空的";return}
   const btns=c.querySelectorAll("button");btns.forEach(b=>b.disabled=true);
   const body={id:d.id,action:a==="approve"?(text!==d.body?"edit":"approve"):"reject",text,reason:c.querySelector(".reason").value,rev:d.rev,key:KEY};
+  const rs=c.querySelector("select.runs");if(rs)body.max_runs=parseInt(rs.value,10);
   try{const r=await fetch("api/decide",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     const j=await r.json();
     if(!j.ok){banner(j.error||"失敗");if(j.code==="bad_key"){setTimeout(()=>location.reload(),2500);return}err.textContent=j.error||"失敗";if(j.stale){sig="";setTimeout(load,1500)}else btns.forEach(b=>b.disabled=false);return}
@@ -366,6 +579,19 @@ class Handler(BaseHTTPRequestHandler):
                              project_name=os.path.basename((r.get("project") or "").rstrip("\\/")))
                     if st == "pending":
                         r.update(rev=rev_of(r), **resolve(r, pol))
+                        if r.get("service") == "runbook":
+                            try:
+                                r["days_effective"] = runbook_days(parse_runbook_body(r["body"]))
+                            except Exception:
+                                r["days_effective"] = RUNBOOK_DAYS
+                            prev = last_approved_runbook(r.get("to"), r.get("id"))
+                            r["runs_default"], r["runs_why"] = runs_default(r)
+                            if prev:
+                                try:
+                                    r["diff_vs"] = {"id": prev["id"], "decided": prev.get("decided"),
+                                                    "lines": runbook_diff(json.loads(r["body"]), json.loads(prev["body"]))}
+                                except Exception as e:
+                                    r["diff_vs"] = {"id": prev["id"], "lines": ["（無法比較：%s）" % str(e)[:80]]}
                     rows.append(r)
                 out[st] = rows
             out["instance"] = self.server.instance
@@ -387,10 +613,16 @@ class Handler(BaseHTTPRequestHandler):
                                  "bad_key", str(req.get("id", "")))
         action = req.get("action")
         ua = self.headers.get("User-Agent", "")[:300]
-        if action != "reject" and any(m in ua.lower() for m in AUTOMATION_UA):
+        if action not in ("reject", "revoke") and any(m in ua.lower() for m in AUTOMATION_UA):
             return self._decided(403, {"ok": False, "error": "自動化瀏覽器不可核准（請用你平常的瀏覽器）"}, "automation", str(req.get("id", "")))
         with LOCK:
             st, rec = find(str(req.get("id", "")))
+            if action == "revoke":
+                if st != "approved" or rec.get("service") != "runbook":
+                    return self._json(409, {"ok": False, "error": "只有已核准的劇本可以撤銷"})
+                rec.update(revoked=time.strftime("%Y-%m-%d %H:%M:%S"), revoked_via=ua)
+                move(rec, "approved", "revoked")
+                return self._json(200, {"ok": True, "state": "revoked"})
             if st != "pending":
                 return self._decided(409, {"ok": False, "error": "這則草稿已經不在待核准清單"}, "not_pending", str(req.get("id", "")))
             if str(req.get("rev", "")) != rev_of(rec):
@@ -403,6 +635,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self._decided(200, {"ok": True, "state": "rejected"}, "rejected", rec["id"])
             if action not in ("approve", "edit"):
                 return self._decided(400, {"ok": False, "error": "unknown action"}, "bad_request", rec["id"])
+            if rec["service"] == "runbook":
+                # 劇本只能整份核准、不能在頁面上改；核准＝寫 approval 記錄，沒有送出轉接器
+                if action != "approve":
+                    return self._json(400, {"ok": False, "error": "示範劇本不能在頁面上修改；要改請退回"})
+                pol = policy.load(HOME)
+                who = resolve(rec, pol, fresh=True)
+                if not who.get("resolved"):
+                    return self._json(409, {"ok": False, "error": "劇本清單無法確認：" + who.get("resolve_error", "")})
+                doc = parse_runbook_body(rec["body"])
+                days = runbook_days(doc)
+                try:
+                    max_runs = int(req.get("max_runs") or runs_default(rec)[0])
+                except (TypeError, ValueError):
+                    max_runs = 0
+                if not 1 <= max_runs <= 10:
+                    return self._json(400, {"ok": False, "error": "可執行次數必須是 1–10"})
+                exp_ts = time.time() + days * 86400
+                rec.update(decided=now, decided_via=ua, label=who["label"], approval={
+                    "runbook_sha256": doc["runbook_sha256"], "sends_sha256": sends_sha256(doc["sends"]),
+                    "target": str(doc["target"]).lower(), "approved": now, "expires_ts": exp_ts,
+                    "days": days, "max_runs": max_runs,
+                    "expires": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(exp_ts))})
+                move(rec, "pending", "approved")
+                return self._json(200, {"ok": True, "state": "approved"})
             text = str(req.get("text", ""))
             if not text.strip() or len(text) > MAX_BODY:
                 return self._decided(400, {"ok": False, "error": "內文是空的或太長"}, "bad_body", rec["id"])
@@ -516,8 +772,16 @@ def cmd_draft(a):
             body = f.read().rstrip("\n")
     except Exception as e:
         _out({"ok": False, "error": "讀不到內文檔：%s" % e}, 2)
-    if not body.strip() or len(body) > MAX_BODY:
-        _out({"ok": False, "error": "內文是空的或超過 %d 字" % MAX_BODY}, 2)
+    limit = MAX_RUNBOOK_BODY if service == "runbook" else MAX_BODY
+    if not body.strip() or len(body) > limit:
+        _out({"ok": False, "error": "內文是空的或超過 %d 字" % limit}, 2)
+    if service == "runbook":
+        try:
+            doc = parse_runbook_body(body)
+        except Exception as e:
+            _out({"ok": False, "error": "示範劇本送出清單格式錯誤：%s" % e}, 2)
+        if str(doc["target"]).lower() != to.strip().lower():
+            _out({"ok": False, "error": "--to 必須等於清單裡的目標主機（%s）" % doc["target"]}, 2)
     rec = {"id": time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3), "service": service,
            "to": to, "body": body, "why": why[:2000], "project": os.getcwd(),
            "created": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -553,6 +817,14 @@ def _status_obj(st, rec):
         out["decided"] = rec.get("decided")
     if st == "pending" and rec.get("last_error"):
         out["last_error"] = rec["last_error"]
+    if st in ("approved", "revoked"):
+        ap = rec.get("approval") or {}
+        out.update(runbook_sha256=ap.get("runbook_sha256"), sends_sha256=ap.get("sends_sha256"),
+                   expires=ap.get("expires"), decided=rec.get("decided"))
+        if st == "approved" and time.time() >= ap.get("expires_ts", 0):
+            out["state"] = "expired"
+        if st == "revoked":
+            out["revoked"] = rec.get("revoked")
     return out
 
 
@@ -607,12 +879,28 @@ def cmd_wait(a):
         time.sleep(1)
 
 
+def cmd_withdraw(a):
+    """agent 撤回自己還沒被決定的草稿（安全方向：只能讓東西不送出）。已核准／已送出的不能撤回。"""
+    if len(a) < 2:
+        _out({"ok": False, "error": "用法：outbox.py withdraw <id> [--why 原因]"}, 2)
+    with LOCK:
+        st, rec = find(a[1])
+        if st != "pending":
+            _out({"ok": False, "error": "只能撤回待核准的草稿（目前：%s）" % (st or "不存在")}, 3)
+        rec.update(decided=time.strftime("%Y-%m-%d %H:%M:%S"), decided_via="agent-withdraw", withdrawn=True,
+                   reject_reason="agent 撤回：" + (_arg(a, "--why", "") or "")[:300])
+        move(rec, "pending", "rejected")
+    _out({"ok": True, "id": rec["id"], "state": "rejected", "withdrawn": True})
+
+
 def main():
     a = sys.argv[1:]
     if not a or a[0] in ("-h", "--help"):
         print(__doc__); sys.exit(2)
     if a[0] == "draft":
         cmd_draft(a)
+    elif a[0] == "withdraw":
+        cmd_withdraw(a)
     elif a[0] == "status":
         cmd_status(a)
     elif a[0] == "wait":

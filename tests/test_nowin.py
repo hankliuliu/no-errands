@@ -89,6 +89,18 @@ if os.name == "nt":
     check("沒有主控台的父程序連續呼叫 neb×5、ned×5：沒有彈出任何終端機視窗", not popped, popped[:5])
     check("期間前景視窗沒有改變", not fg_changed)
     check("10 次呼叫都正常結束", all(p.returncode == 0 for p in procs), [p.returncode for p in procs])
+    # 4 背景引擎（demo_runbook live 的做法）：nowin.popen_background 啟動的程序再連續產生「沒帶任何旗標」的子程序
+    #   → 子孫繼承隱藏主控台，不彈窗、不搶前景（若用 DETACHED_PROCESS 啟動，這裡每個子程序都會彈一個視窗）
+    chain = [sys.executable, "-c", "import subprocess,sys\nfor _ in range(6): subprocess.run([sys.executable,'-c','import time;time.sleep(0.3)'])"]
+    before = wins(); fg0 = u.GetForegroundWindow(); popped4 = []; fg4 = False
+    bp = nowin.popen_background(chain, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    t_end = time.time() + 15
+    while time.time() < t_end and bp.poll() is None:
+        cur = wins(); popped4 += [c for h, c in cur.items() if h not in before and c in CONSOLE]
+        fg4 = fg4 or u.GetForegroundWindow() != fg0
+        time.sleep(0.02)
+    check("背景程序（popen_background）連續產生 6 個子程序：沒有彈出終端機視窗", not popped4 and bp.poll() == 0, popped4[:5])
+    check("背景程序期間前景視窗沒有改變", not fg4)
     shutil.rmtree(home, ignore_errors=True)
 
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))

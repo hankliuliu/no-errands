@@ -65,8 +65,13 @@ jobs:
         run: python3 tests/selfhost/mm_setup.py
       - name: mattermost end-to-end (PAT via UI, read-only tool, outbox real send, read state)
         run: set -o pipefail; python3 tests/selfhost/mm_flow.py --ab ../h/bin/agent-browser | tee mm.txt
+      - name: demo runbook on self-hosted Mattermost (fictional data; approval, guarded sends, counterexamples)
+        if: always()
+        run: set -o pipefail; python3 tests/selfhost/mm_runbook.py --ab ../h/bin/agent-browser | tee runbook-mm.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: selfhost-mattermost
-          path: mm.txt
+          path: |
+            mm.txt
+            runbook-mm.txt
