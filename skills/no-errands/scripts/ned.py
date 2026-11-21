@@ -21,7 +21,7 @@ import json, os, re, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import policy  # noqa: E402  同目錄（setup 一起複製到 ~/.no-errands/bin/）
 
-HOME = os.environ.get("NO_ERRANDS_HOME") or os.path.join(os.path.expanduser("~"), ".no-errands")
+HOME = policy.HOME  # 同一套解析：env → 本檔所在的 <home>/bin → ~/.no-errands
 STATE = os.path.join(HOME, "ned-state.json")
 LEDGER = os.path.join(HOME, "ned-ledger.jsonl")
 
@@ -105,7 +105,9 @@ def main():
                          "語意操作；若使用者要看你操作，請他要求後把政策改成觀看模式")
 
     st = load_state()
-    cmd = [ad, sub]
+    # 測試掛鉤：NE_FAKE_AD_PY 指向一個假的 agent-desktop（python 腳本），只給 tests/test_ned.py 用
+    fake = os.environ.get("NE_FAKE_AD_PY")
+    cmd = ([sys.executable, fake] if fake else [ad]) + [sub]
     if sub in APP_CMDS:
         if "--app" in rest or "--window-id" in rest:
             pass  # 尊重呼叫者給的 scope，但 --app 必須一致
@@ -142,7 +144,7 @@ def main():
     # 記錄 snapshot 歸屬
     if sub in ("snapshot", "find"):
         for m in re.finditer(r'"snapshot_id":"(s[0-9a-z]+)"', out):
-            st[m.group(1)] = app
+            st[m.group(1)] = {"app": app, "outbox": OUTBOX_MARK in out}
         save_state(st)
     ledger(app, sub, True)
     sys.stdout.write(out)

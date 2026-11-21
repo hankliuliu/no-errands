@@ -180,7 +180,7 @@ def managed_block(home, paths, checks=None, repo=None):
         "- 通訊/郵件/金融類 app 與網站：未授權就不讀不碰（ned 會拒絕）；要碰先在對話中取得使用者指名同意。",
         "- **你不能自己送出任何訊息**：要傳給別人的內容寫進一個文字檔，起草到核准發件匣："
         "`%s \"%s\" draft --service <fake|mattermost> --to <對象> --body-file <檔> --why \"<來由>\"`，"
-        "把回傳的網址告訴使用者、用 `... status <id>` 等他核准；發件匣頁面是你的禁區，不要開。"
+        "回傳有 id 且 `... status <id>` 為 pending 才可說草稿已在發件匣；把網址告訴使用者後**就結束回合**（不要在前景等核准，最多輪詢約 60 秒；能掛背景任務才監看）。發件匣頁面是你的禁區，不要開。"
         % (py_bin, os.path.join(home, "bin", "outbox.py")),
         "- 已授權的桌面聊天 app 走守門：`%s \"%s\" <app> locate|open|read|export|close --chat <名稱>`（輸入框/送出鈕永遠擋下）。"
         % (py_bin, os.path.join(home, "bin", "chat_guard.py")),

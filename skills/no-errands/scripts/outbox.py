@@ -520,7 +520,7 @@ def cmd_draft(a):
     _out({"ok": True, "id": rec["id"], "url": url_of(pol), "server": "running", "page_opened": opened,
           "next": ("頁面已在使用者的瀏覽器開啟（觀看模式）。" if opened else
                    "告訴使用者：草稿在發件匣頁面等他核准（給上面的網址）。") +
-                  "你不要開啟或操作那個頁面。接著在背景監看 `outbox.py status %s`，核准或退回後再續跑。" % rec["id"]})
+                  "你不要開啟或操作那個頁面。然後就結束回合，不要在前景等核准（最多輪詢約 60 秒）；環境支援背景任務才掛背景監看 `outbox.py status %s`。" % rec["id"]})
 
 
 def cmd_status(a):

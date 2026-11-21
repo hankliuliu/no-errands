@@ -21,7 +21,22 @@ CLI（agent 只在「使用者於對話中明確要求」時才可呼叫 set/gra
 """
 import copy, hashlib, json, os, sys, time
 
-HOME = os.environ.get("NO_ERRANDS_HOME") or os.path.join(os.path.expanduser("~"), ".no-errands")
+def _resolve_home():
+    """NO_ERRANDS_HOME 優先；否則若本檔位於 <home>/bin/ 且該 home 有 config.json / policy.json，
+    就用那個 home（--home 安裝時 agent 不會帶環境變數——實測 P0.3 驗收時草稿因此跑進了
+    使用者真實的 ~/.no-errands）；最後才是 ~/.no-errands。"""
+    env = os.environ.get("NO_ERRANDS_HOME")
+    if env:
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    if os.path.basename(here) == "bin":
+        cand = os.path.dirname(here)
+        if any(os.path.exists(os.path.join(cand, f)) for f in ("config.json", "policy.json")):
+            return cand
+    return os.path.join(os.path.expanduser("~"), ".no-errands")
+
+
+HOME = _resolve_home()
 
 DEFAULTS = {
     "version": 1,
