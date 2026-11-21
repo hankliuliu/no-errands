@@ -233,7 +233,9 @@ def write_dest(tid, t, msgs):
     last = msgs[-1] if msgs else None
     st = {"last_synced_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "source": "no-errands gather"}
     if t["service"] == "line" and last:
-        st.update(last_message_id=last["id"], last_date=last["date"], last_time=last["time"])
+        st.update(last_message_id=last["id"], last_date=last["date"], last_time=last["time"],
+                  # 與 context-gather 的 fetch-line 相同的游標欄位（毫秒，本機時區）
+                  last_timestamp_ms=int(time.mktime(time.strptime("%s %s" % (last["date"], last["time"]), "%Y-%m-%d %H:%M")) * 1000))
     if t["service"] == "mattermost" and last:
         st["last_post_create_at_ms"] = max(m.get("create_at", 0) for m in msgs)
     json.dump(st, open(os.path.join(dest, "_state.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
