@@ -57,12 +57,17 @@
   stage-0 → setup（暫存 home 與 claude-dir）→ doctor → 各工具測試 → uninstall。會開視窗的測試只在 CI 跑。
 - **doctor（實際輸出，各平台每一項一行）**：Windows、Ubuntu、macOS 都是 `python / pkg_manager / browsers / browser / profile` ok；
   `desktop`：Windows 寫入→點擊→讀回一致；Ubuntu 用 zenity 自有對話框、比對對話框自己印出的值一致（需要視窗管理員，否則
-  agent-desktop 無法證明視窗型別）；macOS runner 的輔助使用權限是 granted，自有視窗的寫入→讀回仍在調整。
+  agent-desktop 無法證明視窗型別）；macOS 用 JXA 建的自有 Cocoa 視窗寫入→讀回一致。
 - **彈出選單（LINE「選單點不到」的根因）**：Qt 的彈出選單是獨立頂層視窗，agent-desktop 的視窗清單把它濾掉；
   對該 HWND 做 UIA 讀得到項目名稱與位置；投遞滑鼠訊息、投遞方向鍵＋Enter、UIA Invoke 都能打開存檔對話框，游標不動。
   UIA Invoke 會被「項目開模態對話框」卡住 → 產品用投遞訊息。
-- **常見對話框**：訊息框 OK、開檔/存檔/列印取消、覆寫確認「否」——5/5。**安裝精靈**：NSIS（Notepad++）語意點擊一路到 Install，
-  Install 點了不換頁，調查中（BM_CLICK、實體點擊、改用 Inno Setup 交叉驗證）。
+- **常見對話框**：訊息框 OK、開檔/存檔/列印取消、覆寫確認「否」——5/5。
+- **安裝精靈**：NSIS（Notepad++）與 Inno Setup（WinMerge）都從第一頁點到 Finish、程式檔存在。關鍵兩個發現：
+  (1) NSIS 的「Install」語意點擊／BM_CLICK／實體點擊都回 ok 但不換頁；**對父視窗投遞 WM_COMMAND(BN_CLICKED)** 才過（BM_CLICK 在對話框非作用中時會失效）。
+  (2) Inno 的精靈 list-windows 看不到（owned 視窗、子程序 setup.tmp、按鈕類別 TNewButton）→ Win32 列舉＋WM_COMMAND 一路點完。
+  完成頁「啟動 WinMerge」在 TNewCheckListBox 裡取消不了 → 程式被啟動鎖住檔案、移除失敗 → 移除前依安裝路徑找 PID 關掉。
+- **自架服務**：Gitea 7/7（登入一次、新程序仍登入、讀私有內容、網頁建 token、token 有效、值不外洩）；Mattermost 18/18（管理介面開 PAT、網頁建 PAT、mm_ro 唯讀、發件匣核准後真的發出、退回的不發、GET 不動已讀）。
+- **macOS**：doctor 桌面寫入→讀回一致（JXA 自有 Cocoa 視窗）；Office（LibreOffice）重算與轉檔 4/4。
 - **權限規則**：Windows 的 Claude Code 規則路徑必須寫 `//c/Users/...`（`//C:/...` 比對不到）；寫對之後巢狀 agent 用 Read 或 `cat`
   讀 token 檔都被拒絕。
 - **共存**：測試抓到兩個真 bug——已有同名 skill 會被直接覆蓋；受管區塊會吃掉原檔最後一行的行尾空白、改掉 CRLF。都已修、有測試。

@@ -134,7 +134,9 @@ python doctor.py
 | 桌面操作（寫入→讀回） | ✓ | ✓（Xvfb＋視窗管理員＋AT-SPI） | ✓（自有 Cocoa 視窗；需輔助使用權限） |
 | 發件匣、Mattermost 唯讀 | ✓ | ✓ | ✓ |
 | 聊天守門 | 假聊天視窗 ✓；LINE：找到指名對話、開啟、確認身分 ✓，匯出**真機尚未完成** | — | — |
-| Office 重算／轉檔 | ✓（Office） | ✓（LibreOffice） | 未實測 |
+| Office 重算／轉檔 | ✓（Office） | ✓（LibreOffice） | ✓（LibreOffice） |
+| 安裝精靈、常見系統對話框 | ✓（NSIS、Inno Setup；訊息框／開存檔／列印／覆寫確認） | — | — |
+| 自架服務端到端（Gitea、Mattermost） | — | ✓（網頁建 token、唯讀查詢、發件匣真實送出） | — |
 | 系統權限提示（UAC） | 會辨識並請你按；**未在真機驗證**（CI 關閉了 UAC） | — | — |
 
 你的電腦跑起來跟這張表不一樣的話，把 `doctor.py` 的輸出貼給我們。

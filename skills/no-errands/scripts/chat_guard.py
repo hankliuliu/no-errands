@@ -470,6 +470,7 @@ def cmd_export(app, prof, dest, chat=None):
         raise Refused(why)
 
     # 身分驗證 1：app 帶進來的預設檔名要含目標對話名稱（在讀到任何內容之前）
+    default_name = ""
     if prof.get("verify_export_filename_contains_chat"):
         try:
             default_name = (ad("get", fname["ref_id"], "--property", "value") or {}).get("value") or ""
@@ -478,6 +479,16 @@ def cmd_export(app, prof, dest, chat=None):
         if not chat or chat not in default_name:
             cancel_and_refuse("預設檔名不含指名對話名稱（或讀不到）：開著的可能不是目標對話，已按取消、沒有存檔")
     target = os.path.join(dest, "chat-export-%s.txt" % time.strftime("%Y%m%d-%H%M%S"))
+    # 對話框目前所在的資料夾（網址列「Address: C:\...」）：對話框若不採用我們寫的路徑、照預設檔名存，就是存到這裡
+    dialog_folder = None
+    for n, _ in walk(dsnap["tree"]):
+        nm = n.get("name") or ""
+        for pre in ("Address: ", "位址: ", "地址: ", "Address:", "位址:", "地址:"):
+            if nm.startswith(pre) and os.path.isdir(nm[len(pre):].strip()):
+                dialog_folder = nm[len(pre):].strip()
+                break
+        if dialog_folder:
+            break
     guarded(prof, "set-value", fname, fparents, {"zone": "dialog"}, text=target)
     try:
         readback = (ad("get", fname["ref_id"], "--property", "value") or {}).get("value")
@@ -537,8 +548,8 @@ def cmd_export(app, prof, dest, chat=None):
         base = os.path.basename(default_name.replace("\\", "/"))
         stem = os.path.splitext(base)[0]
         home_dir = os.path.expanduser("~")
-        for d in (dest, os.path.join(home_dir, "Documents"), os.path.join(home_dir, "Downloads"),
-                  os.path.join(home_dir, "Desktop"), os.path.join(home_dir, "OneDrive", "Documents")):
+        for d in ([dialog_folder] if dialog_folder else []) + [dest, os.path.join(home_dir, "Documents"), os.path.join(home_dir, "Downloads"),
+                  os.path.join(home_dir, "Desktop"), os.path.join(home_dir, "OneDrive", "Documents")]:
             try:
                 for fn in os.listdir(d):
                     fp = os.path.join(d, fn)
@@ -552,7 +563,9 @@ def cmd_export(app, prof, dest, chat=None):
                 break
     if not os.path.exists(target):
         # 診斷（只含系統對話框的 UI 字串）：對話框還在嗎？上面有哪些按鈕？
-        diag = {"dialog_still_open": False}
+        diag = {"dialog_still_open": False, "dialog_folder_known": bool(dialog_folder),
+                "default_name_in_dialog_folder": bool(dialog_folder and default_name and os.path.exists(
+                    os.path.join(dialog_folder, os.path.basename(default_name.replace("\\", "/")))))}
         try:
             still = [w for w in ad("list-windows") if w.get("title") == prof["dialog_title"]
                      and w.get("pid") == win.get("pid")]
