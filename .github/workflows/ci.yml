@@ -62,6 +62,7 @@ jobs:
           "$PY" tests/test_outbox.py | tee outbox.txt
           "$PY" tests/test_ned.py | tee ned.txt
           "$PY" tests/test_mm_ro.py | tee mm.txt
+          "$PY" tests/test_neb.py | tee neb.txt
           "$PY" tests/test_office.py | tee office.txt
           AB="$NE_HOME/bin/agent-browser"; [ -f "$AB.exe" ] && AB="$AB.exe"
           "$PY" tests/test_token_flow.py --ab "$AB" | tee token.txt
@@ -112,6 +113,7 @@ jobs:
             outbox.txt
             ned.txt
             mm.txt
+            neb.txt
             office.txt
             token.txt
             b3.*
