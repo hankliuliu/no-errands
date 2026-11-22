@@ -82,7 +82,7 @@ def main():
                   open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
         env = dict(os.environ, NE_STAGE_SCREEN="%dx%d" % (W, H), NE_STAGE_GEOM=geom, NE_STAGE_NO_HOTKEYS="1")
         p = spawn(d, env)
-        g = wait(lambda: rd(geom).get("caption_text") and rd(geom))
+        g = wait(lambda: rd(geom).get("caption_text") and rd(geom).get("next", [0, 0]) != [0, 0] and rd(geom))
         lines = L.caption_lines(two_lines, W, H)
         check("%d×%d：字幕估算兩行以內（%d 行）" % (W, H, lines), lines <= 2, lines)
         check("%d×%d：字幕實際排出來的高度放得進字幕帶（不截斷）" % (W, H),

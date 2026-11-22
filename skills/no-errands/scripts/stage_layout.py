@@ -58,7 +58,7 @@ def char_w(c, font):
 def caption_lines(text, W, H):
     """這句字幕在 W×H 上會排成幾行（逐字斷行，與舞台的 Label 一致）。"""
     lay = layout(W, H)
-    avail = lay["caption_text"][2]
+    avail = lay["caption_text"][2] * 0.94               # 安全邊際：Label 內距、字型實際字寬略大於字級
     font = lay["cap_font"]
     lines, cur = 1, 0.0
     for c in str(text):

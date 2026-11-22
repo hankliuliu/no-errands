@@ -28,6 +28,11 @@ FONT = "Microsoft JhengHei UI"
 OFF = -32000                                            # 移到螢幕外
 
 
+def px(n):
+    """Tk 的字級：正數是「點」（96 DPI 下大 33%，150% 縮放再放大）→ 一律用負數＝像素，排版才和 stage_layout 的估算一致。"""
+    return -max(1, int(round(n)))
+
+
 def read_json(p, default=None):
     try:
         with open(p, encoding="utf-8") as f:
@@ -167,11 +172,11 @@ class Stage:
         self.band = self._top(*lay["band"])
         self.band.configure(bg="#11151d")
         bf = lay["band_font"]
-        self.chip = tk.Label(self.band, text="", font=(FONT, bf, "bold"), fg="#fff", bg=ACCENT, padx=bf // 1.5)
+        self.chip = tk.Label(self.band, text="", font=(FONT, px(bf), "bold"), fg="#fff", bg=ACCENT, padx=bf // 1.5)
         self.chip.pack(side="left", padx=(lay["pad"], 14), pady=6)
-        self.sect = tk.Label(self.band, text="", font=(FONT, int(bf * 0.8)), fg=DIM, bg="#11151d")
+        self.sect = tk.Label(self.band, text="", font=(FONT, px(int(bf * 0.8))), fg=DIM, bg="#11151d")
         self.sect.pack(side="left")
-        self.where = tk.Label(self.band, text="", font=(FONT, int(bf * 0.62)), fg=DIM, bg="#11151d")
+        self.where = tk.Label(self.band, text="", font=(FONT, px(int(bf * 0.62))), fg=DIM, bg="#11151d")
         self.where.pack(side="right", padx=lay["pad"])        # 「5 / 13 · 現場操作」：這是現場操作，不是錄影
         self.rule = tk.Frame(self.band, height=3, bg=ACCENT)
         self.rule.place(relx=0, rely=1.0, anchor="sw", relwidth=1.0)
@@ -180,13 +185,13 @@ class Stage:
         self.capw = self._top(cx, cy, cw, ch)
         self.capw.configure(bg=BG)
         tx, _, tw, _ = lay["caption_text"]
-        self.cap = tk.Label(self.capw, text="", font=(FONT, lay["cap_font"], "bold"), fg=FG, bg=BG, justify="left",
+        self.cap = tk.Label(self.capw, text="", font=(FONT, px(lay["cap_font"]), "bold"), fg=FG, bg=BG, justify="left",
                             anchor="w", wraplength=tw)
         self.cap.place(x=tx, y=0, width=tw, height=ch)
         ox, _, ow, _ = lay["controls"]
         ctl = tk.Frame(self.capw, bg=BG)
         ctl.place(x=ox, y=0, width=ow, height=ch)
-        cf = (FONT, lay["ctl_font"], "bold")
+        cf = (FONT, px(lay["ctl_font"]), "bold")
         mk = lambda t, cmd: tk.Button(ctl, text=t, command=cmd, font=cf, bg="#1b2029", fg="#9aa4b2", relief="flat",
                                       activebackground="#2a3140", activeforeground=FG, padx=10, pady=4, takefocus=0, bd=0)
         row = tk.Frame(ctl, bg=BG)
@@ -199,14 +204,14 @@ class Stage:
             b.pack(in_=row, side="left", padx=3)
         self.dots = tk.Canvas(ctl, bg=BG, highlightthickness=0, height=14, width=ow)
         self.dots.place(relx=1.0, rely=0.5, anchor="e", y=-lay["ctl_font"] * 2.4)
-        self.state = tk.Label(ctl, text="", font=(FONT, max(11, lay["ctl_font"] - 2)), fg=ACCENT, bg=BG, anchor="e")
+        self.state = tk.Label(ctl, text="", font=(FONT, px(max(11, lay["ctl_font"] - 2))), fg=ACCENT, bg=BG, anchor="e")
         self.state.place(relx=1.0, rely=0.5, anchor="e", y=lay["ctl_font"] * 2.4)
         # 外框：四條置頂細窗
         self.edges = [self._top(0, 0, 1, 1) for _ in range(4)]
         for e in self.edges:
             e.configure(bg=LOOK)
             e.withdraw()
-        self.menu = tk.Menu(r, tearoff=0, font=(FONT, lay["ctl_font"]))
+        self.menu = tk.Menu(r, tearoff=0, font=(FONT, px(lay["ctl_font"])))
         self.menu.add_command(label="自動／逐步", command=self.toggle_mode)
         self.menu.add_command(label="備案畫面", command=self.planb)
         self.menu.add_command(label="停止示範", command=self.stop)
@@ -347,43 +352,43 @@ class Stage:
         d = now.get("card_data") or {}
         big, mid, small = round(H * 0.06), round(H * 0.035), round(H * 0.026)
         if kind == "title":
-            c.create_text(W // 2, H * 0.32, text=now.get("title", ""), fill=FG, font=(FONT, big, "bold"), width=W * 0.8)
+            c.create_text(W // 2, H * 0.32, text=now.get("title", ""), fill=FG, font=(FONT, px(big), "bold"), width=W * 0.8)
             if d.get("subtitle"):
-                c.create_text(W // 2, H * 0.42, text=d["subtitle"], fill=DIM, font=(FONT, mid), width=W * 0.8)
+                c.create_text(W // 2, H * 0.42, text=d["subtitle"], fill=DIM, font=(FONT, px(mid)), width=W * 0.8)
             y = H * 0.54
             for acct, info in (now.get("accounts") or {}).items():          # 角色圖例
                 col = info.get("color") or ACCENT
                 c.create_rectangle(W * 0.38, y - mid * 0.6, W * 0.38 + mid * 1.2, y + mid * 0.6, fill=col, width=0)
-                c.create_text(W * 0.38 + mid * 1.8, y, text=info.get("role", acct), fill=FG, font=(FONT, mid), anchor="w")
+                c.create_text(W * 0.38 + mid * 1.8, y, text=info.get("role", acct), fill=FG, font=(FONT, px(mid)), anchor="w")
                 y += mid * 1.9
         elif kind == "checklist":
-            c.create_text(W // 2, H * 0.18, text=d.get("heading", "準備中…"), fill=FG, font=(FONT, mid, "bold"))
+            c.create_text(W // 2, H * 0.18, text=d.get("heading", "準備中…"), fill=FG, font=(FONT, px(mid), "bold"))
             y = H * 0.28
             for it in d.get("items", []):
                 mark, col = {"ok": ("✓", "#3fb950"), "fail": ("✗", "#f47067"), "warn": ("!", "#d29922"),
                          "run": ("…", DIM)}.get(it.get("state"), ("·", DIM))
-                c.create_text(W * 0.3, y, text=mark, fill=col, font=(FONT, mid, "bold"))
-                c.create_text(W * 0.33, y, text=it.get("name", ""), fill=FG, font=(FONT, small + 4), anchor="w")
+                c.create_text(W * 0.3, y, text=mark, fill=col, font=(FONT, px(mid), "bold"))
+                c.create_text(W * 0.33, y, text=it.get("name", ""), fill=FG, font=(FONT, px(small + 4)), anchor="w")
                 if it.get("state") in ("fail", "warn") and it.get("say"):
                     y += small * 1.5
-                    c.create_text(W * 0.33, y, text=it["say"], fill="#f4a9a3", font=(FONT, small), anchor="w", width=W * 0.6)
+                    c.create_text(W * 0.33, y, text=it["say"], fill="#f4a9a3", font=(FONT, px(small)), anchor="w", width=W * 0.6)
                 y += small * 2.1
         elif kind == "transition":
             col = now.get("role_color") or ACCENT
             c.create_rectangle(0, H * 0.42, W, H * 0.58, fill=col, width=0)
-            c.create_text(W // 2, H // 2, text="換成：" + (now.get("role") or ""), fill="#fff", font=(FONT, big, "bold"))
+            c.create_text(W // 2, H // 2, text="換成：" + (now.get("role") or ""), fill="#fff", font=(FONT, px(big), "bold"))
         elif kind == "end":
-            c.create_text(W // 2, H * 0.24, text=d.get("heading", "示範結束"), fill=FG, font=(FONT, big, "bold"))
+            c.create_text(W // 2, H * 0.24, text=d.get("heading", "示範結束"), fill=FG, font=(FONT, px(big), "bold"))
             y = H * 0.38
             for pt in d.get("points") or []:                 # 三行重點（只用前面字幕講過的話）
-                c.create_text(W * 0.25, y, text="●", fill=ACCENT, font=(FONT, small))
-                c.create_text(W * 0.28, y, text=pt, fill=FG, font=(FONT, mid), anchor="w", width=W * 0.6)
+                c.create_text(W * 0.25, y, text="●", fill=ACCENT, font=(FONT, px(small)))
+                c.create_text(W * 0.28, y, text=pt, fill=FG, font=(FONT, px(mid)), anchor="w", width=W * 0.6)
                 y += mid * 2.0
             if d.get("text"):
-                c.create_text(W // 2, y + mid, text=d["text"], fill=DIM, font=(FONT, small + 2), width=W * 0.7)
+                c.create_text(W // 2, y + mid, text=d["text"], fill=DIM, font=(FONT, px(small + 2)), width=W * 0.7)
             if d.get("reset"):
                 c.create_text(W // 2, H * 0.80, text=d["reset"], fill="#3fb950" if d.get("reset_ok") else "#f47067",
-                              font=(FONT, small + 2))
+                              font=(FONT, px(small + 2)))
 
     # ---------- 每 200 ms
     def tick(self):
@@ -445,6 +450,9 @@ class Stage:
         self.root.after(200, self.tick)
 
     def dump_geom(self):
+        self.root.update_idletasks()
+        if not (self.b_next.winfo_ismapped() and self.b_next.winfo_width() > 1):
+            return                                        # 還沒排好：下一輪再寫（測試不會讀到 0,0）
         g = {"screen": [self.W, self.H], "caption_text": self.cap.cget("text"),
              "caption_req_h": self.cap.winfo_reqheight(), "caption_h": self.lay["caption"][3],
              "next": [self.b_next.winfo_rootx() + self.b_next.winfo_width() // 2,
