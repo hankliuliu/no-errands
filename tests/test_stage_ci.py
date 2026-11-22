@@ -271,7 +271,7 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
     vis = wait(lambda: u.IsWindowVisible(ph), 3)
     g5 = rd(geom)
     check("A33 轉場卡後回到台上（游標序號沒變）：舞台沒有出錯、游標重新出現", g5.get("errors") == 0 and vis,
-          (g5.get("errors"), u.IsWindowVisible(ph), g5.get("pointer"), g5.get("card")))
+          (g5.get("errors"), u.IsWindowVisible(ph), g5.get("pointer"), g5.get("card"), g5.get("ptr_dbg")))
 
 
 CURSOR_WAIT = 2.8

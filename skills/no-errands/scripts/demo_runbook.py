@@ -545,6 +545,7 @@ class Browser:
         self.started.clear()
 
     def snapshot(self, acct, scope=None):
+        self._found = None                                  # 新的 snapshot 會換掉 ref：之前記住的目標作廢
         cmd = ["snapshot", "-i"] + (["-s", scope] if scope else [])
         rc, o, e = self.neb(acct, *cmd)
         items = []
@@ -558,9 +559,14 @@ class Browser:
         rc, o, e = self.neb(acct, "get", "text", scope or "body")
         return o if rc == 0 else ""
 
-    def find(self, acct, target):
+    def find(self, acct, target, reuse=False):
         """依序試每個 scope × 每個名稱；回 (ref, used) 或 (None, 試過的摘要)。
-        名稱要完全相同（neb 依名稱比對核准清單）；同名多個時取 pick（預設 last＝最新的卡片）。"""
+        名稱要完全相同（neb 依名稱比對核准清單）；同名多個時取 pick（預設 last＝最新的卡片）。
+        reuse：上一拍剛為同一個目標找到的 ref（10 秒內、之後沒有別的 snapshot）直接沿用，省一次 snapshot。"""
+        key = (acct, json.dumps(target, ensure_ascii=False, sort_keys=True))
+        f = getattr(self, "_found", None)
+        if reuse and f and f[0] == key and time.time() - f[3] < 10:
+            return f[1], f[2]
         scopes = target.get("scopes") or [None]
         tried = []
         for sc in scopes:
@@ -572,7 +578,9 @@ class Browser:
                 hits = [i for i in items if i["name"] == nm and (not target.get("role") or i["role"] == target["role"])]
                 if hits:
                     h = hits[0] if target.get("pick") == "first" else hits[-1]
-                    return h["ref"], {"scope": sc, "name": nm, "n_hits": len(hits)}
+                    used = {"scope": sc, "name": nm, "n_hits": len(hits)}
+                    self._found = (key, h["ref"], used, time.time())
+                    return h["ref"], used
             tried.append({"scope": sc, "n_items": len(items),
                           "near": [i["role"] + ":" + i["name"][:80] for i in items
                                    if any(n[:2] in i["name"] for n in names_of(target))][:6]})
@@ -642,8 +650,10 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
         ok = True
     elif d in ("fill", "click", "check"):
         settle = float(act.get("settle_s", 0))           # 先等目標出現／可操作（learn 依「就地重試才成功」的紀錄提出）
+        first_try = True
         while True:
-            ref, used = br.find(acct, act["target"])
+            ref, used = br.find(acct, act["target"], reuse=first_try)   # 第一次可以沿用拍子剛找到的目標；重試一律重新找
+            first_try = False
             info.pop("error", None)
             if ref and getattr(br, "look", None) is not None:
                 paused += br.look.act(acct, "@" + ref, press=d in ("click", "check")) or 0.0   # 舞台：示範游標移過去、按下效果
@@ -1071,7 +1081,7 @@ def beat_secs(b, text):
     """這一拍留多久（像播影片：按一次開始就自己往下走）：1.5 秒＋每字 0.25 秒、最少 3.5 秒；hold（多留一會兒）再加 2.5 秒。"""
     if b.get("s") is not None:
         return float(b["s"])
-    return max(3.0, 1.5 + 0.25 * len(text)) + (1.5 if b.get("hold") else 0.0)    # 5c：最短 3 秒、重點拍加 1.5 秒（整場 8 分鐘內）
+    return max(3.0, 1.5 + 0.2 * len(text))     # 5c：最短 3 秒、每字 0.2 秒；重點拍不再加時（講者模式本來就每步停一次）
 
 
 def beat_target(st, b):  # noqa: C901

@@ -463,6 +463,22 @@ class Stage:
             except Exception:
                 pass
 
+    def cap_resync(self):
+        """字幕三層的實際位置和 cap_geom 不一致就重擺（最多連續 3 次，避免座標系不一致時每格重擺）。"""
+        g = self.cap_geom
+        if not g or not getattr(self, "_cap_shown", False) or self.cap_drag0:
+            return
+        off = [w for w in (self.capbg, self.capw, self.cappad)
+               if w.winfo_viewable() and (w.winfo_x(), w.winfo_y()) != (g[0], g[1])]
+        if not off:
+            self._cap_resync_n = 0
+            return
+        self._cap_resync_n = getattr(self, "_cap_resync_n", 0) + 1
+        if self._cap_resync_n <= 3:
+            for w in off:
+                w.geometry("%dx%d+%d+%d" % (g[2], g[3], g[0], g[1]))
+            self.cap_resyncs = getattr(self, "cap_resyncs", 0) + 1
+
     def cap_box(self):
         """字幕塊目前（這一格要擺）的螢幕矩形；沒顯示回 None。"""
         return self.cap_geom if getattr(self, "_cap_shown", False) else None
@@ -609,13 +625,16 @@ class Stage:
                     elif msg.wParam == 5:
                         self.root.after(0, self.toggle_caption)
                     elif msg.wParam == 4:
-                        # 離開鍵不能只靠主迴圈（它卡住時排進去的事永遠不會執行）：先請主迴圈正常撤下，
-                        # 1.5 秒後行程還在就直接走緊急出口
-                        try:
-                            self.root.after(0, lambda: self.drop("esc"))
-                        except Exception:
-                            pass
+                        # 離開鍵不能靠主迴圈：先排好 1.5 秒後的緊急出口（不碰 Tk），再在另一條執行緒請主迴圈正常撤下——
+                        # 從別的執行緒呼叫 Tk 會等主執行緒處理，主執行緒卡住時連熱鍵執行緒也會卡死（CI：F12 沒效、是看門收的）
                         threading.Timer(1.5, lambda: self.emergency("hotkey")).start()
+
+                        def ask_drop():
+                            try:
+                                self.root.after(0, lambda: self.drop("esc"))
+                            except Exception:
+                                pass
+                        threading.Thread(target=ask_drop, daemon=True).start()
             for i in keys:
                 u32.UnregisterHotKey(None, i)
         self.hk = threading.Thread(target=loop, daemon=True)
@@ -897,6 +916,9 @@ class Stage:
                 c.create_text(W // 2, H * 0.42, text=d["subtitle"], fill="#c9d1dc", font=(FONT, px(mid)), width=W * 0.8)
             if d.get("mode"):                              # 現在是哪個模式（講者開場前一眼確認）
                 c.create_text(W // 2, H * 0.86, text=d["mode"], fill=DIM, font=(FONT, px(small)))
+            # 講者要知道可以提早結束（5c）：時間不夠時從右下角收掉，片尾與還原照常
+            c.create_text(W // 2, H * 0.905, text="時間不夠時：右下角「⋯」→「結束示範」，會顯示片尾並還原資料",
+                          fill="#5b6472", font=(FONT, px(small - 4)))
             c.create_text(W * 0.98, H * 0.97, text=EXIT_HINT, fill="#4a5260", font=(FONT, px(small - 6)), anchor="e")
             self.card_texts = [d.get("subtitle", ""), d.get("mode", "")]
             y = H * 0.54
@@ -1146,6 +1168,7 @@ class Stage:
         else:
             self.show_caption(False)
         self.safe("update_xbtn", self.update_xbtn, cur)
+        self.safe("cap_resync", self.cap_resync)
         # 控制列：和字幕重疊時往上讓到字幕上方（字幕不動）
         cx_, cy_, cw_, ch_ = L.controls_pos(self.lay, self.cap_box() if (text and self.cap_on) else None)
         # 控制列顯示中（使用者可能正要按）只往上讓、不往下跳回：例如按 × 收起字幕時，按鈕不會在游標底下移走；
@@ -1246,7 +1269,10 @@ class Stage:
 
     def geom(self):
         box = lambda w: [w.winfo_x(), w.winfo_y(), w.winfo_width(), w.winfo_height()] if w.winfo_viewable() else None
-        return {"z_order": self.z_order(), "errors": getattr(self, "errors", 0),
+        acct_ = self.now.get("account")
+        return {"z_order": self.z_order(), "errors": getattr(self, "errors", 0), "cap_resyncs": getattr(self, "cap_resyncs", 0),
+                "ptr_dbg": {"seq": self.ptr_seq, "shown": getattr(self, "_ptr_shown", False), "pos": self.ptr_pos,
+                            "placed": self.placed.get(acct_) if acct_ else None, "now_seq": (self.now.get("pointer") or {}).get("seq")},
                 "cap_btn": [self.b_cap.winfo_rootx() + self.b_cap.winfo_width() // 2, self.b_cap.winfo_rooty() + self.b_cap.winfo_height() // 2]
                 if self.ctl_shown and self.b_cap.winfo_ismapped() else None,
                 "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": list(self.xbtn_rect()) if getattr(self, "_cap_shown", False) and self.xbtn_rect() else None, "x_shown": self._x_on, "hint_visible": bool(self.hintw.winfo_viewable()),
