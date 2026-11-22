@@ -1153,8 +1153,15 @@ def execute(rb, mode, a):
                     stopped = None
                     continue
                 if mode == "live" and i < hi:
-                    # 台上：不反覆重試；停在這一步（字幕是備案說明），講者按「下一步」跳過、或看備案／回放、或停止
-                    ctl.wait_next(status="failed")
+                    # 台上：不反覆重試；停在這一步（字幕是備案說明）。講者模式等「下一步」跳過；
+                    # 自動模式（排練、agent 示範）沒有人會按 → 顯示備案說明幾秒後自己跳過（排練 3 在這裡卡了 40 分鐘）
+                    if ctl.step_mode() or not staged:
+                        ctl.wait_next(status="failed")
+                    else:
+                        t_ = time.time()
+                        while time.time() - t_ < float((rb.get("stage") or {}).get("fail_hold_s", 8)):
+                            time.sleep(0.25)
+                            t_ += ctl.gate()
                     skipped.append(st["id"])
                     stopped = None
                     continue
