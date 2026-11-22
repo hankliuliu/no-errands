@@ -91,6 +91,8 @@ PROFILES = {
         "verify_export_first_line_contains_chat": False,
         "verify_export_senders_within_members": {"line_re": r"^\d\d:\d\d ", "sender_field": 1},
         "close_button": None,                  # 收尾 = 交還（縮小視窗）
+        # Sprint E（只讀探索）：標頭工具列裡可以點開來「看」的按鈕；仍在 forbidden_names 裡，只有 allow=view-button 時放行
+        "view_buttons": {"notes": "記事本"},
     },
 }
 
@@ -313,6 +315,8 @@ def assert_allowed(prof, action, node, parents, ctx):
     "allow": "list-target"|"menu"|"close"|"dialog"}。不合規就丟 Refused。"""
     name = node.get("name", "")
     role = node.get("role", "")
+    if ctx.get("allow") == "view-button" and action == "click" and role == "button"             and name in (prof.get("view_buttons") or {}).values()             and any(len([k for k in (p_.get("children") or []) if k.get("role") == "button"]) >= 6 for p_ in parents):
+        return   # 只讀檢視（例如記事本）：必須是開著的對話標頭工具列裡的那顆
     if ctx["zone"] == "dialog":
         nid = str((node.get("native_id") or {}).get("value", ""))
         if action == "set-value" and role in ("textfield", "combobox") and nid in prof["dialog_filename_ids"]:
@@ -534,6 +538,75 @@ def cmd_read(app, prof, chat, file_):
     msgs = [c.get("name", "") for c in box.get("children") or []]
     ledger(app, "read", True)
     out({"ok": True, "source": "window", "messages": msgs})
+
+
+# 探索輸出只留介面用語；其他名稱一律換成字數（聊天內容、人名、對話名稱都不會出現在輸出裡）
+UI_WORDS = re.compile(r"^(記事本|公告|檔案|照片|影片|照片・影片|相簿|連結|全部|建立|貼文|留言|分享|編輯|刪除|下載|儲存|另存新檔|另存|"
+                      r"搜尋|設定|關閉|返回|上一頁|更多|其他功能|讚|回覆|置頂|取消|確定|新增|排序|篩選|顯示更多|查看更多|開啟|"
+                      r"資料夾|傳送|儲存聊天|儲存聊天記錄|收起|展開|全部顯示|Keep|Notes?|Announcements?|Files?|Photos?|Videos?|"
+                      r"Albums?|Links?|All|Create|Post|Comment|Share|Edit|Delete|Download|Save( as)?|Search|Close|Back|More|"
+                      r"Like|Reply|Pin|Open|Cancel|OK)$")
+
+
+def _mask(name):
+    return name if UI_WORDS.match(name or "") else (len(name) if name else 0)
+
+
+def _shape(node, depth=0, maxd=14):
+    d = {"r": node.get("role"), "n": _mask(node.get("name") or "")}
+    if node.get("available_actions"):
+        d["a"] = [x for x in node["available_actions"] if x in ("Click", "Invoke", "SetValue", "Scroll", "Toggle", "Select")]
+    kids = [_shape(c, depth + 1) for c in (node.get("children") or [])] if depth < maxd else []
+    if kids:
+        d["c"] = kids
+    return d
+
+
+def cmd_probe(app, prof, chat, view):
+    """只讀探索 UI 結構（Sprint E）：開著的必須是指名對話；可選擇點一顆檢視按鈕（notes）或打開選單（menu）看項目，
+    看完關掉。輸出只有角色、可用動作與名稱字數（介面用語除外）。不輸入、不點其他東西。"""
+    if popup_menu is None or os.name != "nt":
+        raise Refused("probe 目前只支援 Windows")
+    win = find_window(prof)
+    full = snapshot(win, interactive=False)
+    if not header_ok(prof, full, chat):
+        raise Refused("目前開著的不是指名對話：先 open --chat 並確認標頭")
+    pid = win.get("pid")
+    res = {"view": view, "main_before": _shape(full["tree"])}
+    before = popup_menu.visible_hwnds(pid)
+    titled_before = {w["id"] for w in ad("list-windows") if w.get("pid") == pid}
+    snap = snapshot(win)
+    if view == "menu":
+        btn, bp = find_node(snap, lambda n: n.get("role") == "button" and n.get("name") == prof["menu_button"])
+        if not btn:
+            raise Refused("找不到選單按鈕")
+        guarded(prof, "click", btn, bp, {"zone": "main", "allow": "menu-button"})
+    elif view in (prof.get("view_buttons") or {}):
+        nm = prof["view_buttons"][view]
+        btn, bp = find_node(snap, lambda n: n.get("role") == "button" and n.get("name") == nm)
+        if not btn:
+            raise Refused("找不到「%s」按鈕" % nm)
+        guarded(prof, "click", btn, bp, {"zone": "main", "allow": "view-button"})
+    elif view:
+        raise Refused("不認得的檢視")
+    time.sleep(1.5)
+    res["main_after"] = _shape(snapshot(win, interactive=False)["tree"])
+    res["new_popups"] = []
+    for w in popup_menu.popup_windows(pid, exclude=before):
+        it = popup_menu.popup_items(w["hwnd"])
+        res["new_popups"].append({"class": w["class"], "w": w["rect"][2] - w["rect"][0], "h": w["rect"][3] - w["rect"][1],
+                                  "items": [{"n": _mask(i.get("name")), "t": i.get("type")} for i in (it.get("items") or [])][:80]})
+        if view == "menu":
+            popup_menu.close_popup(w["hwnd"])
+    res["new_windows"] = []
+    for w in ad("list-windows"):
+        if w.get("pid") == pid and w["id"] not in titled_before:
+            try:
+                res["new_windows"].append({"title": _mask(w.get("title") or ""), "tree": _shape(snapshot(w, interactive=False)["tree"])})
+            except Exception as e:
+                res["new_windows"].append({"title": _mask(w.get("title") or ""), "error": str(e)[:80]})
+    ledger(app, "probe", True, view or "", chat)
+    out(dict(res, ok=True))
 
 
 def _dialog_titles(prof):
@@ -1024,7 +1097,7 @@ def main():
         pol = policy.load(HOME)
         if not policy.is_granted(pol, app):
             raise Refused("使用者尚未授權這個 app（同意閘門）：先在對話中取得指名同意")
-        if sub in ("open", "export", "close", "act") or (sub == "read" and not arg(a, "--file")):
+        if sub in ("open", "export", "close", "act", "probe") or (sub == "read" and not arg(a, "--file")):
             idle_gate(prof, pol, a)
             HANDBACK["may_restore"] = True   # 只有過了閒置閘門的指令可以把縮小的視窗還原
         HANDBACK["enabled"] = pol.get("visibility") != "watch" and bool(prof.get("raises_foreground"))
@@ -1043,6 +1116,8 @@ def main():
             cmd_export(app, prof, arg(a, "--to") or ".", arg(a, "--chat"), load_hist="--load-history" in a)
         elif sub == "close":
             cmd_close(app, prof, cancel_late="--cancel-late-dialog" in a)
+        elif sub == "probe":
+            cmd_probe(app, prof, arg(a, "--chat") or "", arg(a, "--view"))
         elif sub == "act" and len(a) >= 3 and a[2] in ("click", "set-value"):
             cmd_act(app, prof, a[2], arg(a, "--target") or "", arg(a, "--text", ""))
         else:
