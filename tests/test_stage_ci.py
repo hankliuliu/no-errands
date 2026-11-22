@@ -237,16 +237,22 @@ def real_chrome_checks(stage_with):
     # 3 拖動：兩層一起動
     if pl:
         cx, cy = pl[0] + 6, pl[1] + pl[3] // 2
-        u.SetCursorPos(cx, cy); time.sleep(0.3)
-        u.mouse_event(0x0002, 0, 0, 0, 0); time.sleep(0.1)           # 左鍵按下
-        for s_ in range(1, 11):
-            u.SetCursorPos(cx - 20 * s_, cy - 15 * s_); time.sleep(0.05)
+
+        def move(x_, y_):
+            # 真的滑鼠移動輸入（MOVE|ABSOLUTE），和人拖動一樣；SetCursorPos 只是把游標放過去，
+            # 不一定產生「按著左鍵移動」的訊息（第一次 CI：拖動沒被收到，字幕只被控制列推上去 22 px）
+            u.mouse_event(0x8001, int(x_ * 65535 / (W - 1)), int(y_ * 65535 / (H - 1)), 0, 0)
+        move(cx, cy); time.sleep(0.3)
+        u.mouse_event(0x0002, 0, 0, 0, 0); time.sleep(0.15)          # 左鍵按下
+        for s_ in range(1, 21):
+            move(cx - 10 * s_, cy - 7.5 * s_); time.sleep(0.04)
+        time.sleep(0.2)
         u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(1.2)           # 放開
         g2 = rd(geom)
         pl2, tw2 = g2.get("caption_plate"), g2.get("caption_textwin")
         check("A2 拖動後兩層仍在同一個位置", pl2 and pl2 == tw2, (pl2, tw2))
         check("A2 拖動有效（往左上移約 200×150）", pl2 and abs((pl[0] - pl2[0]) - 200) <= 8 and abs((pl[1] - pl2[1]) - 150) <= 8,
-              (pl, pl2))
+              (pl, pl2, "cap_user=%s" % g2.get("cap_user"), "存檔=%s" % rd(os.path.join(work, "stage-caption.json"))))
         shot_png("stage-shot-3-dragged.png")
     json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
     try:
