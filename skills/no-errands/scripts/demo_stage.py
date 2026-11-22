@@ -603,7 +603,13 @@ class Stage:
                     elif msg.wParam == 5:
                         self.root.after(0, self.toggle_caption)
                     elif msg.wParam == 4:
-                        self.root.after(0, lambda: self.drop("esc"))
+                        # 離開鍵不能只靠主迴圈（它卡住時排進去的事永遠不會執行）：先請主迴圈正常撤下，
+                        # 1.5 秒後行程還在就直接走緊急出口
+                        try:
+                            self.root.after(0, lambda: self.drop("esc"))
+                        except Exception:
+                            pass
+                        threading.Timer(1.5, lambda: self.emergency("hotkey")).start()
             for i in keys:
                 u32.UnregisterHotKey(None, i)
         self.hk = threading.Thread(target=loop, daemon=True)
@@ -924,6 +930,52 @@ class Stage:
                               font=(FONT, px(small + 2)))
 
     # ---------- 每 200 ms
+    def emergency(self, why):
+        """緊急出口（從任何執行緒呼叫都可以，不靠 Tk 的主迴圈）：瀏覽器取消置頂、把我們所有的頂層視窗藏起來、
+        寫入停止，然後結束行程。絕不留下蓋住螢幕的背板（A16）。"""
+        try:
+            print("stage emergency exit: %s" % why, file=sys.stderr, flush=True)
+        except Exception:
+            pass
+        if os.name == "nt":
+            try:
+                h = getattr(self, "active_hwnd", None)
+                if h:
+                    u32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+            except Exception:
+                pass
+            try:
+                me = os.getpid()
+                mine = []
+
+                def f(hw, _):
+                    pid = wintypes.DWORD()
+                    u32.GetWindowThreadProcessId(hw, ctypes.byref(pid))
+                    if pid.value == me:
+                        mine.append(hw)
+                    return True
+                u32.EnumWindows(EnumProc(f), 0)
+                for hw in mine:
+                    u32.ShowWindow(hw, 0)                      # SW_HIDE
+            except Exception:
+                pass
+        try:
+            write_control(self.run_dir, state="stopped", dropped=why)
+        except Exception:
+            pass
+        os._exit(3)
+
+    def watchdog(self):
+        """看門執行緒（和更新迴圈無關）：超過 NE_STAGE_WATCHDOG_S（預設 20；主執行緒偶爾會等 PowerShell 查行程，不能太短）秒沒有更新一格，就判定舞台卡死、走緊急出口。"""
+        try:
+            limit = float(os.environ.get("NE_STAGE_WATCHDOG_S") or 20)
+        except ValueError:
+            limit = 20.0
+        while True:
+            time.sleep(1.0)
+            if time.time() - getattr(self, "_last_tick", time.time()) > limit:
+                self.emergency("watchdog: %.0f 秒沒有更新" % (time.time() - self._last_tick))
+
     def safe(self, name, fn, *a):
         """舞台的一個部分：出錯就記下（數量寫進幾何紀錄、訊息寫到 stderr＝engine.log），其他部分照常更新（A33）。"""
         try:
@@ -938,6 +990,13 @@ class Stage:
 
     def tick(self):
         """每 200 ms：不管裡面哪一段出錯，一定排下一格（排練 2：游標的一個例外讓整個舞台停住，字幕、安全出口都不再更新）。"""
+        self._last_tick = time.time()
+        if not getattr(self, "_wd", None):
+            self._wd = threading.Thread(target=self.watchdog, daemon=True)
+            self._wd.start()
+        hang = os.environ.get("NE_STAGE_TEST_HANG")             # 測試掛鉤：N 秒後讓主執行緒卡住（驗證看門與離開鍵）
+        if hang and time.time() - self.t_start > float(hang):
+            time.sleep(3600)
         self.safe("tick", self._tick)
         try:
             if self.root.winfo_exists():

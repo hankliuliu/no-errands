@@ -649,6 +649,16 @@ def main():
 
     # ---- 真的瀏覽器（A1／A2／A19）：頁面貼齊螢幕底邊、舞台沒有空白帶、字幕兩層一起動、圓角、試擺在背板下面
     real_chrome_checks(stage_with)
+    # A16：更新迴圈卡死 → 看門執行緒幾秒內讓舞台自己消失；卡死時 Ctrl+Shift+F12 仍然有效
+    now = {"card": None, "status": "running", "beat": {"text": "字幕", "i": 1, "n": 2}}
+    d, p = stage_with(now, None, {"NE_STAGE_TEST_HANG": "3", "NE_STAGE_WATCHDOG_S": "5"})
+    check("A16 更新迴圈卡死 → 看門執行緒在 12 秒內讓舞台自己結束（背板撤掉）", closes_within(p, 14))
+    d, p = stage_with(now, None, {"NE_STAGE_TEST_HANG": "3", "NE_STAGE_WATCHDOG_S": "60", "NE_STAGE_NO_HOTKEYS": ""})
+    time.sleep(5)
+    for vk, up in ((0x11, 0), (0x10, 0), (0x7B, 0), (0x7B, 2), (0x10, 2), (0x11, 2)):
+        ku.keybd_event(vk, 0, up, 0); time.sleep(0.05)
+    check("A16 更新迴圈卡死時按 Ctrl+Shift+F12 → 3 秒內離開（不靠主迴圈）", closes_within(p, 4))
+
     # 預備清單沒過、講者按停止 → 收掉
     d = tempfile.mkdtemp(prefix="ne-stage-")
     json.dump({"card": "checklist", "card_data": {"heading": "還沒準備好", "items": [{"name": "連線到示範系統", "state": "fail",
