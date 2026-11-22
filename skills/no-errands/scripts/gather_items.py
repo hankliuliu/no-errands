@@ -245,7 +245,7 @@ def _cols(rows, header):
     return lines
 
 
-def render_missing(items, title, msgs=None, tid=None):
+def render_missing(items, title, msgs=None, tid=None, service=None):
     """給人看的未收清單：用來判斷要不要去補。有檔名的檔案最前、照片影片合併成批並附前後文、空欄位拿掉、短流水號。"""
     miss = [it for it in items if it["status"] == "missing"]
     dates = sorted(m["date"] for m in (msgs or []) if m.get("date"))
@@ -254,9 +254,14 @@ def render_missing(items, title, msgs=None, tid=None):
     if not miss:
         return "\n".join(L + ["沒有未收的東西。", ""])
     s = summary(items)
-    L += ["這裡列出聊天室裡出現過、但還沒收下來的照片、影片和檔案（已收 %d、未收 %d）。" % (s["received"], s["missing"]),
-          "想補的話，直接對 agent 說，例如：「補收〈%s〉%s 的照片」或「把〈%s〉清單裡的 #%d 補回來」。" % (
-              title, (miss[-1].get("date") or "")[5:], title, min(it.get("no") or 0 for it in miss)), ""]
+    L.append("這裡列出聊天室裡出現過、但還沒收下來的照片、影片和檔案（已收 %d、未收 %d）。" % (s["received"], s["missing"]))
+    if service == "line":
+        L.append("目前 LINE 的照片、影片、檔案還不能補收（要從聊天室的分頁另存，這部分還在做）。可以先看這份清單決定哪些想要，做好之後跟 agent 說一聲就會補。")
+    else:
+        ex = next((it for it in sorted(miss, key=lambda x: x.get("no") or 0) if it["reason"] != "已過期"), miss[0])
+        L.append("想補的話，直接對 agent 說，例如：「補收〈%s〉%s 的照片」或「把〈%s〉清單裡的 #%d 補回來」。" % (
+            title, (miss[-1].get("date") or "")[5:], title, ex.get("no") or 0))
+    L.append("")
     files = [it for it in miss if it["kind"] == "file"]
     media = [it for it in miss if it["kind"] in ("photo", "video")]
     others = [it for it in miss if it not in files and it not in media]
@@ -266,8 +271,11 @@ def render_missing(items, title, msgs=None, tid=None):
         notes = {it.get("note") for it in files}
         if len(notes) == 1 and next(iter(notes)):
             L += [next(iter(notes)), ""]
+        same_why = len({label(it) for it in files}) == 1
+        if same_why and not (len(notes) == 1 and next(iter(notes))):
+            L += ["狀態：%s" % label(files[0]), ""]
         rows = [{"no": "#%d" % it["no"], "when": "%s %s" % ((it.get("date") or "")[5:], it.get("time") or ""), "who": it.get("sender"),
-                 "name": it.get("name"), "size": _size(it.get("size")), "why": label(it),
+                 "name": it.get("name"), "size": _size(it.get("size")), "why": "" if same_why else label(it),
                  "note": it.get("note") if len(notes) > 1 else ""} for it in sorted(files, key=lambda x: x.get("no") or 0)]
         L += _cols(rows, [("no", "#"), ("when", "時間"), ("who", "傳送者"), ("name", "檔名"), ("size", "大小"), ("why", "狀態"), ("note", "說明")]) + [""]
     for reason in ("下載失敗", "已過期", "超過大小上限"):
@@ -319,7 +327,7 @@ def _size(n):
 def write_outputs(tdir, t, items, title=None, msgs=None, tid=None):
     number(items)
     save_items(tdir, items)
-    md = render_missing(items, title or t.get("label") or t.get("chat") or t.get("service"), msgs, tid)
+    md = render_missing(items, title or t.get("label") or t.get("chat") or t.get("service"), msgs, tid, t.get("service"))
     open(os.path.join(items_dir(tdir), "未收清單.md"), "w", encoding="utf-8").write(md)
     if t.get("dest"):
         d = os.path.join(t["dest"], "files")

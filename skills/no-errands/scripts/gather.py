@@ -412,6 +412,7 @@ def _mm_extras(t):
     try:
         ch = mmc.get(base, tok, "/channels/%s" % t["chat"])
         ann["header"], ann["purpose"] = ch.get("header") or "", ch.get("purpose") or ""
+        ann["display_name"] = ch.get("display_name") or ch.get("name") or ""
     except Exception as e:
         ann["header_error"] = str(e)[:80]
     try:
@@ -529,16 +530,26 @@ def coverage(t, st, earliest):
 
 
 def target_title(t, tid):
-    return t.get("label") or (t["chat"] if t["service"] == "line" else "Mattermost 頻道 %s" % t["chat"]) or tid
+    """給人看的名稱：LINE 用聊天室名稱（label 可能是測試時留下的說法）；Mattermost 用頻道的顯示名稱。"""
+    if t["service"] == "line":
+        return t.get("chat") or t.get("label") or tid
+    dn = gi.load_announcements(tdir(tid, t)).get("display_name")
+    return dn or t.get("label") or "Mattermost 頻道"
 
 
 def write_overview():
     """收集根目錄的「收集總覽.md」（只在本機；可以有聊天室名稱）：每個聊天室一段，連到它的未收清單。"""
     ts = load_targets()
-    L = ["# 聊天收集總覽", "",
-         "要補沒收下的東西，對 agent 說：「把〈聊天室〉未收清單裡的照片補回來」（也可以指定檔案、日期範圍或清單裡的編號）。",
-         "更新於 %s。" % time.strftime("%Y-%m-%d %H:%M"), ""]
-    for tid, t in sorted(ts.items(), key=lambda kv: (kv[1]["service"], target_title(kv[1], kv[0]))):
+    order = sorted(ts.items(), key=lambda kv: (kv[1]["service"], target_title(kv[1], kv[0])))
+    first = next((target_title(t, tid) for tid, t in order), "聊天室")
+    has_line = any(t["service"] == "line" for _, t in order)
+    L = ["# 聊天收集總覽", "", "更新於 %s。每個聊天室收了什麼、還缺什麼，都在下面；點「未收清單」看細項。" % time.strftime("%Y-%m-%d %H:%M"), "",
+         "想補沒收下的東西，對 agent 說，例如：「把〈%s〉未收清單裡的照片補回來」。" % first]
+    if has_line:
+        L += ["", "LINE 的範圍：桌面版只拿得到這台電腦登入後同步下來的歷史（各聊天室的「最早拿得到」）；更早的要在手機上匯出聊天記錄給 agent 匯入。"
+              "LINE 的記事本、公告、檔案還沒開始收，目前只記下訊息裡看得到的照片、影片、檔案。"]
+    L.append("")
+    for tid, t in order:
         d = tdir(tid, t); ms = load_msgs(d); st = load_state(d); items = gi.load_items(d); s = gi.summary(items)
         ann = gi.load_announcements(d)
         earliest = "%s %s" % (ms[0]["date"], ms[0]["time"]) if ms else None
@@ -546,10 +557,14 @@ def write_overview():
         L.append("## %s（%s）" % (target_title(t, tid), "LINE" if t["service"] == "line" else "Mattermost"))
         L.append("")
         L.append("- 訊息：%d 則%s；上次同步：%s" % (len(ms), ("，%s ～ %s %s" % (earliest, ms[-1]["date"], ms[-1]["time"])) if ms else "",
-                                              (st.get("last_sync") or "還沒同步").replace("T", " ")))
+                                              (st.get("last_sync") or "還沒同步").replace("T", " ")[:16]))
         gaps = st.get("gaps") or []
         L.append("- 缺口：%s" % ("無" if not gaps else "%d 處（中間有訊息沒接上，見 gather.py status）" % len(gaps)))
-        L.append("- 記事本 %d、公告 %d" % (gi.count_notes(d), len(ann.get("announcements") or []) + len(ann.get("pinned") or [])))
+        if t["service"] == "line":
+            nn = gi.count_notes(d)
+            L.append("- 記事本、公告：%s" % ("記事本 %d" % nn if nn else "還沒收（收集尚未完成）"))
+        else:
+            L.append("- 公告：頻道標題%s、釘選 %d 則" % ("有" if ann.get("header") else "無", len(ann.get("pinned") or [])))
         reasons = "、".join("%s %d" % (gi.REASON_LABEL.get(k, k), v) for k, v in s["missing_by_reason"].items())
         rel = "%s/%s/files/未收清單.md" % (t["service"], tid)
         L.append("- 附件：已收 %d／未收 %d%s%s" % (s["received"], s["missing"], ("（%s）" % reasons) if reasons else "",
@@ -559,8 +574,8 @@ def write_overview():
         if warn:
             L.append("- ⚠ %s" % warn)
         if note:
-            L.append("- 說明：%s" % note)
-        L.append("- 代號：`%s`" % tid)
+            L.append("- 最早拿得到：%s" % (earliest or ""))
+        L.append("- 代號（給 agent 用）：`%s`" % tid)
         L.append("")
     os.makedirs(GROOT, exist_ok=True)
     open(os.path.join(GROOT, "收集總覽.md"), "w", encoding="utf-8").write("\n".join(L))

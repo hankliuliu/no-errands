@@ -58,6 +58,8 @@ check("3 summary：已收 1／未收 5、各原因筆數", s["received"] == 1 an
       and s["missing_by_reason"].get("尚未收集") == 1, s)
 ctx_msgs = [dict(M("早安大家", 20), id="t1", date="2026-11-01", time="09:59", kind="text")] +     [dict(m, id=m["id"], kind="text") for m in msgs + [M("圖片", 7)]] + [dict(M("這是工地現場", 21), id="t2", date="2026-11-03", time="23:00", kind="text")]
 md = gi.render_missing(again, "測試群", ctx_msgs, "abc123")
+mdl = gi.render_missing(again, "測試群", ctx_msgs, "abc123", "line")
+check("3 LINE 的清單照實說目前還不能補收（不承諾做不到的事）", "還不能補收" in mdl and "想補的話" not in mdl)
 check("3 未收清單：標題是聊天室名稱、寫涵蓋範圍、開頭是白話（對 agent 怎麼說）", md.startswith("# 未收清單：測試群") and "涵蓋 2026-11-01" in md
       and "對 agent 說" in md and "<id>" not in md.split("---")[0], md[:300])
 check("3 未收清單：檔案段在最前、照片影片在後；給人看的是「還沒收（檔案收集尚未完成）」", md.index("## 檔案") < md.index("## 照片與影片")
@@ -141,7 +143,8 @@ try:
     # 6 收集總覽（本機、可以有名稱）與範圍說明
     ov = os.path.join(home, "gather", "收集總覽.md")
     txt = open(ov, encoding="utf-8").read() if os.path.exists(ov) else ""
-    check("6 收集總覽：每個聊天室一段、用聊天室名稱當標題、連到未收清單、最上面寫怎麼補", "## 測試（LINE）" in txt
+    check("6 收集總覽：每個聊天室一段、用聊天室名稱當標題、連到未收清單、最上面寫怎麼補", "## 測試群組（LINE）" in txt
+          and "還沒收（收集尚未完成）" in txt and "最早拿得到" in txt
           and "未收清單.md" in txt and "對 agent 說" in txt.split("##")[0] and "已收 0／未收 4" in txt, txt[:300])
     sys.path.insert(0, SC)
     import gather as G  # noqa: E402
