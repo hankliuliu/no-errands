@@ -972,7 +972,9 @@ def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0,
         return
     lr = max(lists, key=lambda l: (l["rect"][2] - l["rect"][0]) * (l["rect"][3] - l["rect"][1]))["rect"]
     cx, cy = (lr[0] + lr[2]) // 2, (lr[1] + lr[3]) // 2
-    rel = (lr[0] - wr.left, lr[2] - wr.left, lr[1] - wr.top, lr[3] - wr.top)
+    # 比對位移只看內容區：去掉左右邊框與右側捲軸（捲軸滑塊每捲一次就換位置，那幾列永遠對不上）
+    sb = max(17, u32.GetSystemMetrics(2))   # SM_CXVSCROLL（實體像素，已宣告 DPI 感知）
+    rel = (lr[0] - wr.left + 4, lr[2] - wr.left - sb - 4, lr[1] - wr.top + 2, lr[3] - wr.top - 2)
     list_h = lr[3] - lr[1]
     man["list_h"] = list_h
 
