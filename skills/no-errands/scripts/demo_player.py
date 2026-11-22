@@ -57,7 +57,14 @@ def write_control(run_dir, **kw):
     tmp = p + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(c, f, ensure_ascii=False)
-    os.replace(tmp, p)
+    for k in range(40):           # 引擎每 0.25 秒讀 control.json；剛好開著時 Windows 的 replace 會失敗 → 重試，按鈕不會漏
+        try:
+            os.replace(tmp, p)
+            break
+        except PermissionError:
+            if k == 39:
+                raise
+            time.sleep(0.05)
     return c
 
 

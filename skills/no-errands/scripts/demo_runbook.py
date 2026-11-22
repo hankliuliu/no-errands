@@ -77,7 +77,7 @@ def save_rb(rb):
     tmp = rb["_path"] + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, rb["_path"])
+    replace_retry(tmp, rb["_path"])
 
 
 def rb_sha(rb):
@@ -313,11 +313,24 @@ class StopDemo(Exception):
     pass
 
 
+def replace_retry(tmp, path, tries=40):
+    """Windows：讀的一方（播放器每 0.25 秒、驗收驅動）剛好開著目標檔時 os.replace 會 PermissionError。
+    總驗收實測：引擎「在等下一步」那一次寫入被這樣吞掉，播放器一直顯示舊狀態、沒人按下一步。→ 重試最多約 2 秒。"""
+    for k in range(tries):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if k == tries - 1:
+                raise
+            time.sleep(0.05)
+
+
 def _atomic_json(path, obj):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False)
-    os.replace(tmp, path)
+    replace_retry(tmp, path)
 
 
 def write_control(run_dir, **kw):
@@ -363,7 +376,7 @@ class Control:
             pass
 
     def gate(self, on_resume=None):
-        t0, prev = None, None
+        t0, prev, last = None, None, 0.0
         while True:
             c = self.read()
             if c.get("state") == "stopped":
@@ -372,7 +385,9 @@ class Control:
                 break
             if t0 is None:
                 t0, prev = time.time(), self.now.get("status")
+            if time.time() - last >= 2:                    # 第一次與之後每 2 秒（自癒）
                 self.publish(status="paused")
+                last = time.time()
             time.sleep(0.25)
         if t0 is None:
             return 0.0
@@ -386,9 +401,11 @@ class Control:
         return self.read().get("advance") == "step"
 
     def wait_next(self, status="waiting_next"):
-        self.publish(status=status)
-        t0 = time.time()
+        t0, last = time.time(), 0.0
         while True:
+            if time.time() - last >= 2:                    # 第一次與之後每 2 秒重寫狀態（某次寫入失敗也會自己補上）
+                self.publish(status=status)
+                last = time.time()
             c = self.read()
             if c.get("state") == "stopped":
                 raise StopDemo()
@@ -1404,7 +1421,7 @@ def clean_profile(prof):
     d.setdefault("browser", {})["check_default_browser"] = False
     tmp = pp + ".ne-tmp"
     json.dump(d, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
-    os.replace(tmp, pp)
+    replace_retry(tmp, pp)
     return True, ""
 
 
