@@ -854,6 +854,9 @@ def cmd_probe(app, prof, chat, view, pol, peek=False):
 
 NOTES_MAX_SHOTS, NOTES_HARD_MAX, NOTES_TIMEOUT_S, NOTES_STEP = 15, 40, 90, 0.6
 NOTES_TIMEOUT_MAX_S = 180   # 和張數上限一樣：參數傳多大都不超過
+NOTES_FIRST_STEP = 0.25     # 第一步捲 1/4 格（delta 30）：真機 LINE 一格（120）就超過整個清單高度，相鄰兩張沒有重疊
+NOTES_MIN_STEP = 0.1        # 最小 0.1 格（delta 12）
+NOTES_MAX_UNVERIFIED = 3    # 連續幾次量不到重疊就停（stop=no_overlap），整輪不能用、圖丟掉
 NOTES_MAX_SKIP = 4000   # 接續時最多先捲過幾格（不擷取）
 NOTES_OK_STOPS = ("bottom", "cap", "timeout", "user_input")
 
@@ -900,7 +903,7 @@ def cmd_notes(app, prof, chat, pol, max_shots=NOTES_MAX_SHOTS, skip_notches=0, t
         raise Refused("記事本擷取目前只支援 Windows")
     max_shots = max(1, min(int(max_shots), NOTES_HARD_MAX))
     timeout_s = max(5.0, min(float(timeout_s), NOTES_TIMEOUT_MAX_S))
-    skip_notches = max(0, min(int(skip_notches), NOTES_MAX_SKIP))
+    skip_notches = max(0.0, min(float(skip_notches), NOTES_MAX_SKIP))
     win = find_window(prof)
     full = snapshot(win, interactive=False)
     if not header_ok(prof, full, chat):
@@ -944,7 +947,7 @@ def cmd_notes(app, prof, chat, pol, max_shots=NOTES_MAX_SHOTS, skip_notches=0, t
         res["stop"] = "user_input"
     finally:
         man["stop"] = res["stop"]
-        if res["stop"] == "wrong_chat":
+        if res["stop"] in ("wrong_chat", "no_overlap"):   # 錯聊天室、或量不到重疊（可能漏內容）：圖全丟
             _sh.rmtree(rdir, ignore_errors=True)
             man["shots"] = []
         if man["shots"]:
@@ -988,8 +991,10 @@ def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0,
     lr = max(lists, key=lambda l: (l["rect"][2] - l["rect"][0]) * (l["rect"][3] - l["rect"][1]))["rect"]
     cx, cy = (lr[0] + lr[2]) // 2, (lr[1] + lr[3]) // 2
     # 比對位移只看內容區：去掉左右邊框與右側捲軸（捲軸滑塊每捲一次就換位置，那幾列永遠對不上）
+    # 再只看左側 70%：真機 LINE 的記事本右下角有固定的浮動「＋」按鈕蓋在內容上，那幾列永遠對不上；捲軸也在右邊
     sb = max(17, u32.GetSystemMetrics(2))   # SM_CXVSCROLL（實體像素，已宣告 DPI 感知）
-    rel = (lr[0] - wr.left + 4, lr[2] - wr.left - sb - 4, lr[1] - wr.top + 2, lr[3] - wr.top - 2)
+    x0 = lr[0] - wr.left + 4
+    rel = (x0, min(lr[2] - wr.left - sb - 4, x0 + int((lr[2] - lr[0]) * 0.7)), lr[1] - wr.top + 2, lr[3] - wr.top - 2)
     list_h = lr[3] - lr[1]
     man["list_h"] = list_h
 
@@ -1001,7 +1006,7 @@ def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0,
         res["wheels"] += 1
 
     left = skip_notches
-    while left > 0:   # 接續：先捲過已擷取的段落（不擷取）
+    while left > 1e-6:   # 接續：先捲過已擷取的段落（不擷取）
         n = min(left, 30)
         post_wheel(-n); left -= n
         time.sleep(0.25)
@@ -1009,13 +1014,19 @@ def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0,
     if skip_notches:
         time.sleep(0.8)
     os.makedirs(rdir, exist_ok=True)
-    notches, total, prev = 1, skip_notches, None   # 第一步只捲一格，量到實際位移後再調
+    notches, total, prev, unverified = NOTES_FIRST_STEP, skip_notches, None, 0
     while True:
         check_interrupt()
         w, h_, raw = popup_menu.grab_window(hwnd)
         keys = popup_menu.row_keys(raw, w, h_, *rel)
-        shift, ratio = (None, 0.0) if prev is None else popup_menu.vertical_shift(prev, keys)
+        shift, ratio = (None, 0.0) if prev is None else popup_menu.vertical_shift(prev, keys, min_rows=10)
         if prev is not None and shift == 0:
+            if notches < 1:   # 小於一格的量可能被程式忽略：先加大到一格再判斷是不是到底，避免誤判
+                notches = min(1.0, notches * 2)
+                post_wheel(-notches)
+                total += notches
+                time.sleep(0.6)
+                continue
             res["stop"] = "bottom"
             break
         n_ = len(man["shots"]) + 1
@@ -1026,10 +1037,15 @@ def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0,
                              "shift_px": shift,
                              "overlap": None if (prev is None or shift is None) else round(1 - shift / max(1, list_h), 2),
                              "overlap_unverified": prev is not None and shift is None, "status": "pending"})
-        if prev is not None and shift:   # 依實測位移調整下一次的格數，目標每次捲約清單高度的 60%
-            notches = max(1, min(30, int(round(NOTES_STEP * list_h / (shift / notches)))))
+        if prev is not None and shift:   # 依實測位移調整下一次的量（可以小於一格），目標每次捲約清單高度的 60%
+            notches = max(NOTES_MIN_STEP, min(30.0, round(NOTES_STEP * list_h / (shift / notches), 3)))
+            unverified = 0
         elif prev is not None:
-            notches = max(1, notches // 2)   # 對不上位移：保守一點捲少一些，避免中間漏掉
+            notches = max(NOTES_MIN_STEP, notches / 2)   # 對不上位移：捲少一些，避免中間漏掉
+            unverified += 1
+            if unverified >= NOTES_MAX_UNVERIFIED:   # 連續量不到重疊：這一輪不能保證沒漏，停下並丟圖
+                res["stop"] = "no_overlap"
+                break
         prev = keys
         if len(man["shots"]) >= max_shots:
             res["stop"] = "cap"
@@ -1040,7 +1056,8 @@ def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0,
         post_wheel(-notches)
         total += notches
         time.sleep(0.6)
-    man["notches_total"] = total
+    man["notches_total"] = round(total, 3)
+    man["last_step"] = round(notches, 3)
 
 
 def _dialog_titles(prof):
