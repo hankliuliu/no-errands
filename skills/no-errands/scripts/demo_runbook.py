@@ -888,6 +888,20 @@ class Look:
         time.sleep(0.2)
         return self._box(sel) or box
 
+    def aim(self, acct, sel, click=True):
+        """講某個動作的拍子：捲到目標、示範游標指到它上面（點擊＝元素中心、輸入＝框內左側），不畫外框、不按。
+        接著真的做這個動作時游標已經在位，直接按下（5c：每次點擊之前游標確實停在目標上）。"""
+        if not self.fx["pointer"]:
+            self.set(acct, sel, scroll=True)
+            return 0.0
+        self.acct, self.sel, self.box = acct, None, None
+        self.ctl.publish(look=None)
+        box = self.into_view(sel)
+        if not box:
+            return 0.0
+        x, y = (box[0] + box[2] / 2, box[1] + box[3] / 2) if click else (box[0] + min(36, box[2] / 2), box[1] + box[3] / 2)
+        return self.wait(self.point(x, y) + 0.2)
+
     def act(self, acct, sel, press):
         """動作的拍子：捲到目標 → 示範游標移過去（不畫外框，游標就是標示）→ 停 0.2 秒 → 點擊的話加按下效果。"""
         if not self.fx["pointer"]:                           # 效果關掉：前一種做法——外框框住目標、停一下再動作
@@ -1051,7 +1065,7 @@ def beat_secs(b, text):
     return max(3.5, 1.5 + 0.25 * len(text)) + (2.5 if b.get("hold") else 0.0)
 
 
-def beat_target(st, b):
+def beat_target(st, b):  # noqa: C901
     """這一拍要看的東西：劇本寫的 look（CSS 或 {"target": 角色＋名稱}）；沒寫（None）就用這一拍接著要做的那個動作的目標
     （5c：每一拍都要有自己真正的目標，不沿用上一拍）。False＝不框。"""
     lk = b.get("look")
@@ -1059,7 +1073,7 @@ def beat_target(st, b):
         acts = st.get("actions") or []
         i = int(b.get("at", 0))
         if i < len(acts) and acts[i].get("do") in ("click", "fill", "check") and acts[i].get("target"):
-            return {"target": acts[i]["target"]}
+            return {"target": acts[i]["target"], "action": acts[i]["do"]}
     return lk
 
 
@@ -1071,7 +1085,9 @@ def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
         look.set(st["account"], subst(lk["css"], vars_), scroll=lk.get("scroll", True))
     elif isinstance(lk, dict) and lk.get("target"):
         ref, _ = look.br.find(st["account"], lk["target"])
-        if ref:
+        if ref and lk.get("action"):                          # 講接下來的動作：游標指到目標上（不框）
+            look.aim(st["account"], "@" + ref, click=lk["action"] in ("click", "check"))
+        elif ref:
             look.set(st["account"], "@" + ref, scroll=lk.get("scroll", True))
     elif lk is False:
         look.clear()

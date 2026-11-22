@@ -268,10 +268,10 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
     # 回到台上、游標目標的序號沒變（排練 2 的當機路徑：游標位置已清掉、序號沒變 → place_ptr(None)）
     json.dump(dict(now, pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0, "seq": 2}),
               open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
-    time.sleep(1.2)
+    vis = wait(lambda: u.IsWindowVisible(ph), 3)
     g5 = rd(geom)
-    check("A33 轉場卡後回到台上（游標序號沒變）：舞台沒有出錯、游標重新出現", g5.get("errors") == 0 and u.IsWindowVisible(ph),
-          (g5.get("errors"), u.IsWindowVisible(ph)))
+    check("A33 轉場卡後回到台上（游標序號沒變）：舞台沒有出錯、游標重新出現", g5.get("errors") == 0 and vis,
+          (g5.get("errors"), u.IsWindowVisible(ph), g5.get("pointer"), g5.get("card")))
 
 
 CURSOR_WAIT = 2.8
@@ -432,7 +432,7 @@ def real_chrome_checks(stage_with):
             if u.IsWindowVisible(hw_) and r_[0] <= x_ < r_[0] + r_[2] and r_[1] <= y_ < r_[1] + r_[3]:
                 cb_ = _ct.create_unicode_buffer(64); u.GetClassNameW(hw_, cb_, 64)
                 pid_ = _wt.DWORD(); u.GetWindowThreadProcessId(hw_, _ct.byref(pid_))
-                out_.append("%s%s" % (cb_.value, "(舞台)" if pid_.value == p.pid else ""))
+                out_.append("%s%s%s" % (cb_.value, "(舞台)" if pid_.value == p.pid else "", list(r_) if pid_.value == p.pid else ""))
             hw_ = u.GetWindow(hw_, 2)
         return {"at_point": out_, "stage_alive": p.poll() is None, "stage_z": rd(geom).get("z_order")}
 
@@ -474,7 +474,8 @@ def real_chrome_checks(stage_with):
                 u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.7)
             g1 = rd(geom)
             if g1.get("caption_on") is not False:
-                fails.append((r_, "×", (xb, zstack(*(xb[:2] if xb else g0[:2])))))
+                fails.append((r_, "×", {"x": xb, "pad": g1.get("caption_pad"), "plate": g1.get("caption_plate"),
+                                         "x_shown": g1.get("x_shown"), "stack": zstack(xb[0] + xb[2] // 2, xb[1] + xb[3] // 2) if xb else None}))
             # 字幕收起後控制列移回右下角：等它實際位置＝應有位置、按鈕座標穩定了再按（讀到移動前的座標會按空）
             def ctl_settled():
                 g_ = rd(geom)

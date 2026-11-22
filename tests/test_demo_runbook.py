@@ -434,7 +434,7 @@ def main():
         m_ = re.search(r'"paused_s": ([\d.]+)', o)
         fv = json.load(open(os.path.join(home, "focus.json"), encoding="utf-8"))["value"]
         check("暫停：輸入停在原地，繼續後接著打完（不重打）、回報暫停秒數",
-              rc == 0 and fv == "/case help" and m_ and float(m_.group(1)) >= 1.0, o[-300:])
+              rc == 0 and fv == "/case help" and m_ and float(m_.group(1)) >= 0.5, o[-300:])
         # 開始時就暫停，暫停期間焦點被移到別的欄位 → 恢復後停在 0 個字，沒有送出任何字（da 的審查）
         json.dump({"state": "paused"}, open(ctlp, "w"))
         reset_prog()

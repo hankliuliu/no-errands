@@ -940,8 +940,8 @@ class Stage:
         if os.name == "nt":
             try:
                 h = getattr(self, "active_hwnd", None)
-                if h:
-                    u32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                if h:                                      # 0x4000＝SWP_ASYNCWINDOWPOS：不等對方的訊息迴圈
+                    u32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | 0x4000)
             except Exception:
                 pass
             try:
@@ -956,7 +956,9 @@ class Stage:
                     return True
                 u32.EnumWindows(EnumProc(f), 0)
                 for hw in mine:
-                    u32.ShowWindow(hw, 0)                      # SW_HIDE
+                    # ShowWindowAsync：只送出、不等。ShowWindow 會等視窗所屬的執行緒處理——那就是卡住的主執行緒，
+                    # 緊急出口會跟著卡死、永遠走不到結束（CI：log 有「watchdog」但行程沒結束）
+                    u32.ShowWindowAsync(hw, 0)                 # SW_HIDE
             except Exception:
                 pass
         try:

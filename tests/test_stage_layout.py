@@ -255,7 +255,11 @@ check("平順捲動關掉 → 瞬間捲到（scrollintoview），沒有分段捲
       any(x[0] == "scrollintoview" for x in br6.calls) and not any(x[0] == "scroll" for x in br6.calls), br6.calls[-6:])
 st_b = {"actions": [{"do": "open"}, {"do": "click", "target": {"role": "button", "names": ["下修改指示"]}}, {"do": "wait_text"}]}
 check("每一拍都有自己的目標：look 沒寫 → 用這一拍接著要做的動作的目標",
-      DR.beat_target(st_b, {"at": 1}) == {"target": {"role": "button", "names": ["下修改指示"]}})
+      DR.beat_target(st_b, {"at": 1}) == {"target": {"role": "button", "names": ["下修改指示"]}, "action": "click"})
+c = FakeCtl2(); lk = DR.Look(FakeBr(boxes3), c, align=AL); lk.step("a", True)
+lk.aim("a", "@e9", click=True)
+check("講動作的拍子：游標指到目標中心（不框、不按）", abs(c.now["pointer"]["x"] - 700) < 0.01 and c.now.get("look") is None
+      and c.now.get("press") is None, c.now)
 check("look 沒寫、接著的動作不是點擊或輸入 → 沒有目標；寫了 False → 不框；寫了 CSS → 照寫的",
       DR.beat_target(st_b, {"at": 2}) is None and DR.beat_target(st_b, {"at": 1, "look": False}) is False
       and DR.beat_target(st_b, {"at": 1, "look": {"css": "#x"}}) == {"css": "#x"})
