@@ -25,6 +25,7 @@ import nowin  # noqa: E402,F401
 
 BG, FG, DIM, ACCENT, LOOK = "#0b0d12", "#f4f4f4", "#7d8794", "#2f7de1", "#ffcc33"
 CAP_ALPHA = 0.62                                        # 字幕底板的不透明度（字本身完全不透明）
+PAD_ALPHA = 1 / 255.0                                   # 字幕的輸入墊片：看不見，但會接到點擊（alpha 0 會穿透）
 FONT = "Microsoft JhengHei UI"
 OFF = -32000                                            # 移到螢幕外
 EXIT_HINT = "要離開這個畫面：按 Esc 或 Ctrl+Shift+F12，或雙擊背景"
@@ -287,14 +288,23 @@ class Stage:
         self.cap.pack()
         self.cap_x = tk.Label(self.capw, text="×", font=(FONT, px(max(12, lay["cap_font"] // 2))), fg="#dddddd", bg="#000000")
         self.cap_on, self.cap_user, self.cap_drag0, self._cap_rgn = True, load_caption_pos(), None, None
-        for w in (self.capbg, self.capw, self.cap):
-            w.bind("<ButtonPress-1>", self.cap_press)
-            w.bind("<B1-Motion>", self.cap_move)
-            w.bind("<ButtonRelease-1>", self.cap_release)
-            w.bind("<Double-Button-1>", self.cap_reset)
-            w.bind("<Enter>", lambda e: self.cap_x.place(relx=1.0, x=-4, y=2, anchor="ne"))
-        self.capbg.bind("<Leave>", lambda e: self.cap_x.place_forget())
-        self.cap_x.bind("<Button-1>", lambda e: self.toggle_caption())
+        self.cap_geom, self._force_place = None, False
+        # 輸入墊片：疊在字幕兩層之上、同一個位置大小、透明度 1/255。字幕上的所有滑鼠操作（拖動、按兩下回預設、
+        # 右上角 × 關字幕、滑鼠進出）都由它接——不管點在內距、字的筆畫上或字與字之間（CI：點在字的視窗的透明
+        # 像素上時，點擊沒有送到任何一層，拖動完全沒反應），也不會穿到底下的頁面。
+        self.cappad = self._top(0, 0, 10, 10)
+        self.cappad.configure(bg="#000000", cursor="fleur")
+        try:
+            self.cappad.attributes("-alpha", PAD_ALPHA)
+        except Exception:
+            pass
+        self.cappad.bind("<ButtonPress-1>", self.cap_press)
+        self.cappad.bind("<B1-Motion>", self.cap_move)
+        self.cappad.bind("<ButtonRelease-1>", self.cap_release)
+        self.cappad.bind("<Double-Button-1>", self.cap_reset)
+        self.cappad.bind("<Enter>", lambda e: self.cap_x.place(relx=1.0, x=-4, y=2, anchor="ne"))
+        self.cappad.bind("<Leave>", lambda e: self.cap_x.place_forget())
+        self.cappad.withdraw()
         # 遮罩：頁面底色的一塊，蓋住訊息區頂端被切一半的那則訊息露出的殘段（引擎算好位置，now.json 的 mask）
         self.maskw = self._top(0, 0, 1, 1)
         self.maskw.withdraw()
@@ -346,15 +356,28 @@ class Stage:
         except Exception:
             pass
 
+    def x_hit(self, e):
+        """按在字幕右上角的 × 上（墊片座標）。"""
+        w = self.cappad.winfo_width()
+        s = max(18, self.lay["cap_font"])
+        return e.x >= w - s - 4 and e.y <= s + 4
+
     def cap_press(self, e):
-        self.cap_drag0 = (e.x_root, e.y_root, self.capbg.winfo_x(), self.capbg.winfo_y())
+        if self.x_hit(e):
+            self.cap_drag0 = None
+            self.toggle_caption()
+            return
+        g = self.cap_geom or (self.capbg.winfo_x(), self.capbg.winfo_y(), 0, 0)
+        self.cap_drag0 = (e.x_root, e.y_root, g[0], g[1])
 
     def cap_move(self, e):
         if not self.cap_drag0:
             return
         x0, y0, wx, wy = self.cap_drag0
         sx, sy, sw, sh = self.lay["stage"]
-        bw, bh = self.capbg.winfo_width(), self.capbg.winfo_height()
+        if (e.x_root, e.y_root) == (x0, y0):
+            return
+        bw, bh = (self.cap_geom or (0, 0, self.capbg.winfo_width(), self.capbg.winfo_height()))[2:]
         x = min(max(wx + e.x_root - x0, sx), sx + sw - bw)
         y = min(max(wy + e.y_root - y0, sy), sy + sh - bh)
         self.place_caption(bw, bh, x, y)
@@ -363,8 +386,10 @@ class Stage:
     def place_caption(self, bw, bh, x, y):
         """字幕兩層一起擺；底板大小變了才重設圓角。"""
         g = "%dx%d+%d+%d" % (bw, bh, x, y)
+        self.cap_geom = (int(x), int(y), int(bw), int(bh))       # 同一格裡算控制列、判斷游標在不在字幕上都用這個（不等視窗回報）
         self.capbg.geometry(g)
         self.capw.geometry(g)
+        self.cappad.geometry(g)
         if os.name == "nt" and self._cap_rgn != (bw, bh):
             try:
                 self.capbg.update_idletasks()
@@ -376,13 +401,12 @@ class Stage:
                 pass
 
     def cap_box(self):
-        """字幕底板目前的螢幕矩形（沒顯示回 None）。"""
-        if not self.capbg.winfo_viewable():
-            return None
-        return (self.capbg.winfo_x(), self.capbg.winfo_y(), self.capbg.winfo_width(), self.capbg.winfo_height())
+        """字幕塊目前（這一格要擺）的螢幕矩形；沒顯示回 None。"""
+        return self.cap_geom if getattr(self, "_cap_shown", False) else None
 
     def show_caption(self, on):
-        for w in (self.capbg, self.capw):
+        self._cap_shown = bool(on)
+        for w in (self.capbg, self.capw, self.cappad):
             if on and not w.winfo_viewable():
                 w.deiconify()
             elif not on and w.winfo_viewable():
@@ -391,11 +415,12 @@ class Stage:
     def cap_release(self, e):
         if self.cap_drag0:
             self.cap_drag0 = None
-            save_caption_pos(self.cap_user)
+            if self.cap_user:
+                save_caption_pos(self.cap_user)
 
     def cap_reset(self, e=None):
-        """在字幕上按兩下：回到預設位置、恢復自動讓開。"""
-        self.cap_user = None
+        """在字幕上按兩下：回到預設位置、恢復自動讓開（使用者明確要求，所以即使游標停在字幕上也立刻移回）。"""
+        self.cap_user, self.cap_drag0, self._force_place = None, None, True
         save_caption_pos(None)
 
     def toggle_caption(self):
@@ -786,7 +811,12 @@ class Stage:
             hover = bool(cur and box0 and L.inside((cur[0], cur[1], 0, 0), box0))
             if hover or self.cap_drag0:
                 self.cap_hold = text
-            if box0 and (hover or self.cap_drag0 or getattr(self, "cap_hold", None) == text):
+            if self._force_place:
+                self._force_place = False
+                x, y = L.caption_pos((bw, bh), self.lay, look=look, user=self.cap_user)
+                self.place_caption(bw, bh, x, y)
+                self.cap_hold = text
+            elif box0 and (hover or self.cap_drag0 or getattr(self, "cap_hold", None) == text):
                 if not self.cap_drag0 and (bw, bh) != (box0[2], box0[3]):
                     # 凍結中換了句子：以中心與底邊為錨點換大小，位置不跳
                     sx, sy, sw, sh = self.lay["stage"]
@@ -834,7 +864,7 @@ class Stage:
             h = getattr(self, "active_hwnd", None)
             if os.name == "nt" and h and not self.now.get("card") and u32.IsWindow(h):
                 u32.SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
-            for w in [self.maskw, self.band] + self.edges + [self.capbg, self.capw, self.ctlw, self.hintw]:
+            for w in [self.maskw, self.band] + self.edges + [self.capbg, self.capw, self.cappad, self.ctlw, self.hintw]:
                 if w.winfo_viewable():
                     w.attributes("-topmost", True)
                     w.lift()
@@ -843,7 +873,8 @@ class Stage:
 
     def geom(self):
         box = lambda w: [w.winfo_x(), w.winfo_y(), w.winfo_width(), w.winfo_height()] if w.winfo_viewable() else None
-        return {"caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "controls_rect": box(self.ctlw),
+        return {"caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad),
+                "caption_on": self.cap_on, "controls_rect": box(self.ctlw),
                 "look_rect": list(self.look_rect) if getattr(self, "look_rect", None) else None,
                 "mask_rect": list(self.mask_rect) if getattr(self, "mask_rect", None) else None,
                 "fit": self.fit, "card": self.now.get("card"), "beat": (self.now.get("beat") or {}).get("text"),

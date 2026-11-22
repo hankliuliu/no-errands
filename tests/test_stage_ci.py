@@ -10,7 +10,7 @@
 真的 Chrome（A1／A2／A19）：頁面貼齊螢幕底邊、沒有空白帶、擺放實測差距 ≤3、字幕兩層同位置／圓角／半透明而字全白、
 拖動時兩層一起動、試擺在背板下面；每個情境擷一張測試機整個螢幕的圖（stage-shot-*.png，CI artifact）。
 """
-import json, os, shutil, subprocess, sys, tempfile, threading, time
+import json, os, re, shutil, subprocess, sys, tempfile, threading, time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SC = os.path.join(REPO, "skills", "no-errands", "scripts")
@@ -77,7 +77,9 @@ html,body{margin:0;height:100%;background:#ffffff;font:16px sans-serif}
 #s{position:fixed;top:84px;left:0;width:269px;bottom:0;background:#cccccc}
 #f{position:fixed;left:0;right:0;bottom:0;height:40px;background:#00b050}
 #c{position:absolute;top:84px;left:269px;right:0;padding:20px}
-</style><div id=a></div><div id=g></div><div id=s></div><div id=c>測試頁面</div><div id=f></div>"""
+</style><div id=a></div><div id=g></div><div id=s></div><div id=c>測試頁面</div><div id=f></div>
+<script>let c=0;addEventListener('mousedown',()=>c++,true);addEventListener('click',()=>c++,true);
+addEventListener('dblclick',()=>c++,true);setInterval(()=>{document.title='c='+c},200);</script>"""
 
 
 def shot_png(path):
@@ -257,26 +259,79 @@ def real_chrome_checks(stage_with):
         json.dump(now, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
         time.sleep(1.0)
         pl = rd(geom).get("caption_plate") or pl
-    # 5 拖動：兩層一起動
-    if pl:
-        cx, cy = pl[0] + 6, pl[1] + pl[3] // 2
+    # 5 字幕上的操作：從三種位置（內距、字的中間、字與字之間）各拖一次；按兩下回預設；× 關字幕；都不穿到頁面
+    import ctypes as _ct
+    from ctypes import wintypes as _wt
 
-        def move(x_, y_):
-            # 真的滑鼠移動輸入（MOVE|ABSOLUTE），和人拖動一樣；SetCursorPos 只是把游標放過去，
-            # 不一定產生「按著左鍵移動」的訊息（第一次 CI：拖動沒被收到，字幕只被控制列推上去 22 px）
-            u.mouse_event(0x8001, int(x_ * 65535 / (W - 1)), int(y_ * 65535 / (H - 1)), 0, 0)
-        move(cx, cy); time.sleep(0.3)
-        u.mouse_event(0x0002, 0, 0, 0, 0); time.sleep(0.15)          # 左鍵按下
+    def page_clicks():
+        b = _ct.create_unicode_buffer(300)
+        u.GetWindowTextW(h, b, 300)
+        m_ = re.search(r"\bc=(\d+)", b.value)
+        return int(m_.group(1)) if m_ else None
+
+    def move(x_, y_):
+        # 真的滑鼠移動輸入（MOVE|ABSOLUTE），和人拖動一樣
+        u.mouse_event(0x8001, int(x_ * 65535 / (W - 1)), int(y_ * 65535 / (H - 1)), 0, 0)
+
+    u.WindowFromPoint.argtypes = [_wt.POINT]
+    u.WindowFromPoint.restype = _wt.HWND
+    u.GetAncestor.argtypes = [_wt.HWND, _wt.UINT]
+    u.GetAncestor.restype = _wt.HWND
+
+    def who(x_, y_):
+        """按下處實際是哪個視窗（診斷用：點擊會送到誰）。"""
+        root_ = u.GetAncestor(u.WindowFromPoint(_wt.POINT(int(x_), int(y_))), 2)
+        if not root_:
+            return "?"
+        for k_, n_ in (("caption_pad", "墊片"), ("caption_textwin", "字"), ("caption_plate", "底板")):
+            r_ = rd(geom).get(k_)
+            if r_ and list(DS._rect(root_)) == r_:
+                return n_
+        cb = _ct.create_unicode_buffer(64); u.GetClassNameW(root_, cb, 64)
+        return cb.value
+
+    def drag_from(fx, fy, label, dx=-200, dy=-150):
+        g0 = rd(geom).get("caption_plate")
+        sx_, sy_ = g0[0] + fx * g0[2], g0[1] + fy * g0[3]
+        move(sx_, sy_); time.sleep(0.4)
+        hit = who(sx_, sy_)
+        u.mouse_event(0x0002, 0, 0, 0, 0); time.sleep(0.15)
         for s_ in range(1, 21):
-            move(cx - 10 * s_, cy - 7.5 * s_); time.sleep(0.04)
+            move(sx_ + dx * s_ / 20, sy_ + dy * s_ / 20); time.sleep(0.04)
         time.sleep(0.2)
-        u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(1.2)           # 放開
-        g2 = rd(geom)
-        pl2, tw2 = g2.get("caption_plate"), g2.get("caption_textwin")
-        check("A2 拖動後兩層仍在同一個位置", pl2 and pl2 == tw2, (pl2, tw2))
-        check("A2 拖動有效（往左上移約 200×150）", pl2 and abs((pl[0] - pl2[0]) - 200) <= 8 and abs((pl[1] - pl2[1]) - 150) <= 8,
-              (pl, pl2, "cap_user=%s" % g2.get("cap_user"), "存檔=%s" % rd(os.path.join(work, "stage-caption.json"))))
+        u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(1.0)
+        g1 = rd(geom)
+        p1, t1, d1 = g1.get("caption_plate"), g1.get("caption_textwin"), g1.get("caption_pad")
+        check("A2 從%s拖動：字幕移動約 %d×%d，三層（底板、字、墊片）同位置（按下處是：%s）" % (label, -dx, -dy, hit),
+              p1 and p1 == t1 == d1 and abs((g0[0] - p1[0]) + dx) <= 8 and abs((g0[1] - p1[1]) + dy) <= 8,
+              (g0, p1, t1, d1, "cap_user=%s" % g1.get("cap_user")))
+        return p1
+    c0 = page_clicks()
+    if pl:
+        drag_from(6.0 / pl[2], 0.5, "內距")
+        drag_from(0.5, 0.5, "字的中間", dx=150, dy=60)
+        drag_from(0.27, 0.62, "字與字之間／筆畫附近", dx=-80, dy=90)
         shot_png("stage-shot-3-dragged.png")
+        check("A2 拖過之後位置存檔（下次沿用）", rd(os.path.join(work, "stage-caption.json")).get("pos"),
+              rd(os.path.join(work, "stage-caption.json")))
+        # 按兩下：回到預設位置（即使游標停在字幕上也立刻移回）
+        g0 = rd(geom).get("caption_plate")
+        move(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2); time.sleep(0.3)
+        for _ in range(2):
+            u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.08)
+        time.sleep(1.0)
+        g1 = rd(geom)
+        check("A2 在字幕上按兩下 → 回到預設位置（下方置中）", g1.get("cap_user") is None and g1.get("caption_plate")
+              and abs((g1["caption_plate"][0] + g1["caption_plate"][2] / 2) - W / 2) <= 2, (g0, g1.get("caption_plate")))
+        # ×：滑鼠移到字幕上（× 出現），點右上角 → 字幕收起
+        g0 = rd(geom).get("caption_plate")
+        move(g0[0] + g0[2] - 10, g0[1] + 8); time.sleep(0.5)
+        u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.8)
+        g1 = rd(geom)
+        check("A2 點字幕右上角的 × → 字幕收起", g1.get("caption_on") is False and not g1.get("caption_plate"), g1.get("caption_plate"))
+        time.sleep(0.5)
+        c1 = page_clicks()
+        check("字幕上的拖動、按兩下、× 都沒有穿到底下的頁面（頁面收到的點擊數不變）", c0 is not None and c1 == c0, (c0, c1))
     json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
     try:
         p.wait(10)
@@ -303,6 +358,8 @@ def main():
         env = dict(os.environ, NE_STAGE_SCREEN="%dx%d" % (W, H), NE_STAGE_GEOM=geom, NE_STAGE_NO_HOTKEYS="1", NO_ERRANDS_HOME=d)
         p = spawn(d, env)
         g = wait(lambda: rd(geom).get("caption_box") and rd(geom).get("next") and rd(geom))
+        time.sleep(1.0)                                    # 控制列依字幕位置讓位：等數值穩定再讀
+        g = rd(geom) or g
         lines = L.caption_lines(two_lines, W, H)
         check("%d×%d：字幕估算兩行以內（%d 行）" % (W, H, lines), lines <= 2, lines)
         check("%d×%d：字幕塊實際排出來最多兩行、不超過最大寬度（舞台寬 62%%）" % (W, H),
