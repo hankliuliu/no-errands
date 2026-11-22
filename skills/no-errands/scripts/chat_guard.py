@@ -458,6 +458,8 @@ def guarded(prof, action, node, parents, ctx, text=None):
     before = _fg()
     if FG0["h"] is None:
         FG0["h"] = before
+    w = WATCH.get("watch")
+    own = w.own_begin() if w else None   # 這個動作執行期間的系統輸入是我們自己造成的（見 idle.IdleWatch）
     try:
         if action == "click":
             ad("click", node["ref_id"])
@@ -468,6 +470,8 @@ def guarded(prof, action, node, parents, ctx, text=None):
         elif action == "scroll-to":
             ad("scroll-to", node["ref_id"])
     finally:
+        if w:
+            w.own_end(own)
         after = _fg()
         if before is not None and after is not None and before != after:
             FG_EVENTS.append(action)
