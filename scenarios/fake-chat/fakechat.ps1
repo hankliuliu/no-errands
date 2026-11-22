@@ -17,6 +17,8 @@
 #        {"op":"message","chat":"Alpha Team","text":"..."}   new incoming message (+1 unread, name changes)
 #        {"op":"rename","chat":"Alpha Team","name":"..."}    overwrite the packed accessible name
 #        {"op":"members","chat":"Field Crew","count":22}     change a group's member count (display suffix "(N)")
+#        {"op":"dialogdelay","ms":10000}                   popup "save chat" opens the save dialog only after ms
+#                                                          (like LINE preparing a big group's export); 0 = immediate
 # -CountNames adds groups whose display name ends with a member count, like LINE: "Name (21)". Includes a name that
 #   itself ends with digits in parens, a decoy whose count looks like that name, a name with "/", two groups that are
 #   the same name after the count is removed, and full-width parens. The default export file name replaces characters
@@ -227,7 +229,17 @@ $script:exportAction = {
         Write-JsonLine $eventFile @{ kind = 'export'; chat = $script:current.name; path = $dlg.FileName; lines = $lines.Count }
     }
 }
-$piSave.Add_Click({ $popup.Hide(); [void]$f.BeginInvoke([Action]{ & $script:exportAction }) })
+$script:dialogDelay = 0
+$piSave.Add_Click({
+    $popup.Hide()
+    Write-JsonLine $eventFile @{ kind = 'save-clicked'; delay = $script:dialogDelay }
+    if ($script:dialogDelay -gt 0) {
+        $dt = New-Object System.Windows.Forms.Timer
+        $dt.Interval = $script:dialogDelay
+        $dt.Add_Tick({ param($s, $e) $s.Stop(); $s.Dispose(); & $script:exportAction })
+        $dt.Start()
+    } else { [void]$f.BeginInvoke([Action]{ & $script:exportAction }) }
+})
 $piSearch.Add_Click({ $popup.Hide(); Write-JsonLine $eventFile @{ kind = 'search' } })
 $piSaveDel.Add_Click({
     $popup.Hide()
@@ -261,7 +273,8 @@ $timer.Add_Tick({
                 $t = $line | ConvertFrom-Json
                 if ($t.op -eq 'exportname') { $script:exportNameOverride = $t.name; continue }
                 if ($t.op -eq 'firstline') { $script:firstLineOverride = $t.text; continue }
-                if ($t.op -eq 'reset') { $script:exportNameOverride = $null; $script:firstLineOverride = $null; continue }
+                if ($t.op -eq 'reset') { $script:exportNameOverride = $null; $script:firstLineOverride = $null; $script:dialogDelay = 0; continue }
+                if ($t.op -eq 'dialogdelay') { $script:dialogDelay = [int]$t.ms; continue }
                 $c = $chats | Where-Object { $_.name -eq $t.chat } | Select-Object -First 1
                 if (-not $c) { continue }
                 if ($t.op -eq 'message') {

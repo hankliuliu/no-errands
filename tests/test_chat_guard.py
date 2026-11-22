@@ -9,6 +9,7 @@
   B3-4 名稱找不到、前綴、重複 → 拒
   B3-6 群組名稱結尾的人數標示（-CountNames，名稱全是虛構的）：人數變了照樣找得到；名稱本身以括號數字結尾不被誤削；
        名稱含「/」（預設檔名被換成「_」）；全形括號；帶人數整串存進白名單；去掉人數後同名 → 拒
+  B3-7 存檔對話框延遲 10 秒才出現（像 LINE 準備大群組的匯出）：等得到、只點一次、只存一份、沒有殘留對話框
   另：未授權的 app → 拒；沒有送出子指令
 每一步前後記錄前景視窗 handle 與游標位置（N4 不干擾量測），結果寫 JSON。
 
@@ -235,6 +236,24 @@ def main():
         o = cg("open", "--chat", "Echo")
         check("B3-6 去掉人數後同名的兩個群組 → 拒、說明原因", o.get("refused") is True and "同名" in o.get("error", ""), o)
         check("B3-6 違規偵測器為空", violations() == [], violations())
+
+        # B3-7 對話框遲到
+        def events(kind):
+            return sum(1 for l in open(os.path.join(state, "events.jsonl"), encoding="utf-8") if '"%s"' % kind in l)
+        trigger({"op": "dialogdelay", "ms": 10000})
+        s0, e0 = events("save-clicked"), events("export")
+        exp7 = os.path.join(home, "export7")
+        cg("open", "--chat", "Kilo")
+        t7 = time.time()
+        o = cg("export", "--chat", "Kilo", "--to", exp7)
+        secs7 = round(time.time() - t7, 1)
+        cg("close")
+        lw = json.loads(subprocess.run([a.ad, "list-windows"], capture_output=True, text=True, encoding="utf-8").stdout)
+        check("B3-7 對話框延遲 10 秒：匯出成功（%.1f 秒）" % secs7, o.get("ok") and os.path.exists(o.get("path", "")), o)
+        check("B3-7 只點了一次「儲存聊天」（點擊送到後不重點）", events("save-clicked") - s0 == 1, events("save-clicked") - s0)
+        check("B3-7 只存了一份", events("export") - e0 == 1, events("export") - e0)
+        check("B3-7 沒有殘留的存檔對話框", not any(w.get("title") == "Save chat history" for w in lw.get("data", [])))
+        trigger({"op": "reset"})
 
         o = cg("send", "--chat", "Alpha Team")
         check("沒有送出子指令", o.get("refused") is True, o)

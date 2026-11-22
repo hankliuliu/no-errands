@@ -32,7 +32,7 @@
 | `gather` | 聊天收集：起始時間＋增量同步；LINE 經 chat_guard 匯出、序列對齊合併、缺口明講；Mattermost 用 API 游標（含編輯與刪除）；可寫成 context-gather 格式 | `tests/test_gather.py`、`tests/selfhost/mm_flow.py`（f 段） |
 | `idle` | 使用者閒置偵測、途中有輸入就中止交還 | `tests/test_idle.py` |
 | `uac` | 辨識系統權限提示、交接、偵測消失 | `tests/test_uac.py`＋本機實測 |
-| `--guard-rules` | Claude Code 權限規則：擋讀 token 檔、擋直接呼叫兩個底層工具；只有改變同意範圍的 `policy.py grant/set/whitelist/domain` 要詢問（chat_guard 不詢問，白名單由它自己把關） | `tests/test_guard_rules.py`＋巢狀 agent 實測 |
+| `--guard-rules [--guard-groups ...]` | Claude Code 設定三組、可分開開關：`direct-tools`（deny 直接呼叫兩個底層工具）、`token`（PreToolUse hook：預設不准讀 token 檔，`policy.py token-allow` 白名單專案放行）、`consent`（`policy.py grant/set/whitelist/domain/token-allow` 要詢問；chat_guard 不詢問） | `tests/test_guard_rules.py`＋巢狀 agent 實測 |
 | `setup`／`doctor` | 偵測→重用→不覆蓋→可完整回復；每一階做真的測試 | `tests/test_coexist.py`、CI 三平台 |
 
 ## 交接契約

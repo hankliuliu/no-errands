@@ -511,10 +511,44 @@ def cmd_read(app, prof, chat, file_):
     out({"ok": True, "source": "window", "messages": msgs})
 
 
+def _dialog_titles(prof):
+    return tuple(prof.get("dialog_titles") or ()) + ((prof["dialog_title"],) if prof.get("dialog_title") else ())
+
+
+def save_dialogs(prof, pid):
+    """這個 app（同 pid）目前開著的存檔對話框（標題相符）。"""
+    t = _dialog_titles(prof)
+    return [w for w in ad("list-windows") if w.get("title") in t and w.get("pid") == pid]
+
+
+def cancel_dialogs(prof, wins):
+    """把這些存檔對話框按取消（只認系統檔案對話框：要有檔名欄與取消鈕）。回傳按掉幾個。"""
+    n = 0
+    for w in wins:
+        try:
+            ds = snapshot(w)
+            fn = find_node(ds, lambda x: str((x.get("native_id") or {}).get("value", "")) in prof["dialog_filename_ids"])[0]
+            cn, cp = find_node(ds, lambda x: x.get("role") == "button" and str(
+                (x.get("native_id") or {}).get("value", "")) in prof["dialog_cancel_ids"])
+            if fn and cn:
+                guarded(prof, "click", cn, cp, {"zone": "dialog"})
+                n += 1
+                time.sleep(0.4)
+        except Exception:
+            continue
+    return n
+
+
 def cmd_export(app, prof, dest, chat=None, load_hist=False):
     dest = os.path.abspath(dest)
     os.makedirs(dest, exist_ok=True)
     win = find_window(prof)
+    # 開始前：上一次遲到的存檔對話框（app 準備匯出比我們等的久）若還開著 → 先取消，不然會被算進這一次
+    stray = save_dialogs(prof, win.get("pid"))
+    if stray:
+        EXPORT_CTX["stray_cancelled"] = cancel_dialogs(prof, stray)
+        if save_dialogs(prof, win.get("pid")):
+            raise Refused("有之前留下的存檔對話框取消不掉：沒有開始匯出（請使用者把它關掉）")
     snap = snapshot(win)
     if prof.get("export_via") == "popup":
         if load_hist:   # gather：先把對話往上捲到底，讓匯出涵蓋畫面能載入的最早訊息
@@ -538,16 +572,23 @@ def cmd_export(app, prof, dest, chat=None, load_hist=False):
         if not last:
             snap = snapshot(win)
     # 2) 等系統另存新檔對話框
-    titles = tuple(prof.get("dialog_titles") or ()) + ((prof["dialog_title"],) if prof.get("dialog_title") else ())
-    dlg = None
-    for _ in range(75):   # 真機第 2 次重試時 5 秒內沒等到 → 放寬到 15 秒
-        time.sleep(0.2)
-        cands = [w for w in ad("list-windows") if w.get("title") in titles and w.get("pid") == win.get("pid")]
+    # 真機（2026-11-22）：人多、訊息多的 LINE 群組，點了「儲存聊天」之後要過一陣子對話框才出現 → 持續輪詢到 dialog_wait_s
+    dlg, cands = None, []
+    t_end = time.time() + float(prof.get("dialog_wait_s", 90))
+    while time.time() < t_end:
+        time.sleep(0.3)
+        cands = save_dialogs(prof, win.get("pid"))
         if len(cands) == 1:
             dlg = cands[0]
             break
+        if len(cands) > 1:
+            n = cancel_dialogs(prof, cands)
+            raise Refused("同時出現 %d 個存檔對話框（已取消 %d 個）：不猜是哪一個，沒有存檔" % (len(cands), n))
+        check_interrupt()
     if not dlg:
-        diag = {"popup_click": EXPORT_CTX.get("popup_click"), "same_title_windows": len(cands)}
+        diag = {"popup_click": EXPORT_CTX.get("popup_click"), "same_title_windows": len(cands),
+                "waited_s": prof.get("dialog_wait_s", 90), "menu_open_after_click": EXPORT_CTX.get("menu_open_after_click"),
+                "menu_retried": bool(EXPORT_CTX.get("menu_retried")), "stray_cancelled": EXPORT_CTX.get("stray_cancelled", 0)}
         try:
             diag["pid_windows"] = sorted({w.get("class") for w in popup_menu.popup_windows(win.get("pid"))}) if popup_menu else None
         except Exception:
@@ -878,13 +919,16 @@ def _export_menu_popup(prof, win, snap, chat):
         raise Refused("選單項目座標檢查沒過，沒有點：%s" % e)
     if before_fg is not None and _fg() != before_fg:
         FG_EVENTS.append("popup-click")
-    # 點了 3 秒內沒出現存檔對話框 → 關掉選單、重來一次（只重來一次）
-    titles = tuple(prof.get("dialog_titles") or ()) + ((prof["dialog_title"],) if prof.get("dialog_title") else ())
+    # 點了 3 秒內沒出現存檔對話框、而且選單還開著（點擊沒送到）→ 關掉選單、重來一次（只重來一次）。
+    # 選單已經關了＝點擊送到了，app 只是準備得慢：不可重點（真機：重點讓 LINE 排了兩次匯出，對話框一個比一個多）。
+    titles = _dialog_titles(prof)
     for _ in range(15):
         time.sleep(0.2)
         if any(w.get("title") in titles and w.get("pid") == pid for w in ad("list-windows")):
             return
-    if not EXPORT_CTX.get("menu_retried"):
+    menu_open = pop["hwnd"] in popup_menu.visible_hwnds(pid)
+    EXPORT_CTX["menu_open_after_click"] = menu_open
+    if menu_open and not EXPORT_CTX.get("menu_retried"):
         EXPORT_CTX["menu_retried"] = True
         try:
             popup_menu.close_popup(pop["hwnd"])
@@ -894,13 +938,23 @@ def _export_menu_popup(prof, win, snap, chat):
         return _export_menu_popup(prof, win, snapshot(win), chat)
 
 
-def cmd_close(app, prof):
+def cmd_close(app, prof, cancel_late=False):
     win = find_window(prof)
+    if cancel_late:
+        # 匯出失敗（對話框遲到）後的收尾：再看最多 30 秒，自己引出的存檔對話框一出現就按取消，不留在使用者面前
+        t_end, n = time.time() + 30, 0
+        while time.time() < t_end:
+            d = save_dialogs(prof, win.get("pid"))
+            if d:
+                n += cancel_dialogs(prof, d)
+                break
+            time.sleep(0.5)
+        EXPORT_CTX["late_cancelled"] = n
     snap = snapshot(win)
     if not prof.get("close_button"):
         ad("minimize", "--window-id", win["id"])
         ledger(app, "close", True, "minimized")
-        out({"ok": True, "closed": "minimized"})
+        out({"ok": True, "closed": "minimized", "late_dialogs_cancelled": EXPORT_CTX.get("late_cancelled")})
     node, parents = find_node(snap, lambda n: n.get("role") == "button" and n.get("name") == prof["close_button"])
     if not node:
         raise Refused("找不到離開聊天室的按鈕")
@@ -958,7 +1012,7 @@ def main():
         elif sub == "export":
             cmd_export(app, prof, arg(a, "--to") or ".", arg(a, "--chat"), load_hist="--load-history" in a)
         elif sub == "close":
-            cmd_close(app, prof)
+            cmd_close(app, prof, cancel_late="--cancel-late-dialog" in a)
         elif sub == "act" and len(a) >= 3 and a[2] in ("click", "set-value"):
             cmd_act(app, prof, a[2], arg(a, "--target") or "", arg(a, "--text", ""))
         else:

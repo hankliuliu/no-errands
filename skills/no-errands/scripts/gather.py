@@ -284,7 +284,8 @@ def _line_export(chat, load_hist):
     cmd = [sys.executable, os.path.join(HERE, "chat_guard.py"), "line", "export", "--chat", chat, "--to", tmp]         + GATE["args"] + (["--load-history"] if load_hist else [])
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3 * 3600)
     o = json.loads(r.stdout or "{}") if r.stdout.strip().startswith("{") else {"ok": False, "error": "chat_guard 沒有回應"}
-    subprocess.run([sys.executable, os.path.join(HERE, "chat_guard.py"), "line", "close"] + GATE["close"],
+    late = ["--cancel-late-dialog"] if not o.get("ok") and "對話框沒有出現" in str(o.get("error", "")) else []
+    subprocess.run([sys.executable, os.path.join(HERE, "chat_guard.py"), "line", "close"] + GATE["close"] + late,
                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
     if not o.get("ok"):
         return None, o

@@ -100,15 +100,22 @@ python doctor.py
 另外，有些模型起草後會一直在前景等你核准；工具提供有上限的等待指令並提醒它結束回合，但沒辦法強制它停。
 網頁與桌面的守門（`neb`／`ned`）只在 agent 經過它們時才生效。受管區塊要求網頁一律經 neb、桌面一律經 ned：**沒裝權限規則時，這是建議**——agent 直接呼叫瀏覽器或桌面工具就繞過了。**裝了權限規則（`python setup.py --user --guard-rules`）之後，直接呼叫會被擋**（實測擋得住：裸名稱、完整路徑的各種寫法、先 cd 再相對路徑、`bash -c` 包裝、PowerShell）；仍繞得過的：把工具名稱拆開再組起來、用 Python 子行程拼出路徑、用 `agent-b*` 這種萬用字元。副作用：只是提到工具名稱的指令（例如 `grep agent-browser`）也會被擋。**正在開發 no-errands 本身的機器，不要在使用者層級套用這條規則**（或等開發告一段落再開）：grep、git commit 訊息、跑測試，只要指令裡出現那兩個名稱都會被擋，而且 deny 沒辦法在專案層級蓋掉。兩個守門的放行清單是對工具每個子指令與選項逐項對過的（`docs/agent-browser-command-audit.md`、`docs/agent-desktop-command-audit.md`），升級版本要重對。
 
-**權限規則一共加哪些（`--guard-rules`，選配、預設不開）：**
+**權限規則一共三組（`--guard-rules`，選配、預設不開；開的時候預設三組都開，可以用 `--guard-groups` 只開其中幾組）：**
 
-| 規則 | 種類 | 為什麼 |
-|---|---|---|
-| 讀 Mattermost token 檔 | 擋（deny） | token 只給工具在執行時讀 |
-| 指令裡出現 `agent-browser`／`agent-desktop`（Bash 與 PowerShell） | 擋（deny） | 網頁一律經 neb、桌面一律經 ned |
-| `policy.py grant`／`set`／`whitelist`／`domain` | 要詢問（ask） | 這幾個會擴大或改變你同意的範圍；`revoke`、`show` 只縮小或唯讀，不詢問 |
+| 組 | 做什麼 | 機制 | 為什麼 |
+|---|---|---|---|
+| `direct-tools` | 指令裡出現 `agent-browser`／`agent-desktop`（Bash 與 PowerShell）就擋 | deny 規則 | 網頁一律經 neb、桌面一律經 ned |
+| `token` | 預設不准 agent 讀 Mattermost token 檔；你特別設了白名單的專案資料夾才放行 | PreToolUse hook（`token_guard.py`） | token 只給工具在執行時讀 |
+| `consent` | `policy.py grant`／`set`／`whitelist`／`domain`／`token-allow` 要先問你 | ask 規則 | 這幾個會擴大或改變你同意的範圍；`revoke`、`show` 只縮小或唯讀，不詢問 |
 
-聊天 app 的守門（`chat_guard.py`）**不加詢問**：授權與白名單由它自己把關，白名單內的對話可以直接匯出、同步，無人在場也跑得完；白名單外的一律被它拒絕。移除：`python setup.py --uninstall --user --guard-rules`，只拿掉上表這幾條。
+例：只開後兩組 `python setup.py --user --guard-rules --guard-groups token,consent`。重新執行會先拿掉三組、再加這次選的；移除 `python setup.py --uninstall --user --guard-rules` 一律拿掉三組，只動我們自己的規則與 hook。
+
+**token 白名單**：`policy.py token-allow add <專案資料夾> --reason "<你的原話>"`（寫 ledger；這個指令本身在 `consent` 組裡要先問你）。
+為什麼用 hook 不用 deny：Claude Code 的 deny 規則沒辦法被專案層級蓋掉，做不到「白名單時可以」。hook 在每次 Read／Bash／PowerShell／Grep／Glob／Edit／Write 之前讀政策檔判斷：工具輸入裡出現 token 檔的路徑（各種寫法）或檔名、而目前專案（Claude Code 啟動的資料夾）不在白名單 → 擋下並說明。
+巢狀 `claude -p`（`claude-haiku-5-5`）實測：不在白名單的專案，Read 與 `cat` 都被擋、沒有洩漏；白名單專案兩種都讀得到。額外負擔：每次符合的工具呼叫約 60 毫秒（啟動一次 Python）。
+限制和權限規則一樣：把路徑拆開再組、用萬用字元或另一支程式去讀，hook 看不到；hook 壞掉時不表態（不會讓你整個不能用，但也就不擋）。
+
+聊天 app 的守門（`chat_guard.py`）**不加詢問**：授權與白名單由它自己把關，白名單內的對話可以直接匯出、同步，無人在場也跑得完；白名單外的一律被它拒絕。
 
 瀏覽器的守門只認得公開的聊天／郵件網站（Gmail、Slack、LINE 網頁版……）和政策檔裡登記的 Mattermost 網址；**自架在內網、或經 SSH 通道從 `localhost` 開的聊天或信箱服務，目前會被當成一般網站、不設防**。現在只有 Mattermost 能登記（政策檔的 `mattermost.url`）；任意網址的登記方式還在做。
 
