@@ -37,10 +37,11 @@ else:
 
 for f, label in (("outbox.txt", "outbox tests"), ("ned.txt", "ned tests"), ("mm.txt", "mm_ro tests"), ("neb.txt", "neb tests"), ("runbook.txt", "demo runbook"), ("standing.txt", "standing approval"), ("stage.txt", "stage layout"), ("lineprof.txt", "LINE profile (offline)"), ("guard.txt", "guard rules"), ("coexist.txt", "coexistence (P0.8)"), ("uac.txt", "UAC detection (unit)"), ("audit.txt", "errand audit (synthetic)"), ("codex.txt", "Codex install locations"), ("office.txt", "office tests"), ("token.txt", "token flow (headless)"), ("b3.txt", "chat_guard B3"),
                  ("n4pos.txt", "N4 positive control"), ("idle.txt", "idle gate"), ("player.txt", "demo player window (mouse, drag, focus)"),
+                 ("stagewin.txt", "demo stage window (captions at 5 resolutions)"),
                  ("nowin.txt", "no console popups from a windowless parent"), ("gather.txt", "chat gather (synthetic)"), ("gather_items.txt", "gather attachments index and missing list (synthetic)"),
                  ("nowin-pos.txt", "no-popup positive control (fix disabled must pop)")):
     if not os.path.exists(f):
-        if f in ("b3.txt", "n4pos.txt", "idle.txt", "nowin-pos.txt", "player.txt") and not os_name.startswith("windows"):
+        if f in ("b3.txt", "n4pos.txt", "idle.txt", "nowin-pos.txt", "player.txt", "stagewin.txt") and not os_name.startswith("windows"):
             continue
         add(label, False, "output missing")
         continue
