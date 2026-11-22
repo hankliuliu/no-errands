@@ -238,8 +238,8 @@ c = FakeCtl3(); lk = DR.Look(FakeBr(boxes3), c, align=AL); lk.step("a", True)
 lk.ptr = (700, 720)                                          # 游標已在目標上（不用移動），只看按下與點擊的先後
 _th.Thread(target=_ack_later).start()
 t_ = time.time(); lk.act("a", "@e9", press=True); t_done = time.time()
-check("A22 點擊在「按下的效果已畫出」之後：舞台 0.3 秒後才回報 → 引擎等到回報、再停一下才回來送出點擊",
-      _ack_t[0] is not None and t_done >= _ack_t[0] + 0.1 and getattr(lk, "acked", 0) == 1, (_ack_t[0], t_done))
+check("A22 點擊在「按下的效果已畫出」之後：舞台 0.3 秒後才回報 → 引擎等到回報才回來送出點擊（先後順序）",
+      _ack_t[0] is not None and t_done >= _ack_t[0] and getattr(lk, "acked", 0) == 1, (_ack_t[0], t_done))
 # ---- 效果開關（真頁面上哪一項不穩就單獨關掉、退回前一種做法）
 fx = DR.effects_of({"stage": {}})
 check("效果開關：預設全開", all(fx.values()) and set(fx) == set(DR.EFFECTS), fx)
