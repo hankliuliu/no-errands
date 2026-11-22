@@ -1096,7 +1096,8 @@ class Stage:
             return []
         names = {}
         for n, w in (("hint", self.hintw), ("controls", self.ctlw), ("pad", self.cappad), ("captext", self.capw),
-                     ("plate", self.capbg), ("band", self.band), ("mask", self.maskw), ("backdrop", self.root)):
+                     ("plate", self.capbg), ("band", self.band), ("mask", self.maskw), ("backdrop", self.root),
+                     ("shield", self.shield), ("pointer", self.ptrw), ("x", self.xbtn)):
             try:
                 names[int(w.frame(), 16)] = n
             except Exception:
