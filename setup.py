@@ -146,29 +146,95 @@ def load_policy_mod():
 OWN_MARK = ".installed-by-no-errands"
 
 
-def skill_is_ours(skill_dst, home):
-    """同名 skill 目錄是不是我們裝的：有標記檔，或記在我們的 config.json 安裝清單裡。"""
-    if not os.path.isdir(skill_dst):
-        return True   # 不存在 → 可以裝
-    if os.path.exists(os.path.join(skill_dst, OWN_MARK)):
-        return True
-    try:
-        cfg = json.load(open(os.path.join(home, "config.json"), encoding="utf-8"))
-        return any(os.path.abspath(i.get("skill", "")) == os.path.abspath(skill_dst) for i in cfg.get("installs", []))
-    except Exception:
-        return False
+def skill_is_ours(skill_dst, home, name="no-errands"):
+    """同名 skill 目錄可不可以由我們裝／換：不存在，或位置正確且帶我們的安裝標記。
+    （以前也認 config.json 安裝清單；改成只認標記——標記是 install_skill 每次都寫的。）"""
+    return skill_dir_problem(skill_dst, name) is None
+
+
+def _is_link(p):
+    return os.path.islink(p) or bool(getattr(os.path, "isjunction", lambda _p: False)(p))
+
+
+def skill_dir_problem(skill_dst, name, must_exist=False):
+    """只准動「<某個 skills 目錄>/<name>」而且帶我們安裝標記的那一個資料夾。可以動 → None；不行 → 拒絕理由。
+    為什麼這麼嚴：曾經把上層 ~/.claude/skills 當目的地傳進來，使用者其他 skill 全被刪掉。"""
+    d = os.path.abspath(skill_dst)
+    if os.path.basename(d) != name:
+        return "目的地資料夾名稱不是 %s" % name
+    if os.path.basename(os.path.dirname(d)) != "skills":
+        return "目的地不在某個 skills 目錄底下一層"
+    if d in (os.path.abspath(os.path.expanduser("~")), os.path.abspath(os.sep)):
+        return "目的地是家目錄或根目錄"
+    if os.path.lexists(d):
+        if _is_link(d) or not os.path.isdir(d):
+            return "目的地不是一般資料夾（連結或檔案）"
+        if not os.path.isfile(os.path.join(d, OWN_MARK)):
+            return "目的地沒有本工具的安裝標記（不是本工具裝的）"
+    elif must_exist:
+        return "目的地不存在"
+    return None
+
+
+def _recover_skill_swap(d, name):
+    """上次換版中途當掉的善後：正式位置不見了但旁邊有舊版 → 搬回去；殘留的新版暫存（帶我們標記的）→ 刪。"""
+    parent = os.path.dirname(d)
+    if not os.path.isdir(parent):
+        return
+    for fn in sorted(os.listdir(parent)):
+        p = os.path.join(parent, fn)
+        if not (fn.startswith("." + name + ".old-") or fn.startswith("." + name + ".new-")):
+            continue
+        if _is_link(p) or not os.path.isfile(os.path.join(p, OWN_MARK)):
+            continue   # 不是我們留下的，不碰
+        if fn.startswith("." + name + ".old-") and not os.path.lexists(d):
+            os.replace(p, d)
+        else:
+            shutil.rmtree(p)
 
 
 def install_skill(skill_dst, name="no-errands"):
-    # 目的地一定是「<skills 目錄>/<name>」：傳成上層 skills 目錄會把使用者其他 skill 整個刪掉（真的發生過）。
-    if os.path.basename(os.path.normpath(skill_dst)) != name:
-        raise ValueError("install_skill: 目的地必須以 %s 結尾，收到 %s；不刪不裝" % (name, skill_dst))
-    if os.path.isdir(skill_dst) and not os.path.exists(os.path.join(skill_dst, OWN_MARK)) and any(
-            os.path.isfile(os.path.join(skill_dst, d, "SKILL.md")) for d in os.listdir(skill_dst)):
-        raise ValueError("install_skill: %s 底下有其他 skill，不是單一 skill 目錄；不刪不裝" % skill_dst)
-    shutil.rmtree(skill_dst, ignore_errors=True)
-    shutil.copytree(os.path.join(REPO, "skills", name), skill_dst)
-    open(os.path.join(skill_dst, OWN_MARK), "w", encoding="utf-8").write("installed by no-errands setup.py" + chr(10))
+    """裝／換版一個 skill。只動自己那一個資料夾；不直接刪舊版：新版先在旁邊裝好並驗證，
+    舊版改名移開、新版就位後才刪舊版；中途失敗就把舊版搬回去。"""
+    why = skill_dir_problem(skill_dst, name)
+    if why:
+        raise ValueError("install_skill 拒絕：%s（%s）；什麼都沒刪" % (why, skill_dst))
+    d = os.path.abspath(skill_dst)
+    parent = os.path.dirname(d)
+    os.makedirs(parent, exist_ok=True)
+    _recover_skill_swap(d, name)
+    src = os.path.join(REPO, "skills", name)
+    tag = "%d-%d" % (os.getpid(), int(time.time() * 1000))
+    new = os.path.join(parent, ".%s.new-%s" % (name, tag))
+    old = os.path.join(parent, ".%s.old-%s" % (name, tag))
+    try:
+        shutil.copytree(src, new)
+        open(os.path.join(new, OWN_MARK), "w", encoding="utf-8").write("installed by no-errands setup.py" + chr(10))
+        if skill_tree_hash(new) != skill_tree_hash(src):
+            raise OSError("新版複製後內容和 repo 不一致")
+    except Exception:
+        shutil.rmtree(new, ignore_errors=True)   # 只刪自己剛建的暫存
+        raise
+    had_old = os.path.isdir(d)
+    if had_old:
+        os.replace(d, old)
+    try:
+        os.replace(new, d)
+    except Exception:
+        if had_old:
+            os.replace(old, d)
+        shutil.rmtree(new, ignore_errors=True)
+        raise
+    if had_old:
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def remove_own_skill(skill_dst, name):
+    """移除時用：只刪帶我們標記、位置正確的那一個資料夾。刪了回 True。"""
+    if skill_dir_problem(skill_dst, name, must_exist=True):
+        return False
+    shutil.rmtree(os.path.abspath(skill_dst))
+    return True
 
 
 def skill_tree_hash(d):
@@ -418,8 +484,8 @@ def codex_uninstall(a, home):
     skills, agents_md = codex_targets(a)
     out = []
     for sk in skills:
-        if os.path.isdir(sk) and os.path.exists(os.path.join(sk, OWN_MARK)):
-            shutil.rmtree(sk); out.append({"step": "uninstall:codex-skill", "ok": True, "path": sk})
+        if remove_own_skill(sk, "no-errands"):
+            out.append({"step": "uninstall:codex-skill", "ok": True, "path": sk})
     if remove_block(agents_md):
         out.append({"step": "uninstall:codex-agents-md-block", "ok": True, "path": agents_md})
     return out
@@ -522,15 +588,23 @@ def main():
         load_policy_mod().ensure(home)
         synced = []
         paths = {t: os.path.join(home, "bin", exe_name(t)) for t in ("agent-desktop", "agent-browser")}
-        for inst in cfg.get("installs", []):
-            install_skill(inst["skill"])   # 只同步記在我們清單裡的目標
+        refused = []
+        for inst in cfg.get("installs", []):   # 只同步記在我們清單裡的目標
+            for sk, nm in ((inst["skill"], "no-errands"), (os.path.join(os.path.dirname(inst["skill"]), "errand-audit"), "errand-audit")):
+                why = skill_dir_problem(sk, nm)
+                if nm == "errand-audit" and not os.path.lexists(sk):
+                    continue   # 安裝時沒裝（例如有別人的同名 skill）就不補
+                if why:
+                    refused.append({"skill": sk, "why": why})
+                    continue
+                install_skill(sk, nm)
             upsert_block(inst["target"], managed_block(home, paths, checks=None, repo=REPO))
             synced.append(inst["target"])
         cfg["skill_hash"] = skill_tree_hash(os.path.join(REPO, "skills", "no-errands"))
         json.dump(cfg, open(cfg_p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-        print(json.dumps({"ok": True, "synced": synced,
+        print(json.dumps({"ok": not refused, "synced": synced, "refused": refused,
                           "note": "受管區塊標回「尚未驗證」，跑 doctor 刷新"}, ensure_ascii=False, indent=1))
-        sys.exit(0)
+        sys.exit(1 if refused else 0)
 
     home = os.path.abspath(a.home)
     steps, ok = [], True
@@ -550,12 +624,10 @@ def main():
             steps.append(dict(apply_rules(sp, guard_rules(home), remove=True), step="uninstall:guard-rules", path=sp))
         if a.user:
             steps.extend(codex_uninstall(a, home))
-        s2 = os.path.isdir(skill_dst) and skill_is_ours(skill_dst, home)
-        if s2:
-            shutil.rmtree(skill_dst)
+        s2 = remove_own_skill(skill_dst, "no-errands")
         audit_dst = os.path.join(os.path.dirname(skill_dst), "errand-audit")
-        if os.path.isdir(audit_dst) and os.path.exists(os.path.join(audit_dst, OWN_MARK)):
-            shutil.rmtree(audit_dst)
+        if remove_own_skill(audit_dst, "errand-audit"):
+            pass
         elif os.path.isdir(skill_dst):
             steps.append({"step": "uninstall:skill", "ok": True, "skipped": "同名 skill 目錄不是我們裝的，保留不動",
                           "path": skill_dst})
@@ -581,7 +653,7 @@ def main():
         steps.append({"step": "install:skill", "ok": True, "path": skill_dst,
                       "hash": skill_tree_hash(skill_dst)})
         audit_dst = os.path.join(os.path.dirname(skill_dst), "errand-audit")   # 跑腿稽核 skill（同樣不覆蓋別人的同名目錄）
-        if skill_is_ours(audit_dst, home):
+        if skill_is_ours(audit_dst, home, "errand-audit"):
             install_skill(audit_dst, "errand-audit")
             steps.append({"step": "install:skill-errand-audit", "ok": True, "path": audit_dst})
         else:
