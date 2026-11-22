@@ -23,6 +23,8 @@ CLI（agent 只在「使用者於對話中明確要求」時才可呼叫 set/gra
       [--demo-accounts a,b] [--agent-login a]   # 示範用途：只有這些帳號能跑核准過的劇本；agent-login＝使用者同意 agent 代為登入
   policy.py set demo.reset_consent <還原指令的 sha256> --reason "<使用者原話>"   # 指令改了就要重新同意
   policy.py domain remove <host[:port]> --reason "..."
+  policy.py token-allow add|remove <專案資料夾> --reason "<使用者原話>"   # 這個專案裡的 agent 可以讀 Mattermost token 檔
+      （預設誰都不行；guard-rules 的 token 組由 hook 依這份白名單判斷）
 每次修改寫一筆 ledger（~/.no-errands/policy-ledger.jsonl；白名單名稱只記雜湊）。
 """
 import copy, hashlib, json, os, re, sys, time
@@ -341,6 +343,14 @@ def main(argv=None):
         pol["sensitive_domains"] = [e for e in pol.get("sensitive_domains") or []
                                     if str(e.get("host", "")).lower() != a[2].lower()]
         detail = {"domain_remove": a[2].lower()}
+    elif cmd == "token-allow" and len(a) == 3 and a[1] in ("add", "remove"):
+        mm = pol.setdefault("mattermost", {})
+        d = os.path.abspath(a[2])
+        cur = [x for x in mm.get("token_read_allow") or [] if os.path.normcase(x) != os.path.normcase(d)]
+        if a[1] == "add":
+            cur.append(d)
+        mm["token_read_allow"] = cur
+        detail = {"token_allow": a[1], "dir": d}
     else:
         _out({"ok": False, "error": "看不懂的指令；見 policy.py --help"}, 2)
     save(pol, home)

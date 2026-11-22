@@ -243,32 +243,41 @@ def rule_path(path):
     return "//" + ap_.lstrip("/")
 
 
-def guard_rules(home):
-    """建議的權限規則（Claude Code settings.json 的 permissions）。"""
-    sys.path.insert(0, SCRIPTS)
-    import policy
-    pol = policy.load(home)
+GUARD_GROUPS = ("direct-tools", "token", "consent")
+TOKEN_HOOK_MATCHER = "Read|Bash|PowerShell|Grep|Glob|Edit|Write|NotebookEdit"
+
+
+def guard_rules(home, groups=GUARD_GROUPS):
+    """建議的 Claude Code 設定，分三組可分開開關（預設三組都開）：
+      direct-tools：deny 直接呼叫 agent-browser／agent-desktop（網頁一律經 neb、桌面一律經 ned）
+      token       ：PreToolUse hook——預設不准讀 Mattermost token 檔，政策檔 token_read_allow 裡的專案資料夾放行
+                    （deny 規則無法被專案層級蓋掉，做不到白名單，所以用 hook）
+      consent     ：ask——policy.py 會改變同意範圍的子指令"""
     py_bin = ned_cmd(home).rsplit(" ", 1)[0]
-    deny, ask = [], []
-    tf = (pol.get("mattermost") or {}).get("token_file")
-    if tf:
-        deny.append("Read(%s)" % rule_path(tf))
+    deny, ask, hooks = [], [], []
+    if "token" in groups:
+        hooks.append({"matcher": TOKEN_HOOK_MATCHER, "hooks": [
+            {"type": "command", "command": '%s "%s"' % (py_bin, os.path.join(home, "bin", "token_guard.py")), "timeout": 10}]})
     # 守門從「建議」變成「只有這條路」：不准直接呼叫兩個執行檔（ned／neb 用子行程呼叫，不受權限規則影響）。
     # 2026-11-22 巢狀 claude -p（haiku）實測：萬用字元規則擋得住裸名稱、.exe、引號 Windows 路徑、正斜線與 /c/ 路徑、
     # 先 cd 再相對路徑、bash -c 包裝、變數存整段路徑、PowerShell 呼叫運算子與先 Set-Location；neb 照常放行。
     # 擋不住：把名稱拆開組（${A}-${B}.exe）、python 子行程拼字串、glob（agent-b*.exe）。只提到名稱的指令也會被擋（例如 grep）。
-    for tool in ("agent-browser", "agent-desktop"):
+    for tool in ("agent-browser", "agent-desktop") if "direct-tools" in groups else ():
         deny.append("Bash(*%s*)" % tool)
         deny.append("PowerShell(*%s*)" % tool)
     # 「要詢問」只留給會改變同意範圍的指令（授權 app、改設定、白名單、網域）。
     # 不對 chat_guard 加詢問（2026-11-22 使用者：「白名單的聊天室都可以匯出」）：授權與白名單已由 chat_guard 自己把關，
     # 再多一層詢問只會讓無人在場的同步卡住。
-    for sub in POLICY_ASK:
+    for sub in POLICY_ASK if "consent" in groups else ():
         ask.append("Bash(%s \"%s\" %s:*)" % (py_bin, os.path.join(home, "bin", "policy.py"), sub))
-    return {"deny": deny, "ask": ask}
+    return {"deny": deny, "ask": ask, "hooks": {"PreToolUse": hooks}}
 
 
-POLICY_ASK = ("grant", "set", "whitelist", "domain")
+POLICY_ASK = ("grant", "set", "whitelist", "domain", "token-allow")
+
+
+def _ours(entry):
+    return any("token_guard.py" in (h.get("command") or "") for h in entry.get("hooks") or [])
 
 
 def apply_rules(path, rules, remove=False):
@@ -279,7 +288,7 @@ def apply_rules(path, rules, remove=False):
     changed = 0
     for kind in ("deny", "ask"):
         cur = perms.setdefault(kind, [])
-        for r in rules[kind]:
+        for r in rules.get(kind, []):
             if remove and r in cur:
                 cur.remove(r); changed += 1
             elif not remove and r not in cur:
@@ -288,6 +297,20 @@ def apply_rules(path, rules, remove=False):
             perms.pop(kind)
     if not perms:
         cfg.pop("permissions")
+    # hooks：我們的那筆用指令裡的 token_guard.py 認；移除只拿掉自己的，新增前先換掉舊的（路徑變了也只留一筆）
+    for ev, mine in (rules.get("hooks") or {}).items():
+        hk = cfg.setdefault("hooks", {})
+        cur = hk.setdefault(ev, [])
+        old = [e for e in cur if _ours(e)]
+        cur[:] = [e for e in cur if not _ours(e)] + ([] if remove else list(mine))
+        if remove:
+            changed += len(old)
+        elif old != list(mine):
+            changed += len(mine)
+        if not cur:
+            hk.pop(ev)
+        if not hk:
+            cfg.pop("hooks")
     json.dump(cfg, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     return {"ok": True, "changed": changed, "removed" if remove else "added": changed}
 
@@ -396,14 +419,27 @@ def main():
     ap.add_argument("--codex-home", default=os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex"))
     ap.add_argument("--guard-rules", action="store_true",
                     help="把建議的 Claude Code 權限規則加進 settings.json（只增刪自己這幾筆；搭配 --uninstall 移除）")
+    ap.add_argument("--guard-groups", default=",".join(GUARD_GROUPS),
+                    help="要開哪幾組（逗號分隔）：direct-tools、token、consent；預設三組都開。--uninstall 一律移除三組")
     a = ap.parse_args()
 
     if a.guard_rules:
         home = os.path.abspath(a.home)
         target = (os.path.join(os.path.abspath(a.project), ".claude", "settings.json") if a.project
                   else os.path.join(a.claude_dir, "settings.json"))
-        rules = guard_rules(home)
-        res = apply_rules(target, rules, remove=a.uninstall)
+        groups = tuple(g_.strip() for g_ in a.guard_groups.split(",") if g_.strip())
+        bad = [g_ for g_ in groups if g_ not in GUARD_GROUPS]
+        if bad:
+            print(json.dumps({"ok": False, "error": "沒有這一組：%s（可選 %s）" % (bad, ", ".join(GUARD_GROUPS))}, ensure_ascii=False))
+            sys.exit(2)
+        if a.uninstall:
+            res = apply_rules(target, guard_rules(home), remove=True); rules = guard_rules(home)
+        else:
+            # 重新套用 = 先把三組都拿掉，再加這次選的（關掉某一組就真的關掉）
+            apply_rules(target, guard_rules(home), remove=True)
+            rules = guard_rules(home, groups)
+            res = apply_rules(target, rules)
+            res["groups"] = list(groups)
         print(json.dumps(dict(res, target=target, rules=rules,
                               limits="Bash 規則是前綴比對：擋得住工具直接讀 token 檔，擋不住刻意用別的 shell 指令讀；"
                                      "這組規則防的是過度熱心，不是安全邊界"), ensure_ascii=False, indent=1))

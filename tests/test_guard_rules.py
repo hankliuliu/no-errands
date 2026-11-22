@@ -43,11 +43,52 @@ try:
               "Bash(*%s*)" % tool in gr["deny"] and "PowerShell(*%s*)" % tool in gr["deny"], gr["deny"])
     check("neb／ned 本身不在擋的規則裡", not any("neb.py" in r or "ned.py" in r for r in gr["deny"]), gr["deny"])
     # 「要詢問」只給改變同意範圍的指令；chat_guard 不詢問（白名單內的同步要能無人在場跑完）
-    for sub in ("grant", "set", "whitelist", "domain"):
+    for sub in ("grant", "set", "whitelist", "domain", "token-allow"):
         check("policy.py %s 要詢問" % sub, any(("policy.py\" %s:*)" % sub) in r for r in gr["ask"]), gr["ask"])
     check("chat_guard 不在詢問規則裡", not any("chat_guard" in r for r in gr["ask"] + gr["deny"]), gr["ask"])
-    check("詢問規則只有 policy.py 的 4 條", len(gr["ask"]) == 4 and all("policy.py" in r for r in gr["ask"]), gr["ask"])
+    check("詢問規則只有 policy.py 的 5 條", len(gr["ask"]) == 5 and all("policy.py" in r for r in gr["ask"]), gr["ask"])
     check("revoke／show 不詢問（縮小範圍、唯讀）", not any(" revoke:" in r or " show:" in r for r in gr["ask"]), gr["ask"])
+    # ---- 三組可分開開關
+    g_tc = ne.guard_rules(h2, ("token", "consent"))
+    check("只開 token+consent：沒有 direct-tools 的 deny", g_tc["deny"] == [], g_tc["deny"])
+    check("只開 token+consent：有 token hook 與 5 條 ask", len(g_tc["hooks"]["PreToolUse"]) == 1 and len(g_tc["ask"]) == 5)
+    g_d = ne.guard_rules(h2, ("direct-tools",))
+    check("只開 direct-tools：沒有 hook、沒有 ask", not g_d["hooks"]["PreToolUse"] and not g_d["ask"] and len(g_d["deny"]) == 4)
+    check("token 組不再用 deny 規則（deny 無法被專案層級蓋掉）", not any(r.startswith("Read(") for r in gr["deny"]))
+    # ---- hooks 只增刪自己的，使用者自己的 hook 保留
+    sp2 = os.path.join(td, "s2.json")
+    user_hook = {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo mine"}]}
+    json.dump({"hooks": {"PreToolUse": [user_hook], "Stop": [{"hooks": [{"type": "command", "command": "x"}]}]}}, open(sp2, "w"))
+    r1 = ne.apply_rules(sp2, g_tc); r2 = ne.apply_rules(sp2, g_tc)
+    c2 = json.load(open(sp2, encoding="utf-8"))
+    pre = c2["hooks"]["PreToolUse"]
+    check("hook 加入、使用者自己的 hook 保留", user_hook in pre and sum(1 for e in pre if ne._ours(e)) == 1 and "Stop" in c2["hooks"], pre)
+    check("hook 冪等：第二次 changed=0", r2["changed"] == 0, (r1, r2))
+    ne.apply_rules(sp2, ne.guard_rules(h2), remove=True)
+    c2 = json.load(open(sp2, encoding="utf-8"))
+    check("移除：只拿掉自己的 hook，使用者的與 Stop 保留", c2["hooks"]["PreToolUse"] == [user_hook] and "Stop" in c2["hooks"]
+          and "permissions" not in c2, c2)
+    # ---- token_guard 的判斷（離線）
+    sys.path.insert(0, os.path.join(REPO, "skills", "no-errands", "scripts"))
+    import token_guard as tg
+    tok = os.path.join(td, "secret", "mattermost.txt")
+    projA, projB = os.path.join(td, "projA"), os.path.join(td, "projB")
+    pol = {"mattermost": {"token_file": tok, "token_read_allow": [projB]}}
+    ev = lambda tool, inp: {"tool_name": tool, "tool_input": inp}
+    fwd = tok.replace("\\", "/")
+    for label, e in (("Read 完整路徑", ev("Read", {"file_path": tok})),
+                     ("Bash cat 正斜線", ev("Bash", {"command": "cat '%s'" % fwd})),
+                     ("Bash 只寫檔名（先 cd 過去）", ev("Bash", {"command": "cd secret && type mattermost.txt"})),
+                     ("PowerShell Get-Content", ev("PowerShell", {"command": "Get-Content \"%s\"" % tok})),
+                     ("Grep 指定路徑", ev("Grep", {"pattern": "x", "path": tok})),
+                     ("大小寫不同", ev("Read", {"file_path": tok.upper()}))):
+        check("token_guard 預設擋：" + label, tg.decide(e, pol, projA) is not None)
+    check("token_guard 白名單專案放行（Read）", tg.decide(ev("Read", {"file_path": tok}), pol, projB) is None)
+    check("token_guard 白名單專案的子資料夾也放行", tg.decide(ev("Read", {"file_path": tok}), pol, os.path.join(projB, "sub")) is None)
+    check("token_guard 名稱相近的資料夾不算白名單（projB2）", tg.decide(ev("Read", {"file_path": tok}), pol, projB + "2") is not None)
+    check("token_guard 不相關的指令不表態", tg.decide(ev("Bash", {"command": "git status"}), pol, projA) is None
+          and tg.decide(ev("Read", {"file_path": os.path.join(td, "mattermost.txt.bak")}), pol, projA) is None)
+    check("token_guard 政策沒有 token 檔 → 不表態", tg.decide(ev("Read", {"file_path": tok}), {}, projA) is None)
 finally:
     shutil.rmtree(td, ignore_errors=True)
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
