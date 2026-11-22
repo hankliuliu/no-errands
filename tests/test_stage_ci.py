@@ -265,6 +265,13 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
               open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
     time.sleep(0.8)
     check("轉場卡時示範游標收起", not u.IsWindowVisible(ph), u.IsWindowVisible(ph))
+    # 回到台上、游標目標的序號沒變（排練 2 的當機路徑：游標位置已清掉、序號沒變 → place_ptr(None)）
+    json.dump(dict(now, pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0, "seq": 2}),
+              open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    time.sleep(1.2)
+    g5 = rd(geom)
+    check("A33 轉場卡後回到台上（游標序號沒變）：舞台沒有出錯、游標重新出現", g5.get("errors") == 0 and u.IsWindowVisible(ph),
+          (g5.get("errors"), u.IsWindowVisible(ph)))
 
 
 CURSOR_WAIT = 2.8
@@ -547,6 +554,7 @@ def real_chrome_checks(stage_with):
         time.sleep(0.5)
         c1 = page_clicks()
         check("字幕上的拖動、按兩下、× 都沒有穿到底下的頁面（頁面收到的點擊數不變）", c0 is not None and c1 == c0, (c0, c1))
+    check("A33 整個情境跑完，舞台的錯誤數是 0", rd(geom).get("errors") == 0, rd(geom).get("errors"))
     json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
     try:
         p.wait(10)

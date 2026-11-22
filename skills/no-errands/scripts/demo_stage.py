@@ -739,7 +739,7 @@ class Stage:
         if not onstage:
             if self.ptrw.winfo_viewable():
                 self.ptrw.withdraw()
-            self.ptr_pos, self.ptr_anim, self._ptr_shown = None, None, False
+            self.ptr_pos, self.ptr_anim, self._ptr_shown, self.ptr_seq = None, None, False, None
             return
         if p.get("seq") != self.ptr_seq:
             self.ptr_seq = p["seq"]
@@ -761,7 +761,7 @@ class Stage:
                 os.replace(p_ + ".tmp", p_)
             except OSError:
                 pass
-        if not getattr(self, "_ptr_shown", False):
+        if not getattr(self, "_ptr_shown", False) and self.ptr_pos is not None:
             self._ptr_shown = True
             self.place_ptr(*self.ptr_pos)
             self.ptrw.deiconify()
@@ -924,7 +924,28 @@ class Stage:
                               font=(FONT, px(small + 2)))
 
     # ---------- 每 200 ms
+    def safe(self, name, fn, *a):
+        """舞台的一個部分：出錯就記下（數量寫進幾何紀錄、訊息寫到 stderr＝engine.log），其他部分照常更新（A33）。"""
+        try:
+            return fn(*a)
+        except Exception as e:
+            self.errors = getattr(self, "errors", 0) + 1
+            if getattr(self, "_err_logged", 0) < 20:
+                self._err_logged = getattr(self, "_err_logged", 0) + 1
+                import traceback
+                print("stage error in %s: %r\n%s" % (name, e, traceback.format_exc()[-600:]), file=sys.stderr, flush=True)
+            return None
+
     def tick(self):
+        """每 200 ms：不管裡面哪一段出錯，一定排下一格（排練 2：游標的一個例外讓整個舞台停住，字幕、安全出口都不再更新）。"""
+        self.safe("tick", self._tick)
+        try:
+            if self.root.winfo_exists():
+                self.root.after(200, self.tick)
+        except Exception:
+            pass
+
+    def _tick(self):
         now = read_json(os.path.join(self.run_dir, "now.json"))
         ctl = read_json(os.path.join(self.run_dir, "control.json"))
         changed_card = now.get("card") != self.now.get("card") or now.get("card_data") != self.now.get("card_data")
@@ -946,7 +967,6 @@ class Stage:
                 self.toast("示範已經停止，畫面即將關閉")
             elif time.time() - self._closing_at >= 1.5:
                 return self.drop("stopped")
-            self.root.after(200, self.tick)
             return
         if changed_card:
             self.draw_card(now)
@@ -1042,7 +1062,7 @@ class Stage:
             self.show_caption(True)
         else:
             self.show_caption(False)
-        self.update_xbtn(cur)
+        self.safe("update_xbtn", self.update_xbtn, cur)
         # 控制列：和字幕重疊時往上讓到字幕上方（字幕不動）
         cx_, cy_, cw_, ch_ = L.controls_pos(self.lay, self.cap_box() if (text and self.cap_on) else None)
         # 控制列顯示中（使用者可能正要按）只往上讓、不往下跳回：例如按 × 收起字幕時，按鈕不會在游標底下移走；
@@ -1063,14 +1083,11 @@ class Stage:
             self.ctlw.geometry("%dx%d+%d+%d" % (cw_, ch_, cx_, cy_))
             self.hintw.geometry("%dx%d+%d+%d" % (cw_, hh_, cx_, cy_ - hh_))
             self._ctl_xy = (cx_, cy_)
-        try:
-            self.place_browsers(now)
-        except Exception:
-            pass
-        self.draw_look(now)
-        self.draw_mask(now)
-        self.draw_shield(now, cur)
-        self.update_pointer(now)
+        self.safe("place_browsers", self.place_browsers, now)
+        self.safe("draw_look", self.draw_look, now)
+        self.safe("draw_mask", self.draw_mask, now)
+        self.safe("draw_shield", self.draw_shield, now, cur)
+        self.safe("update_pointer", self.update_pointer, now)
         # 有視窗剛出現或收起（控制列、字幕、外框、遮罩…）：立刻重排——隱藏時沒被排進去的視窗，出現時可能停在
         # 瀏覽器（或隔離層）下面，看不到也點不到（F-3 CI：× 出現後點下去沒反應）
         sig = tuple(bool(w.winfo_viewable()) for w in self.overlays())
@@ -1078,16 +1095,12 @@ class Stage:
             self._z_sig = sig
             self._z_t = 0
         if time.time() - getattr(self, "_z_t", 0) >= 1.0:
-            try:
-                if os.name == "nt":
-                    self.check_fit(now)
-            except Exception:
-                pass
-            self.restack()
-            self.write_geom()
+            if os.name == "nt":
+                self.safe("check_fit", self.check_fit, now)
+            self.safe("restack", self.restack)
+            self.safe("write_geom", self.write_geom)
         if os.environ.get("NE_STAGE_GEOM"):
-            self.dump_geom()
-        self.root.after(200, self.tick)
+            self.safe("dump_geom", self.dump_geom)
 
     def overlays(self):
         """我們疊在瀏覽器之上的視窗，由下到上。"""
@@ -1150,7 +1163,7 @@ class Stage:
 
     def geom(self):
         box = lambda w: [w.winfo_x(), w.winfo_y(), w.winfo_width(), w.winfo_height()] if w.winfo_viewable() else None
-        return {"z_order": self.z_order(),
+        return {"z_order": self.z_order(), "errors": getattr(self, "errors", 0),
                 "cap_btn": [self.b_cap.winfo_rootx() + self.b_cap.winfo_width() // 2, self.b_cap.winfo_rooty() + self.b_cap.winfo_height() // 2]
                 if self.ctl_shown and self.b_cap.winfo_ismapped() else None,
                 "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": list(self.xbtn_rect()) if getattr(self, "_cap_shown", False) and self.xbtn_rect() else None, "x_shown": self._x_on, "hint_visible": bool(self.hintw.winfo_viewable()),
