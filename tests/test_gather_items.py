@@ -127,6 +127,20 @@ try:
     check("5 LINE fetch：照實說還做不到、清單保留（不假裝補到）", rc == 3 and "檔案分頁" in o.get("error", "") and o.get("matched") == 2, o)
     o, rc = g("read", "--target", tid)
     check("5 read 一併回傳公告與記事本欄位", rc == 0 and "announcements" in o and o.get("notes") == [], list(o)[:5])
+    # 6 收集總覽（本機、可以有名稱）與範圍說明
+    ov = os.path.join(home, "gather", "收集總覽.md")
+    txt = open(ov, encoding="utf-8").read() if os.path.exists(ov) else ""
+    check("6 收集總覽：每個聊天室一段、用聊天室名稱當標題、連到未收清單、最上面寫怎麼補", "## 測試（LINE）" in txt
+          and "未收清單.md" in txt and "對 agent 說" in txt.split("##")[0] and "已收 0／未收 4" in txt, txt[:300])
+    sys.path.insert(0, SC)
+    import gather as G  # noqa: E402
+    tl = {"service": "line", "since": "2026-11-01 12:00"}
+    check("6 LINE：匯出本身有早於起始時間的訊息 → 不警告", G.coverage(tl, {"export_earliest": "2026-10-20 09:00"}, "2026-11-01 12:30") == (None, None))
+    w, n = G.coverage(tl, {"export_earliest": "2026-11-01 12:30"}, "2026-11-01 12:30")
+    check("6 LINE：證明不了完整 → 警告", w and not n, (w, n))
+    w, n = G.coverage(dict(tl, since="2000-01-01 00:00"), {}, "2026-11-03 16:49")
+    check("6 LINE：起始時間是「全部」→ 只是說明、不是警告", not w and n and "2026-11-03 16:49" in n, (w, n))
+    check("6 Mattermost：不出現 LINE 的範圍警告", G.coverage({"service": "mattermost", "since": "2026-11-22 00:00"}, {}, "2026-11-22 00:13") == (None, None))
 finally:
     shutil.rmtree(home, ignore_errors=True)
 

@@ -457,7 +457,10 @@ def sync_one(tid, t, load_hist=False):
         text, info = _line_export(t["chat"], load_hist)
         if text is None:
             return {"target": tid, "ok": False, "error": str(info.get("error", ""))[:200]}
-        new = _apply_names(since_filter(parse_line_export(text), t["since"]), known_names(stored))
+        raw = parse_line_export(text)
+        if raw:
+            st["export_earliest"] = "%s %s" % (raw[0]["date"], raw[0]["time"])
+        new = _apply_names(since_filter(raw, t["since"]), known_names(stored))
         merged, mi = merge(stored, new)
         merged = assign_ids(learn_split_names(merged)[0])
         if mi.get("gap"):
@@ -497,7 +500,66 @@ def cmd_sync(a):
         out({"ok": False, "error": "需要 --target <id> 或 --all（gather.py targets 列出 id）"}, 2)
     if "--now" in a:   # 只在使用者當下說「現在做」時用
         GATE["args"] = GATE["close"] = ["--user-ok"]
-    out({"ok": True, "results": [sync_one(i, ts[i], "--load-history" in a) for i in ids]})
+    results = [sync_one(i, ts[i], "--load-history" in a) for i in ids]
+    write_overview()
+    out({"ok": True, "results": results})
+
+
+ALL_SINCE = "2000-01-01 00:00"   # 「拿得到的全部」
+
+
+def coverage(t, st, earliest):
+    """回 (warning, note)。每次都出現的警告等於沒有警告：只在「無法證明起始時間之後是完整的」時才警告。
+    - Mattermost 依 API 抓，拿得到就是全部 → 都沒有。
+    - LINE 匯出檔本身就有早於起始時間的訊息 → 涵蓋完整 → 都沒有。
+    - LINE 起始時間是「全部」→ 已知限制，只給一句說明。"""
+    if t["service"] != "line" or not earliest or t["since"] >= earliest:
+        return None, None
+    ee = st.get("export_earliest")
+    if ee and ee < t["since"]:
+        return None, None
+    if t["since"] <= ALL_SINCE:
+        return None, "LINE 桌面版最早拿得到 %s；更早的要用手機匯出聊天記錄再 gather.py import" % earliest
+    return ("起始時間 %s 早於目前拿得到的最早訊息 %s：中間的還沒收到（桌面版可能拿不到；可用手機匯出 import 補齊）"
+            % (t["since"], earliest)), None
+
+
+def target_title(t, tid):
+    return t.get("label") or (t["chat"] if t["service"] == "line" else "Mattermost 頻道 %s" % t["chat"]) or tid
+
+
+def write_overview():
+    """收集根目錄的「收集總覽.md」（只在本機；可以有聊天室名稱）：每個聊天室一段，連到它的未收清單。"""
+    ts = load_targets()
+    L = ["# 聊天收集總覽", "",
+         "要補沒收下的東西，對 agent 說：「把〈聊天室〉未收清單裡的照片補回來」（也可以指定檔案、日期範圍或清單裡的編號）。",
+         "更新於 %s。" % time.strftime("%Y-%m-%d %H:%M"), ""]
+    for tid, t in sorted(ts.items(), key=lambda kv: (kv[1]["service"], target_title(kv[1], kv[0]))):
+        d = tdir(tid, t); ms = load_msgs(d); st = load_state(d); items = gi.load_items(d); s = gi.summary(items)
+        ann = gi.load_announcements(d)
+        earliest = "%s %s" % (ms[0]["date"], ms[0]["time"]) if ms else None
+        warn, note = coverage(t, st, earliest)
+        L.append("## %s（%s）" % (target_title(t, tid), "LINE" if t["service"] == "line" else "Mattermost"))
+        L.append("")
+        L.append("- 訊息：%d 則%s；上次同步：%s" % (len(ms), ("，%s ～ %s %s" % (earliest, ms[-1]["date"], ms[-1]["time"])) if ms else "",
+                                              (st.get("last_sync") or "還沒同步").replace("T", " ")))
+        gaps = st.get("gaps") or []
+        L.append("- 缺口：%s" % ("無" if not gaps else "%d 處（中間有訊息沒接上，見 gather.py status）" % len(gaps)))
+        L.append("- 記事本 %d、公告 %d" % (gi.count_notes(d), len(ann.get("announcements") or []) + len(ann.get("pinned") or [])))
+        reasons = "、".join("%s %d" % (k, v) for k, v in s["missing_by_reason"].items())
+        rel = "%s/%s/files/未收清單.md" % (t["service"], tid)
+        L.append("- 附件：已收 %d／未收 %d%s%s" % (s["received"], s["missing"], ("（%s）" % reasons) if reasons else "",
+                                               (" → [未收清單](%s)" % rel) if items else ""))
+        if s["download_failed"]:
+            L.append("- ⚠ 有 %d 個附件下載失敗，請 agent 重試補收" % s["download_failed"])
+        if warn:
+            L.append("- ⚠ %s" % warn)
+        if note:
+            L.append("- 說明：%s" % note)
+        L.append("- 代號：`%s`" % tid)
+        L.append("")
+    os.makedirs(GROOT, exist_ok=True)
+    open(os.path.join(GROOT, "收集總覽.md"), "w", encoding="utf-8").write("\n".join(L))
 
 
 def cmd_status(a):
@@ -516,8 +578,11 @@ def cmd_status(a):
         ann = gi.load_announcements(d)
         row["notes"] = gi.count_notes(d)
         row["announcements"] = len(ann.get("announcements") or []) + len(ann.get("pinned") or [])
-        if earliest and t["since"] < earliest:
-            row["warning"] = "起始時間早於目前拿得到的最早訊息：%s 之前的還沒收到（桌面版可能拿不到；可用手機匯出 import 補齊）" % earliest
+        warn, note = coverage(t, st, earliest)
+        if warn:
+            row["warning"] = warn
+        if note:
+            row["note"] = note
         if st.get("last_sync") and time.time() - time.mktime(time.strptime(st["last_sync"], "%Y-%m-%dT%H:%M:%S")) > 14 * 86400:
             # 門檻依 C0 實測：LINE 桌面版的匯出範圍＝已同步到這台電腦的歷史（登入時約回補前三週），捲動不會變多。
             # 隔太久沒同步，中間的訊息可能超出桌面版保有的範圍 → 形成缺口；14 天留一半餘裕。
@@ -564,6 +629,7 @@ def cmd_rebuild(a):
         row["after"] = len(ms)
         row["items"] = update_items(tid, t, d, ms, offline=True)
         res.append(row)
+    write_overview()
     ledger(cmd="rebuild", targets=len(res))
     out({"ok": True, "results": res})
 
@@ -579,6 +645,7 @@ def cmd_config(a):
         if v in ("on", "off"):
             ts[tid][k] = v == "on"; changed[k] = v
     save_targets(ts)
+    write_overview()
     ledger(cmd="config", target=tid, **changed)
     out({"ok": True, "target": tid, "photos": bool(ts[tid].get("photos")), "videos": bool(ts[tid].get("videos")),
          "note": "只影響之後看到的項目；已列在未收清單的用 fetch 補"})
@@ -599,6 +666,7 @@ def cmd_fetch(a):
         expired = sum(1 for it in chosen if it["reason"] == "已過期")
         res = gi.download_mm(d, items, _mm_fetcher(), select=lambda it: sel(it) and it["reason"] != "已過期", force=True)
         gi.write_outputs(d, t, items)
+        write_overview()
         ledger(cmd="fetch", target=tid, matched=len(chosen), **res)
         out({"ok": True, "target": tid, "matched": len(chosen), "still_expired": expired, **res, "items": gi.summary(items)})
     # LINE：要從聊天室的檔案分頁另存（畫面操作），這一步尚未完成——照實回報，不假裝補到
@@ -620,6 +688,7 @@ def cmd_import(a):
         st.setdefault("gaps", []).append(dict(mi["gap"], found=time.strftime("%Y-%m-%dT%H:%M:%S")))
     save_msgs(d, merged); save_state(d, st); write_dest(tid, t, merged)
     items = update_items(tid, t, d, merged)
+    write_overview()
     ledger(cmd="import", target=tid, added=mi["added"], total=len(merged))
     out({"ok": True, "mode": mi["mode"], "added": mi["added"], "total": len(merged), "items": items})
 
