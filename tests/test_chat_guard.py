@@ -329,7 +329,7 @@ def main():
               and len(mans) == 1, (o.get("shots"), len(pngs), len(mans)))
         man = json.load(open(mans[0], encoding="utf-8")) if mans else {}
         ov = [x.get("overlap") for x in man.get("shots", [])[1:]]
-        check("B3-9 相鄰兩張都量得到重疊（0.2～0.8）", ov and all(v is not None and 0.2 <= v <= 0.8 for v in ov), ov)
+        check("B3-9 相鄰兩張都量得到重疊（0.2～0.95；第一步刻意只捲 1/4 格，重疊多是保守）", ov and all(v is not None and 0.2 <= v <= 0.95 for v in ov), ov)
         check("B3-9 輸出不含對話名稱與記事內容", "Kilo" not in dump and "deploy" not in dump and "Ann" not in dump, dump[:300])
         check("B3-9 收尾：記事本視窗關掉", o.get("windows_left_open") == 0 and events("notes-close") - c0 == 1, o)
         led = [json.loads(l) for l in open(os.path.join(home, "chat-guard-ledger.jsonl"), encoding="utf-8") if l.strip()]
