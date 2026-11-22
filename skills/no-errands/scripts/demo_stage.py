@@ -162,13 +162,23 @@ def pid_alive(pid):
         k32.CloseHandle(h)
 
 
+CURSOR0 = {}
+
+
 def user_input_since(tick):
-    """GetLastInputInfo 的時間晚於 tick（GetTickCount 單位）→ 有人動了鍵盤或滑鼠。"""
+    """有人回來了：GetLastInputInfo 晚於 tick，而且游標移動超過 40 px，或游標完全沒動（鍵盤）。
+    1–40 px 的小漂移不算（排練時曾被這種雜訊停掉）。"""
     class LII(ctypes.Structure):
         _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
     li = LII(); li.cbSize = ctypes.sizeof(LII)
     u32.GetLastInputInfo(ctypes.byref(li))
-    return li.dwTime > tick
+    c = wintypes.POINT(); u32.GetCursorPos(ctypes.byref(c))
+    if "p" not in CURSOR0:
+        CURSOR0["p"] = (c.x, c.y)
+    if li.dwTime <= tick:
+        return False
+    d = abs(c.x - CURSOR0["p"][0]) + abs(c.y - CURSOR0["p"][1])
+    return d > 40 or d == 0
 
 
 def dpr_of(hwnd):
