@@ -1227,13 +1227,15 @@ def run_check(chk):
     return ok, (o.splitlines()[-1] if o else e.strip()[-150:])
 
 
-def preflight(rb, a, fix=False, say=None):
+def preflight(rb, a, fix=False, say=None, item=None):
     res = []
 
     def add(name, ok, detail=""):
         res.append({"check": name, "ok": bool(ok), "detail": str(detail)[:200]})
         if say:
             say(("✓ " if ok else "✗ ") + name + ("" if ok else "：" + str(detail)[:120]))
+        if item:
+            item(name, ok, detail)
 
     for chk in rb.get("preflight") or []:
         ok, det = run_check(chk)
@@ -1605,6 +1607,20 @@ def stop_previous_standby(rb):
     return None
 
 
+def notification_state():
+    """Windows 的通知狀態（SHQueryUserNotificationState）：2 忙碌（全螢幕 app）、3 D3D 全螢幕、4 簡報模式 → 通知被壓住。"""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        v = ctypes.c_int(0)
+        if ctypes.windll.shell32.SHQueryUserNotificationState(ctypes.byref(v)) == 0:
+            return v.value
+    except Exception:
+        pass
+    return None
+
+
 def standby(rb, a):
     t0 = time.time()
     lines = []
@@ -1615,6 +1631,42 @@ def standby(rb, a):
 
     say("上場前準備：%s" % rb.get("title", ""))
     old = stop_previous_standby(rb)
+    staged = stage_on(rb)
+    run_dir, stage_p, items = None, None, []
+    if staged:
+        # 一雙擊就先蓋上舞台背板：觀眾看到的是乾淨的檢查清單，不是主控台或被排來排去的視窗
+        persist = (policy.load().get("demo") or {}).get("persist", "on") == "on"
+        run_dir = new_run_dir(runs_root(rb, persist), "live")
+        write_control(run_dir, state="playing", advance="auto", next_seq=0, hold_first=True)
+        br0 = Browser(rb, headed=False, log=None)
+        base = {"card": "checklist", "status": "standby", "title": rb.get("title", ""),
+                "accounts": stage_accounts(rb, br0), "zoom": 1.0}
+
+        def show(heading="上場前準備"):
+            _atomic_json(os.path.join(run_dir, "now.json"), dict(base, card_data={"heading": heading, "items": items}))
+        show()
+        if "--no-player" not in a:
+            lg = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")
+            stage_p = nowin.popen_background([sys.executable, os.path.join(HERE, "demo_stage.py"), run_dir],
+                                             stdin=subprocess.DEVNULL, stdout=lg, stderr=lg,
+                                             env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8"))
+        labels = (rb.get("stage") or {}).get("checklist") or {}
+
+        def item(name, ok, detail="", warn=False):
+            # 背板上只寫乾淨的名稱與一句講者看得懂的話（不含主機、帳號、路徑）
+            lab = labels.get(name) or {}
+            if name.startswith("登入有效且身分正確："):
+                acct = name.split("：", 1)[1]
+                role = ((rb["accounts"].get(acct) or {}).get("role")) or "示範帳號"
+                lab = {"name": "示範帳號已登入：" + role, "say": "登入已過期：請在上場前請 agent 重新登入，再雙擊一次。"}
+            nm = lab.get("name") or name
+            items[:] = [x for x in items if x["name"] != nm]
+            items.append({"name": nm, "state": "ok" if ok else ("warn" if warn else "fail"),
+                          "say": "" if ok else lab.get("say") or "這一項沒有通過：處理後再雙擊一次。"})
+            show()
+    else:
+        def item(name, ok, detail="", warn=False):
+            pass
     if old:
         say("  已關掉上一次準備好的畫面（%s）" % os.path.basename(old))
     # 1. 通道
@@ -1632,6 +1684,7 @@ def standby(rb, a):
         say(("✓ " if tun_ok else "✗ ") + "通道（剛剛開啟）")
     else:
         say(("✓ " if tun_ok else "✗ ") + "通道")
+    item("通道", tun_ok)
     # 2–5. 檢查（可修的修一次）、登入、核准與次數（長期核准下自動續）
     aid = arg(a, "--approval") or (json.load(open(os.path.join(rb["_dir"], "standby.json"), encoding="utf-8")).get("approval")
                                    if os.path.exists(os.path.join(rb["_dir"], "standby.json")) else None) or rb.get("approval")
@@ -1646,7 +1699,7 @@ def standby(rb, a):
     pa = list(a)
     if aid and "--approval" not in pa:
         pa += ["--approval", aid]
-    ok, res, aid = preflight(rb, pa, fix=True, say=say)
+    ok, res, aid = preflight(rb, pa, fix=True, say=say, item=item)
     res.insert(0, {"check": "通道", "ok": tun_ok, "detail": ""})
     # 6. 備案檔
     missing = [st["id"] for st in rb["steps"] if not os.path.exists(os.path.join(rb["_dir"], "planb", "%s.png" % st["id"]))]
@@ -1656,6 +1709,7 @@ def standby(rb, a):
     res.append({"check": "備案畫面（每一步的截圖＋回放頁）", "ok": pb_ok,
                 "detail": ("缺：" + "、".join(missing)) if missing else ("" if pb_ok else "回放頁不存在")})
     say(("✓ " if pb_ok else "✗ ") + "備案畫面" + ("" if pb_ok else "：" + res[-1]["detail"]))
+    item("備案畫面", pb_ok)
     # 7. 瀏覽器乾淨狀態
     br = Browser(rb, headed=False, log=None)
     cl = [(acct,) + clean_profile(br.prof(acct)) for acct in rb["accounts"]]
@@ -1663,23 +1717,34 @@ def standby(rb, a):
     res.append({"check": "瀏覽器乾淨啟動（不跳還原分頁、通知、翻譯）", "ok": cok,
                 "detail": "；".join("%s %s" % (x[0], x[2]) for x in cl if x[2])})
     say(("✓ " if cok else "✗ ") + "瀏覽器乾淨啟動")
+    item("瀏覽器乾淨啟動", cok)
+    if staged and stage_p:
+        # 勿擾：舞台是前景全螢幕時，Windows 會把通知壓住（查得到就是一項檢查；查不到不擋上場，只提醒）
+        time.sleep(1.5)
+        qs = notification_state()
+        item("通知", qs in (2, 3, 4), warn=True)
+        res.append({"check": "系統通知會被擋下（勿擾）", "ok": qs in (2, 3, 4), "detail": "state=%s" % qs, "warn": True})
     allok = tun_ok and ok and pb_ok and cok
-    result = {"ok": allok, "checks": res, "approval": aid, "standby_s": None, "run_dir": None, "tunnel_pid": tun_pid}
+    result = {"ok": allok, "checks": res, "approval": aid, "standby_s": None, "run_dir": run_dir, "tunnel_pid": tun_pid}
+    if staged and not allok:
+        _atomic_json(os.path.join(run_dir, "now.json"),
+                     dict(base, card_data={"heading": "還沒準備好：照下面的說明處理後，再雙擊一次", "items": items},
+                          beat={"text": "按右下角「⋯」→「停止示範」可以關掉這個畫面。", "i": 0, "n": 0}))
     if allok:
         # 8. 依當下的螢幕排好視窗、引擎與播放器停在第一步前
         sw, sh = screen_size()
         say("  螢幕 %d×%d：開啟兩個瀏覽器與播放器…" % (sw, sh))
-        persist = (policy.load().get("demo") or {}).get("persist", "on") == "on"
-        run_dir = new_run_dir(runs_root(rb, persist), "live")
-        write_control(run_dir, state="playing", advance="step" if "--step-mode" in a else "auto", next_seq=0,
-                      hold_first=True)
+        if not run_dir:
+            persist = (policy.load().get("demo") or {}).get("persist", "on") == "on"
+            run_dir = new_run_dir(runs_root(rb, persist), "live")
+            write_control(run_dir, state="playing", advance="step" if "--step-mode" in a else "auto", next_seq=0,
+                          hold_first=True)
         kw = {"stdin": subprocess.DEVNULL, "env": dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8")}
         log = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")
         eng = nowin.popen_background([sys.executable, os.path.abspath(__file__), "live", rb["_path"], "--approval", aid,
                                       "--foreground", "--run-dir", run_dir], stdout=log, stderr=log, **kw)
-        pl = None if "--no-player" in a else nowin.popen_background(
-            [sys.executable, os.path.join(HERE, "demo_stage.py" if stage_on(rb) else "demo_player.py"), run_dir],
-            stdout=log, stderr=log, **kw)
+        pl = stage_p if staged else (None if "--no-player" in a else nowin.popen_background(
+            [sys.executable, os.path.join(HERE, "demo_player.py"), run_dir], stdout=log, stderr=log, **kw))
         st_ = None
         for _ in range(240):
             time.sleep(0.5)
@@ -1696,6 +1761,10 @@ def standby(rb, a):
         json.dump({"run_dir": run_dir, "approval": aid, "engine_pid": eng.pid, "player_pid": pl and pl.pid, "ts": now_s()},
                   open(os.path.join(rb["_dir"], "standby.json"), "w", encoding="utf-8"), ensure_ascii=False)
     result["standby_s"] = round(time.time() - t0, 1)
+    try:                                       # 從捷徑（pythonw，沒有主控台）啟動時也留下結果
+        _atomic_json(os.path.join(rb["_dir"], "standby-last.json"), result)
+    except OSError:
+        pass
     say(("就緒：上場時按播放器的「下一步」。" if result["ok"] else "沒有就緒：看上面打 ✗ 的項目。") +
         "（準備花了 %.0f 秒）" % result["standby_s"])
     out(result, 0 if result["ok"] else 1)

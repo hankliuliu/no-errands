@@ -209,7 +209,17 @@ class Stage:
         self.menu.add_command(label="備案畫面", command=self.planb)
         self.menu.add_command(label="停止示範", command=self.stop)
         self.hotkeys()
+        r.after(300, self.take_front)                    # 上場時舞台取得前景（背板蓋住一切；勿擾也靠這個）
         self.tick()
+
+    def take_front(self):
+        try:
+            self.root.lift()
+            self.root.focus_force()
+            if os.name == "nt":
+                u32.SetForegroundWindow(int(self.root.frame(), 16))
+        except Exception:
+            pass
 
     def _top(self, x, y, w, h):
         t = self.tk.Toplevel(self.root)
@@ -344,10 +354,11 @@ class Stage:
             c.create_text(W // 2, H * 0.18, text=d.get("heading", "準備中…"), fill=FG, font=(FONT, mid, "bold"))
             y = H * 0.28
             for it in d.get("items", []):
-                mark, col = {"ok": ("✓", "#3fb950"), "fail": ("✗", "#f47067"), "run": ("…", DIM)}.get(it.get("state"), ("·", DIM))
+                mark, col = {"ok": ("✓", "#3fb950"), "fail": ("✗", "#f47067"), "warn": ("!", "#d29922"),
+                         "run": ("…", DIM)}.get(it.get("state"), ("·", DIM))
                 c.create_text(W * 0.3, y, text=mark, fill=col, font=(FONT, mid, "bold"))
                 c.create_text(W * 0.33, y, text=it.get("name", ""), fill=FG, font=(FONT, small + 4), anchor="w")
-                if it.get("state") == "fail" and it.get("say"):
+                if it.get("state") in ("fail", "warn") and it.get("say"):
                     y += small * 1.5
                     c.create_text(W * 0.33, y, text=it["say"], fill="#f4a9a3", font=(FONT, small), anchor="w", width=W * 0.6)
                 y += small * 2.1
@@ -369,8 +380,8 @@ class Stage:
         changed_card = now.get("card") != self.now.get("card") or now.get("card_data") != self.now.get("card_data")
         self.now = now
         st = now.get("status")
-        if st == "closing":
-            self.root.destroy()
+        if st == "closing" or (ctl.get("state") == "stopped" and now.get("card") == "checklist"):
+            self.root.destroy()                          # 結束，或預備沒過時講者按「停止」
             return
         if changed_card:
             self.draw_card(now)
