@@ -360,6 +360,12 @@ def main():
         g = wait(lambda: rd(geom).get("caption_box") and rd(geom).get("next") and rd(geom))
         time.sleep(1.0)                                    # 控制列依字幕位置讓位：等數值穩定再讀
         g = rd(geom) or g
+        m1 = g.get("controls_moves")
+        time.sleep(1.2)
+        g2_ = rd(geom) or g
+        check("%d×%d：控制列擺好之後不再重擺（重擺次數穩定、沒有卡住）" % (W, H),
+              m1 is not None and g2_.get("controls_moves") == m1 and not g2_.get("controls_stuck"),
+              (m1, g2_.get("controls_moves"), g2_.get("controls_stuck"), g2_.get("controls_rect"), g2_.get("controls_want")))
         lines = L.caption_lines(two_lines, W, H)
         check("%d×%d：字幕估算兩行以內（%d 行）" % (W, H, lines), lines <= 2, lines)
         check("%d×%d：字幕塊實際排出來最多兩行、不超過最大寬度（舞台寬 62%%）" % (W, H),
