@@ -337,6 +337,24 @@ def finish(tdir, title=None):
     return rep
 
 
+def discard(tdir, reason="not-notes-tab"):
+    """還沒轉寫的圖整輪丟掉（例如第一張就不是記事本清單）：刪圖、記下原因；已轉好的不動。回丟掉的張數。"""
+    n = 0
+    for rdir, man in runs(tdir):
+        p = [s for s in man.get("shots", []) if s.get("status") == "pending"]
+        if p and not any(s.get("status") == "done" for s in man.get("shots", [])):
+            n += len(p)
+            st = load_state(tdir)
+            st["last_run"] = {"run": man["run"], "stop": reason, "shots": len(man.get("shots", [])), "date": man["created"][:10]}
+            save_state(tdir, st)
+            shutil.rmtree(rdir, ignore_errors=True)
+    try:
+        os.rmdir(shots_root(tdir))
+    except OSError:
+        pass
+    return n
+
+
 def number(notes):
     nxt = max([n.get("no") or 0 for n in notes] + [0]) + 1
     for n in sorted(notes, key=lambda x: (x.get("posted_at") or "", x.get("key"))):

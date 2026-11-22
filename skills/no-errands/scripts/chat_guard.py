@@ -748,7 +748,7 @@ def _peek_notes(pid, before, chat, res, app):
         names = {i.get("name") for i in (popup_menu.popup_items(titled[0]["hwnd"]).get("items") or [])}
         if names & set(VIEW_MARKERS["notes"]):
             # chat 已經是白名單裡的那筆名稱（main 先做了 canonical_chat）；代號算法與 gather 相同 → 落在同一個目標資料夾
-            tid = hashlib.sha256(("%s|%s" % (app, chat)).encode("utf-8")).hexdigest()[:12]
+            tid = target_id(app, chat)
             d = os.path.join(HOME, "gather", app, tid, "_peek")
             os.makedirs(d, exist_ok=True)
             path = os.path.join(d, "notes-%s.png" % time.strftime("%Y%m%d-%H%M%S"))
@@ -849,12 +849,22 @@ def cmd_probe(app, prof, chat, view, pol, peek=False):
 
 
 NOTES_MAX_SHOTS, NOTES_HARD_MAX, NOTES_TIMEOUT_S, NOTES_STEP = 15, 40, 90, 0.6
+NOTES_TIMEOUT_MAX_S = 180   # 和張數上限一樣：參數傳多大都不超過
 NOTES_MAX_SKIP = 4000   # 接續時最多先捲過幾格（不擷取）
 NOTES_OK_STOPS = ("bottom", "cap", "timeout", "user_input")
 
 
 def target_id(app, chat):
-    """和 gather 的目標代號同一個算法 → 圖落在同一個目標資料夾。"""
+    """圖要落在 gather 那個目標的資料夾：先在 gather 的目標清單裡找同一個聊天室（名稱完全相同，或去掉人數標示後相同，
+    而且只有一筆）；找不到才用和 gather 相同的算法自己算。名稱帶不帶人數都落在同一個資料夾。"""
+    try:
+        ts = json.load(open(os.path.join(HOME, "gather", "targets.json"), encoding="utf-8"))
+    except Exception:
+        ts = {}
+    hits = [k for k, t in ts.items() if t.get("service") == app
+            and (t.get("chat") == chat or policy.strip_count(t.get("chat") or "") == policy.strip_count(chat))]
+    if len(hits) == 1:
+        return hits[0]
     return hashlib.sha256(("%s|%s" % (app, chat)).encode("utf-8")).hexdigest()[:12]
 
 
@@ -885,6 +895,7 @@ def cmd_notes(app, prof, chat, pol, max_shots=NOTES_MAX_SHOTS, skip_notches=0, t
     if popup_menu is None or os.name != "nt":
         raise Refused("記事本擷取目前只支援 Windows")
     max_shots = max(1, min(int(max_shots), NOTES_HARD_MAX))
+    timeout_s = max(5.0, min(float(timeout_s), NOTES_TIMEOUT_MAX_S))
     skip_notches = max(0, min(int(skip_notches), NOTES_MAX_SKIP))
     win = find_window(prof)
     full = snapshot(win, interactive=False)

@@ -163,9 +163,17 @@ try:
     check("7 notes pending：1 張、附看圖規則", rc == 0 and o["pending"] == 1 and "不寫進回覆" in o["rule"] and o["first"]["path"].endswith("01.png"), o)
     o, rc = g("notes", "capture", "--target", tid)
     check("7 還有沒轉的圖時不准再擷取", rc == 3 and "沒轉寫" in o.get("error", ""), o)
-    jf = os.path.join(home, "items.json")
-    json.dump([N("Ann", "11/20 10:00", "記事內容只進收集資料夾：全形冒號……", truncated=True, images=1)], open(jf, "w", encoding="utf-8"), ensure_ascii=False)
+    items7 = [N("Ann", "11/20 10:00", "記事內容只進收集資料夾：全形冒號……", truncated=True, images=1)]
+    outside = os.path.join(home, "items.json")
+    json.dump(items7, open(outside, "w", encoding="utf-8"), ensure_ascii=False)
+    o, rc = g("notes", "add", "--target", tid, "--shot", "20261123-100000/01", "--visible", "1", "--file", outside)
+    check("7 轉寫檔放在擷取資料夾以外 → 拒收、圖還在", rc == 2 and "擷取資料夾" in o.get("error", "")
+          and os.path.exists(os.path.join(tdir, "_notes_shots", "20261123-100000", "01.png")), o)
+    o, rc = g("notes", "pending", "--target", tid)
+    jf = o["first"]["write_items_to"]
+    json.dump(items7, open(jf, "w", encoding="utf-8"), ensure_ascii=False)
     o, rc = g("notes", "add", "--target", tid, "--shot", "20261123-100000/01", "--visible", "1", "--file", jf)
+    check("7 轉寫檔放在 write_items_to → 收下，工具自己把它刪掉", rc == 0 and not os.path.exists(jf), (o, os.path.exists(jf)))
     check("7 notes add：通過、輸出只有數字（不含內文）", rc == 0 and o["notes"] == 1 and "記事內容" not in json.dumps(o, ensure_ascii=False), o)
     o, rc = g("notes", "finish", "--target", tid)
     check("7 notes finish：1 則、輸出不含內文", rc == 0 and o["notes_total"] == 1 and "記事內容" not in json.dumps(o, ensure_ascii=False), o)
@@ -183,6 +191,12 @@ try:
     check("7 ledger 只有數字（不含內文）", "notes-add" in lg and "記事內容" not in lg)
     o, rc = g("read", "--target", tid)
     check("7 read 回傳記事本（給要讀的 agent）", rc == 0 and len(o.get("notes") or []) == 1, o.get("notes"))
+    make_run(tdir, "20261123-120000", 2, stop="bottom")
+    o, rc = g("notes", "discard", "--target", tid)
+    st = json.load(open(os.path.join(tdir, "notes_state.json"), encoding="utf-8"))
+    check("7 notes discard（不是記事本分頁）：兩張圖刪掉、記下原因、已收的記事不動",
+          rc == 0 and o["discarded_shots"] == 2 and not os.path.exists(os.path.join(tdir, "_notes_shots"))
+          and st["last_run"]["stop"] == "not-notes-tab" and len([l for l in open(os.path.join(tdir, "notes.jsonl"), encoding="utf-8") if l.strip()]) == 1, (o, st.get("last_run")))
 finally:
     shutil.rmtree(home, ignore_errors=True)
 

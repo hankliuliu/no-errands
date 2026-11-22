@@ -16,6 +16,7 @@
   gather.py notes pending --target <id>                                 # 還沒轉寫的圖（agent 一次看一張）
   gather.py notes add --target <id> --shot <run>/<NN> --visible <則數> --file <items.json>   # 交一張的轉寫，通過就刪圖
   gather.py notes finish --target <id>                                  # 去重、建索引、更新未收清單與總覽
+  gather.py notes discard --target <id>                                 # 第一張就不是記事本清單：整輪丟掉（刪圖）
   gather.py notes status --target <id>
 附件：看到的每一筆都進 <目標>/files/index.jsonl（status received|missing＋原因）；人看的清單是 files/未收清單.md。
 Mattermost 另存頻道標題／用途與釘選貼文（announcements.json）；read 會一併回傳公告與記事本。
@@ -782,13 +783,20 @@ def cmd_notes(a):
                  next="notes pending 拿第一張圖，看完用 notes add 交轉寫" if o.get("shots") else None), 0 if o.get("ok") else 1)
     if act == "pending":
         p = gn.pending(d)
+        if p:   # 轉寫暫存檔只能寫在這一輪的擷取資料夾裡（notes add 只收這裡的檔，通過後工具自己刪）
+            p[0]["write_items_to"] = p[0]["path"][:-4] + ".agent.json"
         out({"ok": True, "pending": len(p), "first": p[0] if p else None,
              "rule": "一次看一張；畫面上每一則寫成 JSON（author, posted_at 照畫面原字, text, truncated, images；被圖邊切到的加 cut_top／cut_bottom）。"
                      "--visible＝這張圖上看得到開頭的則數（含被下緣切到的、不含被上緣切到的）。"
-                     "看到的內容只寫進交給 notes add 的檔案，不寫進回覆、紀錄或其他檔案。交完把那個暫存 JSON 檔刪掉。"})
+                     "轉寫結果寫到 first.write_items_to（只收那個資料夾裡的檔，通過後工具會刪）；看到的內容不寫進回覆、紀錄或其他檔案。"
+                     "第一張圖如果不是記事本清單（例如相簿的縮圖格）：不轉寫、不描述，用 notes discard 丟掉這一輪並回報「不是記事本分頁」。"})
     if act == "add":
-        f = arg(a, "--file")
+        f = arg(a, "--file") or ""
         try:
+            rdir, _, _ = gn._find_shot(d, arg(a, "--shot") or "")
+            # 轉寫檔裡有記事內文：只收這一輪擷取資料夾裡的檔（別處的拒收），通過後工具自己刪 → 內文不會留在別的地方
+            if os.path.dirname(os.path.realpath(f)) != os.path.realpath(rdir):
+                raise gn.Bad("轉寫檔要放在這一輪的擷取資料夾裡（notes pending 給的 write_items_to），別的位置不收")
             items = json.load(open(f, encoding="utf-8"))
             vis = int(arg(a, "--visible", "-1"))
             r = gn.add(d, arg(a, "--shot") or "", items, vis)
@@ -796,6 +804,10 @@ def cmd_notes(a):
             out({"ok": False, "error": str(e)}, 2)
         except (OSError, ValueError) as e:
             out({"ok": False, "error": "讀不到轉寫檔或格式不對：%s" % type(e).__name__}, 2)
+        try:
+            os.remove(f)
+        except OSError:
+            pass
         ledger(target=tid, action="notes-add", shot=r["shot"], notes=r["notes"], count_ok=r["count_ok"])
         out(r)
     if act == "finish":
@@ -803,12 +815,16 @@ def cmd_notes(a):
         _refresh_outputs(tid, t, d)
         ledger(target=tid, action="notes-finish", new=r["new_notes"], total=r["notes_total"], mismatch=r["overlap_mismatch"])
         out(dict(r, ok=True))
+    if act == "discard":
+        n = gn.discard(d, arg(a, "--reason", "not-notes-tab"))
+        ledger(target=tid, action="notes-discard", shots=n, reason=arg(a, "--reason", "not-notes-tab"))
+        out({"ok": True, "discarded_shots": n})
     if act == "status":
         st = gn.load_state(d)
         out({"ok": True, "pending": len(gn.pending(d)), **{k: st.get(k) for k in (
             "notes", "truncated", "needs_review", "note_images", "older_not_captured", "oldest_captured", "resume_skip_notches",
             "expired_shots", "last_run", "updated")}})
-    out({"ok": False, "error": "notes 後面要接 capture|pending|add|finish|status"}, 2)
+    out({"ok": False, "error": "notes 後面要接 capture|pending|add|finish|discard|status"}, 2)
 
 
 def main():
