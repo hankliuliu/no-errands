@@ -723,9 +723,15 @@ def _deep_notes(pid, before, res):
         return
     h = titled[0]["hwnd"]
     kids = popup_menu.child_windows(h)
-    deep = {"children": [{k: c[k] for k in ("class", "w", "h", "visible")} for c in kids][:40], "scan_root": popup_menu.deep_scan(h)}
+    # 掃兩次、中間隔 2.5 秒：嵌入的網頁常在第一次有人查無障礙資訊時才非同步建樹，只掃一次可能得到假的「拿不到」
     web = [c for c in kids if c["class"].startswith("Chrome_") or "WebEngine" in c["class"] or "RenderWidget" in c["class"]]
-    deep["scan_children"] = [{"class": c["class"], "scan": popup_menu.deep_scan(c["hwnd"])} for c in web[:4]]
+    deep = {"children": [{k: c[k] for k in ("class", "w", "h", "visible")} for c in kids][:40], "web_children": len(web)}
+    for rnd in ("scan1", "scan2"):
+        deep[rnd] = {"root": popup_menu.deep_scan(h),
+                     "children": [{"class": c["class"], "scan": popup_menu.deep_scan(c["hwnd"])} for c in web[:4]]}
+        if rnd == "scan1":
+            time.sleep(2.5)
+    deep["scan_root"] = deep["scan2"]["root"]
     res["deep"] = deep
 
 
