@@ -66,6 +66,10 @@ check("3 未收清單：檔案段在最前、照片影片在後；給人看的�
       and "還沒收（檔案收集尚未完成）" in md and "工具做不到" not in md, md[:600])
 check("3 未收清單：短流水號、檔尾給 agent 用的指令填好 id", re.search(r"| #d+ |", md) and "--target abc123" in md.split("---")[-1])
 check("3 未收清單：照片影片附前後文", "早安大家" in md or "這是工地現場" in md, md[-600:])
+pre, post = gi._context([{"id": "a", "date": "2026-11-17", "time": "17:20", "sender": "A", "text": "前面", "kind": "text"},
+                         {"id": "p", "date": "2026-11-17", "time": "17:28", "sender": "A", "text": "圖片", "kind": "text"},
+                         {"id": "b", "date": "2026-11-18", "time": "14:10", "sender": "B", "text": "隔天的話", "kind": "text"}], "p", "2026-11-17")
+check("3 前後文：同一天只寫時間、不同天寫出日期（不會像時間倒流）", pre == "A 17:20：前面" and post == "B 11-18 14:10：隔天的話", (pre, post))
 check("3 沒有未收的東西：只寫一句", "沒有未收的東西。" in gi.render_missing([], "空群", [], "x") and "對 agent" not in gi.render_missing([], "空群", [], "x"))
 burst = [{"id": "m:b%d" % k, "message_id": "b%d" % k, "date": "2026-11-17", "time": "14:%02d" % (45 + k // 3), "sender": "Ann", "kind": "photo",
           "status": "missing", "reason": "依設定不收", "note": "x", "location": "message"} for k in range(7)]

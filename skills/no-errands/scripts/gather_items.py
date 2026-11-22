@@ -202,7 +202,7 @@ def _lead(text, n=40):
     return (t[:n] + "…") if len(t) > n else t
 
 
-def _context(msgs, mid):
+def _context(msgs, mid, day=None):
     """這則訊息前後最接近的文字訊息開頭（各約 40 字）——讓人看得出那批照片在講什麼。只寫在本機清單裡。"""
     if not msgs or not mid:
         return "", ""
@@ -212,7 +212,9 @@ def _context(msgs, mid):
     is_text = lambda m: m.get("kind", "text") == "text" and m.get("text") and classify_line(m) is None and m["text"].strip() != "貼圖"
     before = next((msgs[k] for k in range(idx - 1, -1, -1) if is_text(msgs[k])), None)
     after = next((msgs[k] for k in range(idx + 1, len(msgs)) if is_text(msgs[k])), None)
-    fmt = lambda m: "%s %s：%s" % (m["sender"], m["time"], _lead(m["text"])) if m else ""
+    # 和項目不同天時寫出日期（跨日只寫時間會像時間倒流）
+    fmt = lambda m: ("%s %s%s：%s" % (m["sender"], (m["date"][5:] + " ") if day and m.get("date") != day else "", m["time"],
+                                     _lead(m["text"]))) if m else ""
     return fmt(before), fmt(after)
 
 
@@ -296,9 +298,9 @@ def render_missing(items, title, msgs=None, tid=None, service=None):
             for it in b:
                 kinds[KIND_LABEL[it["kind"]]] = kinds.get(KIND_LABEL[it["kind"]], 0) + 1
             t0, t1 = b[0].get("time") or "", b[-1].get("time") or ""
-            pre, post = _context(msgs, b[0].get("message_id") or b[0].get("post_id"))
+            pre, post = _context(msgs, b[0].get("message_id") or b[0].get("post_id"), b[0].get("date"))
             if len(b) > 1:
-                _, post = _context(msgs, b[-1].get("message_id") or b[-1].get("post_id"))
+                _, post = _context(msgs, b[-1].get("message_id") or b[-1].get("post_id"), b[-1].get("date"))
             nos = sorted(it["no"] for it in b)
             rows.append({"no": "#%d" % nos[0] if len(nos) == 1 else "#%d–#%d" % (nos[0], nos[-1]) if nos[-1] - nos[0] == len(nos) - 1
                          else " ".join("#%d" % n for n in nos),
