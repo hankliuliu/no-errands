@@ -855,6 +855,12 @@ class Stage:
             pass
         self.draw_look(now)
         self.draw_mask(now)
+        # 有視窗剛出現或收起（控制列、字幕、外框、遮罩…）：立刻重排——隱藏時沒被排進去的視窗，出現時可能停在
+        # 瀏覽器（或隔離層）下面，看不到也點不到（F-3 CI：× 出現後點下去沒反應）
+        sig = tuple(bool(w.winfo_viewable()) for w in self.overlays())
+        if sig != getattr(self, "_z_sig", None):
+            self._z_sig = sig
+            self._z_t = 0
         if time.time() - getattr(self, "_z_t", 0) >= 1.0:
             try:
                 if os.name == "nt":
