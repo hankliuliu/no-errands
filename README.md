@@ -217,6 +217,8 @@ python doctor.py
 - `~/.no-errands/`：`bin/`（agent-desktop、agent-browser 單檔，版本與 sha256 釘在 `versions.json`；工具腳本）、`browser-profile/`（agent 專用 profile）、`policy.json`（你的規則）、`config.json`、`capabilities.md`（自我檢查結果）、`outbox/`（發件匣紀錄）、各工具的操作紀錄 `*-ledger.jsonl`、`playbook-local/`。
 - 你的 `CLAUDE.md`：多一段 `<!-- no-errands:start -->`…`<!-- no-errands:end -->`，其餘內容一個位元組都不動（移除後逐位元組還原）。
 - skill：`~/.claude/skills/no-errands/`（或專案的 `.claude/skills/`），裡面有一個標記檔；已經有別人的同名 skill 時會停下來、不覆蓋。
+  更新、移除只動「`skills/no-errands`、`skills/errand-audit` 而且帶這個標記檔」的那一個資料夾，其他位置或沒有標記的一律拒絕。換版時先在旁邊裝好新版、驗證後才換掉舊版，中途失敗就把舊版搬回去。
+- 更新到 repo 的新版：`python setup.py --user --sync`（工具腳本、skill、受管區塊一起更新）。
 - 只有在找不到可用 Python 時才會多一個 `uv` 單檔，它帶的 Python 放在 uv 的預設位置。
 - 不改 PATH、不需要管理員權限。
 

@@ -5,6 +5,8 @@
   2. 既有 settings.json（hooks + permissions）→ 一般安裝完全不碰（逐位元組相同）
   3. 已有同名 skill 目錄但不是我們裝的 → 中止、不覆蓋；移除時也不刪它
   4. 已有可用 Python → stage-0 直接用，不下載 uv
+  5. install_skill 只動「skills/<名稱>」且帶我們標記的那一個資料夾：上層 skills 目錄、家目錄、別人的 skill、
+     沒標記的同名資料夾一律拒絕且原封不動；換版先裝新版再換、中途失敗搬回；--sync 走同一套
 """
 import json, os, shutil, subprocess, sys, tempfile
 
@@ -96,6 +98,134 @@ def main():
             check("4 有可用 Python → 沒有下載 uv", not any(b.startswith("uv") for b in bins), bins)
         else:
             print("SKIP 4 這台機器 PATH 上沒有可用 Python（例如只有 Microsoft Store 假捷徑），下載 uv 是正確行為")
+        # 5 install_skill 的防護
+        sys.path.insert(0, REPO); import setup as S
+
+        def tree(d):   # 整棵樹的（相對路徑, 內容）快照
+            out = []
+            for r, ds, fs in os.walk(d):
+                ds.sort()
+                for f in sorted(fs):
+                    q = os.path.join(r, f); out.append((os.path.relpath(q, d), open(q, "rb").read()))
+                for x in ds:
+                    out.append((os.path.relpath(os.path.join(r, x), d) + "/", b""))
+            return out
+
+        def refused(*args):
+            try:
+                S.install_skill(*args)
+            except ValueError:
+                return True
+            return False
+
+        root = os.path.join(td, "u5", ".claude", "skills")
+        for n in ("other-skill", "no-errands-lookalike"):
+            os.makedirs(os.path.join(root, n)); open(os.path.join(root, n, "SKILL.md"), "w", encoding="utf-8").write("user " + n)
+        own_nomark = os.path.join(root, "errand-audit"); os.makedirs(own_nomark)
+        open(os.path.join(own_nomark, "SKILL.md"), "w", encoding="utf-8").write("使用者自己的同名 skill，沒有我們的標記")
+        snap = tree(os.path.dirname(root))
+        check("5 傳上層 skills 目錄 → 拒絕", refused(root) and refused(root, "errand-audit"))
+        check("5 傳別人的 skill 資料夾 → 拒絕", refused(os.path.join(root, "other-skill")))
+        check("5 沒有我們標記的同名資料夾 → 拒絕", refused(own_nomark, "errand-audit"))
+        check("5 傳家目錄 / 不在 skills 底下一層 → 拒絕",
+              refused(os.path.expanduser("~")) and refused(os.path.join(td, "u5", "no-errands")))
+        check("5 拒絕之後整棵樹逐位元組沒變", tree(os.path.dirname(root)) == snap)
+        check("5 remove_own_skill 也拒絕（根目錄、沒標記的同名）",
+              not S.remove_own_skill(root, "skills") and not S.remove_own_skill(own_nomark, "errand-audit") and tree(os.path.dirname(root)) == snap)
+
+        dst = os.path.join(root, "no-errands")
+        S.install_skill(dst)
+        mine = lambda: sorted(f for f in os.listdir(root) if f.startswith("."))
+        check("5 正確目的地：裝好、有標記、沒留暫存", os.path.isfile(os.path.join(dst, "SKILL.md"))
+              and os.path.isfile(os.path.join(dst, S.OWN_MARK)) and mine() == [], mine())
+        open(os.path.join(dst, "stale.txt"), "w", encoding="utf-8").write("舊版才有")
+        S.install_skill(dst)
+        check("5 換版：新版就位、舊版內容拿掉、沒留暫存", not os.path.exists(os.path.join(dst, "stale.txt"))
+              and S.skill_tree_hash(dst) == S.skill_tree_hash(os.path.join(REPO, "skills", "no-errands")) and mine() == [], mine())
+
+        open(os.path.join(dst, "stale.txt"), "w", encoding="utf-8").write("舊版才有")
+        before = tree(dst)
+        real_replace = os.replace
+        calls = []
+        def flaky(src, d2):   # 第二次搬移（新版就位）失敗
+            calls.append(d2)
+            if len(calls) == 2:
+                raise OSError("模擬：新版就位失敗")
+            return real_replace(src, d2)
+        S.os.replace = flaky
+        try:
+            try:
+                S.install_skill(dst); raised = False
+            except OSError:
+                raised = True
+        finally:
+            S.os.replace = real_replace
+        check("5 新版就位失敗 → 回報錯誤、舊版原封不動搬回、沒留暫存", raised and tree(dst) == before and mine() == [], (raised, mine()))
+
+        # 改名一直被拒（重試到最後都失敗）：舊版原封不動、明確報錯、暫存清乾淨，不停在新舊都不在正式位置的中間狀態
+        real_sleep = S.time.sleep
+        S.time.sleep = lambda _s: None
+        for which in ("old", "new"):
+            def always_denied(src, d2, which=which):
+                if (which == "old" and os.path.abspath(src) == os.path.abspath(dst)) or                         (which == "new" and os.path.abspath(d2) == os.path.abspath(dst) and ".new-" in src):
+                    raise PermissionError("模擬：一直被拒")
+                return real_replace(src, d2)
+            S.os.replace = always_denied
+            try:
+                try:
+                    S.install_skill(dst); msg = ""
+                except OSError as e:
+                    msg = str(e)
+            finally:
+                S.os.replace = real_replace
+            check("5 %s一直被拒 → 明確報錯、舊版原封不動、沒留暫存" % ("舊版移開" if which == "old" else "新版就位"),
+                  "原封不動" in msg and tree(dst) == before and mine() == [], (msg, mine()))
+        S.time.sleep = real_sleep
+
+        real_copy = shutil.copytree
+        def boom(*a, **k):
+            raise OSError("模擬：複製失敗")
+        S.shutil.copytree = boom
+        try:
+            try:
+                S.install_skill(dst); raised = False
+            except OSError:
+                raised = True
+        finally:
+            S.shutil.copytree = real_copy
+        check("5 新版複製失敗 → 舊版沒被碰", raised and tree(dst) == before and mine() == [], (raised, mine()))
+
+        # 上次換版當掉：正式位置不見、旁邊有帶標記的舊版 → 先搬回再換；別人的點開頭資料夾不碰
+        real_replace(dst, os.path.join(root, ".no-errands.old-1-1"))
+        os.makedirs(os.path.join(root, ".no-errands.old-9-9")); open(os.path.join(root, ".no-errands.old-9-9", "x"), "w", encoding="utf-8").write("不是我們的")
+        S.install_skill(dst)
+        check("5 當掉後的善後：正式位置回來、我們的殘留清掉、別人的不碰",
+              os.path.isfile(os.path.join(dst, "SKILL.md")) and mine() == [".no-errands.old-9-9"], mine())
+        shutil.rmtree(os.path.join(root, ".no-errands.old-9-9"))
+
+        # --sync 走同一套：使用者其他 skill、沒標記的同名 errand-audit 都不動
+        h5 = seeded_home(os.path.join(td, "s5")) if os.makedirs(os.path.join(td, "s5")) is None else None
+        cd = os.path.join(td, "s5c", ".claude"); os.makedirs(os.path.join(cd, "skills", "keep-me"))
+        open(os.path.join(cd, "skills", "keep-me", "SKILL.md"), "w", encoding="utf-8").write("使用者的 skill")
+        cx = ["--claude-dir", cd, "--codex-home", os.path.join(td, "s5c", ".codex"), "--home", h5]
+        o, rc = setup("--user", *cx)
+        check("5 --user 安裝到臨時家目錄", rc == 0 and o.get("ok"), o)
+        snap_keep = tree(os.path.join(cd, "skills", "keep-me"))
+        o, rc = setup("--user", "--sync", *cx)
+        check("5 --sync 成功、兩個 skill 都是新版",
+              rc == 0 and o.get("ok") and S.skill_tree_hash(os.path.join(cd, "skills", "no-errands")) == S.skill_tree_hash(os.path.join(REPO, "skills", "no-errands"))
+              and os.path.isfile(os.path.join(cd, "skills", "errand-audit", S.OWN_MARK)), o)
+        check("5 --sync 後使用者的 skill 原封不動、沒留暫存",
+              tree(os.path.join(cd, "skills", "keep-me")) == snap_keep
+              and sorted(os.listdir(os.path.join(cd, "skills"))) == ["errand-audit", "keep-me", "no-errands"], os.listdir(os.path.join(cd, "skills")))
+        os.remove(os.path.join(cd, "skills", "errand-audit", S.OWN_MARK))
+        snap_ea = tree(os.path.join(cd, "skills", "errand-audit"))
+        o, rc = setup("--user", "--sync", *cx)
+        check("5 --sync 遇到沒標記的同名 skill → 回報拒絕、不動它", rc != 0 and not o.get("ok") and o.get("refused")
+              and tree(os.path.join(cd, "skills", "errand-audit")) == snap_ea, o)
+    except Exception:   # 中途例外也要留下 FAIL 與原因（CI 只看 stdout，例外印在 stderr 會看不到）
+        import traceback
+        check("沒有未預期的例外", False, " | ".join(traceback.format_exc().strip().splitlines()[-4:]))
     finally:
         shutil.rmtree(td, ignore_errors=True)
     print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
