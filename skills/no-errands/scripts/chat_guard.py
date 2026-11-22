@@ -1015,10 +1015,24 @@ def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0,
         time.sleep(0.8)
     os.makedirs(rdir, exist_ok=True)
     notches, total, prev, unverified = NOTES_FIRST_STEP, skip_notches, None, 0
-    while True:
-        check_interrupt()
+    def settled_grab():
+        """等畫面停下來再拍：捲動常有平滑動畫，動畫中途拍到的半張畫面會讓相鄰兩張對不上（CI 偶發 no_overlap）。
+        每 0.15 秒拍一次，清單區域連兩次相同才算停下；最多等 2 秒（沒停下也照拍，記在 settled）。"""
         w, h_, raw = popup_menu.grab_window(hwnd)
         keys = popup_menu.row_keys(raw, w, h_, *rel)
+        t1 = time.time()
+        while time.time() - t1 < 2.0:
+            time.sleep(0.15)
+            w2, h2, raw2 = popup_menu.grab_window(hwnd)
+            k2 = popup_menu.row_keys(raw2, w2, h2, *rel)
+            if k2 == keys:
+                return w2, h2, raw2, k2, True
+            w, h_, raw, keys = w2, h2, raw2, k2
+        return w, h_, raw, keys, False
+
+    while True:
+        check_interrupt()
+        w, h_, raw, keys, settled = settled_grab()
         shift, ratio = (None, 0.0) if prev is None else popup_menu.vertical_shift(prev, keys, min_rows=10)
         if prev is not None and shift == 0:
             if notches < 1:   # 小於一格的量可能被程式忽略：先加大到一格再判斷是不是到底，避免誤判
@@ -1036,7 +1050,7 @@ def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0,
                              "sha256": hashlib.sha256(raw).hexdigest(), "w": w, "h": h_, "notches_at": total,
                              "shift_px": shift,
                              "overlap": None if (prev is None or shift is None) else round(1 - shift / max(1, list_h), 2),
-                             "overlap_unverified": prev is not None and shift is None, "status": "pending"})
+                             "overlap_unverified": prev is not None and shift is None, "settled": settled, "status": "pending"})
         if prev is not None and shift:   # 依實測位移調整下一次的量（可以小於一格），目標每次捲約清單高度的 60%
             notches = max(NOTES_MIN_STEP, min(30.0, round(NOTES_STEP * list_h / (shift / notches), 3)))
             unverified = 0
