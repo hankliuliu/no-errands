@@ -459,9 +459,9 @@ def real_chrome_checks(stage_with):
             if g1.get("cap_user") is not None:
                 fails.append((r_, "按兩下", (g1.get("caption_plate"), zstack(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2))))
             # × 收起（滑鼠停在字幕上 → × 出現在外側右上角 → 點它），再用控制列的「字幕」打開
+            time.sleep(0.4)                                # 按兩下之後字幕移回預設位置：等位置穩定再讀
             g0 = rd(geom).get("caption_plate") or g0
-            move(g0[0] + g0[2] - 10, g0[1] + g0[3] // 2); time.sleep(0.5)
-            xb = rd(geom).get("xbtn")
+            xb = wait(lambda: rd(geom).get("xbtn"), 2)
             if xb:
                 move(xb[0] + xb[2] // 2, xb[1] + xb[3] // 2); time.sleep(0.3)
                 u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.7)
@@ -536,7 +536,8 @@ def real_chrome_checks(stage_with):
         g0 = rd(geom).get("caption_plate")
         move(g0[0] + g0[2] - 10, g0[1] + g0[3] // 2); time.sleep(0.6)
         xb = rd(geom).get("xbtn")
-        check("A2 滑鼠停在字幕上 → × 出現在字幕塊右上角（在預留的空位裡）", xb and L.inside(xb, g0) and xb[0] + xb[2] >= g0[0] + g0[2] - 8,
+        check("A2 滑鼠停在字幕上 → × 出現在字幕塊右上角（在預留的空位裡）", xb and rd(geom).get("x_shown") and L.inside(xb, g0)
+              and xb[0] + xb[2] >= g0[0] + g0[2] - 8,
               (xb, g0))
         if xb:
             move(xb[0] + xb[2] // 2, xb[1] + xb[3] // 2); time.sleep(0.4)
