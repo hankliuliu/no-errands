@@ -101,6 +101,32 @@ check("scroll-to：清單中非目標項目 → 擋下", refused("scroll-to", "G
 check("scroll-to：沒有 allow → 擋下", refused("scroll-to", T1, target="Group A"))
 check("scroll-to：清單外的元素 → 擋下", refused("scroll-to", "其他功能", allow="list-target", target="其他功能"))
 
+# ---- 記事本（只讀檢視，Sprint E 探索）
+check("記事本：沒有 allow（act）→ 擋下（仍是禁區）", refused("click", "記事本"))
+check("記事本：allow=view-button、標頭是指名對話 → 放行", not refused("click", "記事本", allow="view-button", target="Group A"))
+check("記事本：allow=view-button、但標頭第一顆不是指名對話 → 擋下", refused("click", "記事本", allow="view-button", target="Group A Ops"))
+check("記事本：allow=view-button、沒帶 target_chat → 擋下", refused("click", "記事本", allow="view-button"))
+stray = {"tree": {"role": "window", "children": [{"role": "group", "children": [btn("記事本", "@s:z1"), btn("x", "@s:z2")]}]}}
+node, parents = cg.find_node(stray, lambda n: n.get("name") == "記事本")
+try:
+    cg.assert_allowed(P, "click", node, parents, {"zone": "main", "allow": "view-button", "target_chat": "Group A"}); ok_ = False
+except cg.Refused:
+    ok_ = True
+check("記事本：不在標頭工具列裡的同名按鈕 → 擋下", ok_)
+check("其他按鈕不能借 view-button 通過（開始通話）", refused("click", "開始通話", allow="view-button", target="Group A"))
+import subprocess, tempfile, json as _json, shutil as _sh  # noqa: E402
+_h = tempfile.mkdtemp(prefix="ne-probe-")
+try:
+    _json.dump({"granted_apps": ["line"], "chat": {"whitelist": ["Group A"]}, "idle_min_s": 0},
+               open(os.path.join(_h, "policy.json"), "w", encoding="utf-8"))
+    _p = subprocess.run([sys.executable, os.path.join(os.path.dirname(cg.__file__), "chat_guard.py"), "line", "probe",
+                         "--chat", "Not Listed", "--view", "notes"], capture_output=True, text=True, encoding="utf-8",
+                        env=dict(os.environ, NO_ERRANDS_HOME=_h, PYTHONIOENCODING="utf-8"), timeout=60)
+    _o = _json.loads(_p.stdout)
+    check("probe：不在白名單 → 拒絕（在閒置閘門與任何視窗操作之前）", _o.get("refused") and "白名單" in _o.get("error", ""), _o)
+finally:
+    _sh.rmtree(_h, ignore_errors=True)
+
 # ---- 名稱只看群組名、忽略結尾人數標示（2026-11-22；名稱全是虛構的）
 import policy  # noqa: E402
 sc = policy.strip_count
