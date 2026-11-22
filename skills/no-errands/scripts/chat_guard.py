@@ -920,7 +920,7 @@ def cmd_notes(app, prof, chat, pol, max_shots=NOTES_MAX_SHOTS, skip_notches=0, t
         elif any(i.get("name") in TAB_PAIRS["notes-tab"] and i.get("sel") is True for i in (it.get("items") or [])):
             res["stop"] = "not_notes_tab"   # 停在相簿分頁：不點分頁（零新增點擊），照實回報
         else:
-            _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0)
+            _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0, it)
             if res["stop"] in NOTES_OK_STOPS and res["stop"] != "user_input" and not header_ok(prof, snapshot(win, interactive=False), chat):
                 res["stop"] = "wrong_chat"   # 擷取後主視窗標頭不是同一個對話 → 圖全丟
     except Refused as e:
@@ -947,11 +947,13 @@ def cmd_notes(app, prof, chat, pol, max_shots=NOTES_MAX_SHOTS, skip_notches=0, t
     out(dict(res, ok=res["stop"] in NOTES_OK_STOPS), 0 if res["stop"] in NOTES_OK_STOPS else 1)
 
 
-def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0):
+def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0, it=None):
     import ctypes, ctypes.wintypes as wt
     u32 = ctypes.windll.user32
     wr = wt.RECT(); u32.GetWindowRect(hwnd, ctypes.byref(wr))
     seen = popup_menu.list_rects(hwnd)
+    if not seen:   # 備案：整個視窗的元件列表裡型別是 List 的（只用位置）
+        seen = [{"rect": i["rect"], "children": None} for i in ((it or {}).get("items") or []) if i.get("type") == "List" and i.get("rect")]
     inside = lambda r: wr.left - 2 <= r[0] < r[2] <= wr.right + 2 and wr.top - 2 <= r[1] < r[3] <= wr.bottom + 2
     lists = [l for l in seen if inside(l["rect"]) and l["rect"][3] - l["rect"][1] >= 100]
     if not lists:
@@ -960,6 +962,10 @@ def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0)
                               "children": l.get("children")} for l in seen][:6]
         res["window_wh"] = [wr.right - wr.left, wr.bottom - wr.top]
         res["list_err"] = popup_menu.LIST_ERR.get("last")
+        types = {}
+        for i in ((it or {}).get("items") or []):
+            types[i.get("type")] = types.get(i.get("type"), 0) + 1
+        res["types_seen"] = types
         return
     lr = max(lists, key=lambda l: (l["rect"][2] - l["rect"][0]) * (l["rect"][3] - l["rect"][1]))["rect"]
     cx, cy = (lr[0] + lr[2]) // 2, (lr[1] + lr[3]) // 2

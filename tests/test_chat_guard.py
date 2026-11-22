@@ -324,7 +324,7 @@ def main():
         pngs = _glob.glob(os.path.join(shots_dir, "*", "_notes_shots", "*", "*.png"))
         mans = _glob.glob(os.path.join(shots_dir, "*", "_notes_shots", "*", "manifest.json"))
         check("B3-9 notes：只點記事本按鈕一次、捲到底停下（stop=bottom）", o.get("ok") and o.get("stop") == "bottom"
-              and events("notes-open") - n0 == 1, {k: o.get(k) for k in ("ok", "stop", "shots", "wheels", "error", "why", "lists_seen", "window_wh", "list_err")})
+              and events("notes-open") - n0 == 1, {k: o.get(k) for k in ("ok", "stop", "shots", "wheels", "error", "why", "lists_seen", "window_wh", "list_err", "types_seen")})
         check("B3-9 擷取了好幾張（清單有捲動）、圖與 manifest 在 _notes_shots", (o.get("shots") or 0) >= 3 and len(pngs) == o.get("shots")
               and len(mans) == 1, (o.get("shots"), len(pngs), len(mans)))
         man = json.load(open(mans[0], encoding="utf-8")) if mans else {}
