@@ -952,8 +952,11 @@ def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0,
     u32 = ctypes.windll.user32
     wr = wt.RECT(); u32.GetWindowRect(hwnd, ctypes.byref(wr))
     seen = popup_menu.list_rects(hwnd)
-    if not seen:   # 備案：整個視窗的元件列表裡型別是 List 的（只用位置）
+    if not seen:   # 備案 1：整個視窗的元件列表裡型別是 List 的（只用位置）
         seen = [{"rect": i["rect"], "children": None} for i in ((it or {}).get("items") or []) if i.get("type") == "List" and i.get("rect")]
+    if not seen:   # 備案 2：原生清單子視窗（WinForms／Win32 的 ListBox 經 UIA 常讀成 Pane；Qt 的 LINE 沒有子視窗，不會走到這裡）
+        seen = [{"rect": c["rect"], "children": None, "via": "win32-class"} for c in popup_menu.child_windows(hwnd)
+                if c.get("visible") and ("LISTBOX" in c["class"].upper() or c["class"] == "SysListView32")]
     inside = lambda r: wr.left - 2 <= r[0] < r[2] <= wr.right + 2 and wr.top - 2 <= r[1] < r[3] <= wr.bottom + 2
     lists = [l for l in seen if inside(l["rect"]) and l["rect"][3] - l["rect"][1] >= 100]
     if not lists:

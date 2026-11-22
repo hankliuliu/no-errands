@@ -143,7 +143,8 @@ def child_windows(hwnd):
     def cb(h, _):
         cls = ctypes.create_unicode_buffer(256); u32.GetClassNameW(h, cls, 256)
         r = wt.RECT(); u32.GetWindowRect(h, ctypes.byref(r))
-        out.append({"hwnd": h, "class": cls.value, "w": r.right - r.left, "h": r.bottom - r.top, "visible": bool(u32.IsWindowVisible(h))})
+        out.append({"hwnd": h, "class": cls.value, "w": r.right - r.left, "h": r.bottom - r.top, "visible": bool(u32.IsWindowVisible(h)),
+                    "rect": [r.left, r.top, r.right, r.bottom]})
         return True
     u32.EnumChildWindows(hwnd, PROC(cb), 0)
     return out
