@@ -23,7 +23,9 @@ jobs:
         run: mkdir -p ../p && python3 setup.py --project ../p --home ../h > setup.json
       - name: start Gitea (single binary, sqlite)
         run: |
-          curl -fsSL -o gitea https://dl.gitea.com/gitea/1.22.6/gitea-1.22.6-linux-amd64 && chmod +x gitea
+          curl -fsSL -o gitea https://dl.gitea.com/gitea/1.22.6/gitea-1.22.6-linux-amd64
+          # 釘版本＋雜湊（dl.gitea.com 公布的 .sha256）：升級由我們決定，對不上就停
+          echo "fd77f1a0273c85a0950207c1cfa6753a9fa57604e4ab1382484b191cc919ce15  gitea" | sha256sum -c - && chmod +x gitea
           mkdir -p /tmp/gt/custom/conf /tmp/gt/data
           printf '%s\n' 'APP_NAME = ne-test' 'RUN_MODE = prod' 'WORK_PATH = /tmp/gt' \
             '[server]' 'HTTP_ADDR = 127.0.0.1' 'HTTP_PORT = 3000' 'ROOT_URL = http://127.0.0.1:3000/' 'OFFLINE_MODE = true' \
@@ -60,7 +62,8 @@ jobs:
       - name: agent-browser (temp home)
         run: mkdir -p ../p && python3 setup.py --project ../p --home ../h > setup.json
       - name: start Mattermost (official preview image)
-        run: docker run -d --name mm -p 8065:8065 mattermost/mattermost-preview
+        # 釘映像摘要（2026-11-23 當時的 latest）：升級由我們決定；沒釘的話，失敗分不清是我們改壞還是上游換版
+        run: docker run -d --name mm -p 8065:8065 mattermost/mattermost-preview@sha256:a83c4c0e783e6d4f8b0266548c39b5c0d08947d104878b96e86363f967382a5b
       - name: prepare server (API)
         run: python3 tests/selfhost/mm_setup.py
       - name: mattermost end-to-end (PAT via UI, read-only tool, outbox real send, read state)
