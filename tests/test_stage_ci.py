@@ -536,8 +536,8 @@ def real_chrome_checks(stage_with):
         g0 = rd(geom).get("caption_plate")
         move(g0[0] + g0[2] - 10, g0[1] + g0[3] // 2); time.sleep(0.6)
         xb = rd(geom).get("xbtn")
-        check("A2 滑鼠停在字幕上 → × 出現在字幕塊外側右上角（不和字幕重疊）",
-              xb and not L.overlaps(xb, g0) and xb[1] + xb[3] <= g0[1] and abs((xb[0] + xb[2]) - (g0[0] + g0[2])) <= 2, (xb, g0))
+        check("A2 滑鼠停在字幕上 → × 出現在字幕塊右上角（在預留的空位裡）", xb and L.inside(xb, g0) and xb[0] + xb[2] >= g0[0] + g0[2] - 8,
+              (xb, g0))
         if xb:
             move(xb[0] + xb[2] // 2, xb[1] + xb[3] // 2); time.sleep(0.4)
             u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.8)

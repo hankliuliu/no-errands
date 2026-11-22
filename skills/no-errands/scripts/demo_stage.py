@@ -289,18 +289,14 @@ class Stage:
         cp = lay["cap_pad"]
         self.cap = tk.Label(self.capw, text="", font=(FONT, px(lay["cap_font"]), "bold"), fg=FG, bg=KEY,
                             justify="center", wraplength=lay["cap_max_w"] - 2 * cp, padx=cp, pady=max(4, cp // 2))
-        self.cap.pack()
-        # × 關字幕：字幕塊右上角「外側」的獨立小視窗（不壓到字；CI 擷圖：放在塊內時蓋住最後一個字）。
-        # 滑鼠停在字幕上或 × 上才出現（用游標位置判斷）。
+        self.cap.pack(side="left")
+        # × 關字幕：在字幕塊「內」右上角，但字幕塊右側永遠多留一格 xs 寬的空位給它——不壓到字（CI 擷圖：
+        # 原本疊在最後一個字上），也不另開視窗（外側的獨立小視窗在測試機上有時沒顯示，20 輪第 0 輪就失敗）。
+        # 滑鼠停在字幕上才顯示；點擊由墊片判定（x_hit），從哪裡點都接得到、不會穿到頁面。
         xs = max(20, round(lay["cap_font"] * 0.9))
         self.xbtn_size = xs
-        self.xbtn = self._top(0, 0, xs, xs)
-        self.xbtn.configure(bg="#1b2029", cursor="hand2")
-        self.xlbl = tk.Label(self.xbtn, text="×", font=(FONT, px(max(12, round(xs * 0.75))), "bold"), fg="#e6e6e6", bg="#1b2029")
-        self.xlbl.pack(fill="both", expand=True)
-        for w in (self.xbtn, self.xlbl):
-            w.bind("<Button-1>", lambda e: self.toggle_caption())
-        self.xbtn.withdraw()
+        self.cap_x = tk.Label(self.capw, text="×", font=(FONT, px(max(12, round(xs * 0.75))), "bold"), fg="#e6e6e6", bg="#1b2029")
+        self._x_on = False
         self.cap_on, self.cap_user, self.cap_drag0, self._cap_rgn = True, load_caption_pos(), None, None
         self.cap_geom, self._force_place = None, False
         # 輸入墊片：疊在字幕兩層之上、同一個位置大小、透明度 1/255。字幕上的所有滑鼠操作（拖動、按兩下回預設、
@@ -404,25 +400,35 @@ class Stage:
             pass
 
     def xbtn_rect(self):
-        """× 的位置：字幕塊右上角外側（塊的上方、右緣對齊）。"""
+        """× 的螢幕位置：字幕塊右上角（預留的空位裡）。"""
         g = self.cap_geom
         if not g:
             return None
         xs = self.xbtn_size
-        return (g[0] + g[2] - xs, max(self.lay["stage"][1], g[1] - xs - 4), xs, xs)
+        return (g[0] + g[2] - xs - 2, g[1] + 2, xs, xs)
 
     def update_xbtn(self, cur):
-        xr = self.xbtn_rect() if getattr(self, "_cap_shown", False) else None
-        hot = bool(cur and xr and self.cap_geom and (L.inside((cur[0], cur[1], 0, 0), self.cap_geom)
-                                                   or L.inside((cur[0], cur[1], 0, 0), (xr[0] - 4, xr[1] - 4, xr[2] + 8, xr[3] + 12))))
-        if hot and not self.cap_drag0:
-            self.xbtn.geometry("%dx%d+%d+%d" % (xr[2], xr[3], xr[0], xr[1]))
-            if not self.xbtn.winfo_viewable():
-                self.xbtn.deiconify()
-        elif self.xbtn.winfo_viewable():
-            self.xbtn.withdraw()
+        """滑鼠停在字幕上才顯示 ×（拖動中不顯示）。"""
+        hot = bool(cur and self.cap_geom and getattr(self, "_cap_shown", False) and not self.cap_drag0
+                   and L.inside((cur[0], cur[1], 0, 0), self.cap_geom))
+        if hot != self._x_on:
+            self._x_on = hot
+            if hot:
+                self.cap_x.place(relx=1.0, x=-2, y=2, anchor="ne", width=self.xbtn_size, height=self.xbtn_size)
+            else:
+                self.cap_x.place_forget()
+
+    def x_hit(self, e):
+        """按在字幕右上角的 × 上（墊片座標）。"""
+        w = self.cappad.winfo_width()
+        xs = self.xbtn_size
+        return e.x >= w - xs - 6 and e.y <= xs + 6
 
     def cap_press(self, e):
+        if self.x_hit(e):
+            self.cap_drag0 = None
+            self.toggle_caption()
+            return
         g = self.cap_geom or (self.capbg.winfo_x(), self.capbg.winfo_y(), 0, 0)
         self.cap_drag0 = (e.x_root, e.y_root, g[0], g[1])
 
@@ -1011,7 +1017,7 @@ class Stage:
             self.cap.configure(text=text or "")
         if text and self.cap_on:
             self.capw.update_idletasks()
-            bw, bh = self.cap.winfo_reqwidth(), self.cap.winfo_reqheight()
+            bw, bh = self.cap.winfo_reqwidth() + self.xbtn_size + 4, self.cap.winfo_reqheight()   # 右側預留 × 的空位
             look = getattr(self, "look_rect", None)
             box0 = self.cap_box()
             hover = bool(cur and box0 and L.inside((cur[0], cur[1], 0, 0), box0))
@@ -1085,7 +1091,7 @@ class Stage:
 
     def overlays(self):
         """我們疊在瀏覽器之上的視窗，由下到上。"""
-        return [self.shield, self.maskw, self.band] + self.edges + [self.ptrw, self.capbg, self.capw, self.cappad, self.xbtn, self.ctlw, self.hintw]
+        return [self.shield, self.maskw, self.band] + self.edges + [self.ptrw, self.capbg, self.capw, self.cappad, self.ctlw, self.hintw]
 
     def restack(self):
         """實際的上下順序（都在置頂層；工作列、通知被壓在下面），由上到下：控制列…字幕（墊片在字之上）→ 外框 →
@@ -1122,7 +1128,7 @@ class Stage:
         names = {}
         for n, w in (("hint", self.hintw), ("controls", self.ctlw), ("pad", self.cappad), ("captext", self.capw),
                      ("plate", self.capbg), ("band", self.band), ("mask", self.maskw), ("backdrop", self.root),
-                     ("shield", self.shield), ("pointer", self.ptrw), ("x", self.xbtn)):
+                     ("shield", self.shield), ("pointer", self.ptrw)):
             try:
                 names[int(w.frame(), 16)] = n
             except Exception:
@@ -1147,7 +1153,7 @@ class Stage:
         return {"z_order": self.z_order(),
                 "cap_btn": [self.b_cap.winfo_rootx() + self.b_cap.winfo_width() // 2, self.b_cap.winfo_rooty() + self.b_cap.winfo_height() // 2]
                 if self.ctl_shown and self.b_cap.winfo_ismapped() else None,
-                "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": box(self.xbtn), "hint_visible": bool(self.hintw.winfo_viewable()),
+                "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": list(self.xbtn_rect()) if self._x_on and self.xbtn_rect() else None, "hint_visible": bool(self.hintw.winfo_viewable()),
                 "caption_on": self.cap_on, "controls_rect": box(self.ctlw), "controls_want": list(getattr(self, "_ctl_xy", None) or []),
                 "controls_moves": getattr(self, "ctl_moves", 0), "controls_stuck": getattr(self, "_ctl_retry", 0) > 3,
                 "shield": box(self.shield), "pointer": [round(v) for v in self.ptr_pos] if self.ptr_pos and self.ptrw.winfo_viewable() else None,
