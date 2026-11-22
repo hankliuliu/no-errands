@@ -348,6 +348,7 @@ def real_chrome_checks(stage_with):
             u.mouse_event(0x8001, int(x_ * 65535 / (W - 1)), int(y_ * 65535 / (H - 1)), 0, 0)
         move_abs(W // 2, H // 3); time.sleep(0.15); move_abs(W // 2 + 40, H // 3 + 30); time.sleep(0.8)
         g3 = rd(geom)
+        check("控制列出現時，沒有提示文字就不顯示提示列（不留空的深色方塊）", g3.get("hint_visible") is False, g3.get("hint_visible"))
         check("A2 滑鼠移動讓控制列出現時，字幕位置前後不變", g3.get("controls_visible") and g3.get("caption_plate") == pl,
               (pl, g3.get("caption_plate"), g3.get("controls_visible")))
         cr3 = g3.get("controls_rect")
@@ -433,10 +434,15 @@ def real_chrome_checks(stage_with):
         g1 = rd(geom)
         check("A2 在字幕上按兩下 → 回到預設位置（下方置中）", g1.get("cap_user") is None and g1.get("caption_plate")
               and abs((g1["caption_plate"][0] + g1["caption_plate"][2] / 2) - W / 2) <= 2, (g0, g1.get("caption_plate")))
-        # ×：滑鼠移到字幕上（× 出現），點右上角 → 字幕收起
+        # ×：滑鼠移到字幕上 → × 出現在字幕塊右上角外側（不壓字）→ 點它 → 字幕收起
         g0 = rd(geom).get("caption_plate")
-        move(g0[0] + g0[2] - 10, g0[1] + 8); time.sleep(0.5)
-        u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.8)
+        move(g0[0] + g0[2] - 10, g0[1] + g0[3] // 2); time.sleep(0.6)
+        xb = rd(geom).get("xbtn")
+        check("A2 滑鼠停在字幕上 → × 出現在字幕塊外側右上角（不和字幕重疊）",
+              xb and not L.overlaps(xb, g0) and xb[1] + xb[3] <= g0[1] and abs((xb[0] + xb[2]) - (g0[0] + g0[2])) <= 2, (xb, g0))
+        if xb:
+            move(xb[0] + xb[2] // 2, xb[1] + xb[3] // 2); time.sleep(0.4)
+            u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.8)
         g1 = rd(geom)
         check("A2 點字幕右上角的 × → 字幕收起", g1.get("caption_on") is False and not g1.get("caption_plate"), g1.get("caption_plate"))
         time.sleep(0.5)
