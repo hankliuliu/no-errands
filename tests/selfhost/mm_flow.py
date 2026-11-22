@@ -34,6 +34,20 @@ def api(base, method, path, token=None, body=None, raw=False):
         return r if raw else json.loads(r.read().decode() or "null")
 
 
+def upload(base, tok, channel_id, name, data):
+    """multipart POST /files（測試腳本自己製造附件；被測的 gather 只發 GET）。"""
+    bd = "neboundary%d" % int(time.time() * 1000)
+    nl = "\r\n"
+    head = ("--" + bd + nl + 'Content-Disposition: form-data; name="channel_id"' + nl + nl + channel_id + nl +
+            "--" + bd + nl + 'Content-Disposition: form-data; name="files"; filename="%s"' % name + nl +
+            "Content-Type: application/octet-stream" + nl + nl)
+    body = head.encode() + data + (nl + "--" + bd + "--" + nl).encode()
+    req = urllib.request.Request(base + "/api/v4/files", method="POST", data=body,
+                                 headers={"Authorization": "Bearer " + tok, "Content-Type": "multipart/form-data; boundary=" + bd})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode())["file_infos"][0]["id"]
+
+
 def login_token(base, user, pw):
     r = api(base, "POST", "/users/login", body={"login_id": user, "password": pw}, raw=True)
     return r.headers.get("Token")
@@ -208,6 +222,36 @@ def main():
         rows = {m["id"]: m for m in (tool("gather.py", "read", "--target", gid or "").get("messages") or [])}
         check("f 再同步：編輯過的貼文更新成新內容", rows.get(p_a["id"], {}).get("text") == "gather probe A edited", r1)
         check("f 再同步：刪除的貼文標成已刪除（不默默消失）", rows.get(p_b["id"], {}).get("deleted") is True, r1)
+
+        # g. Sprint E：附件（文件收、照片預設不收但列進未收清單、fetch 補收）、釘選貼文、頻道標題與用途
+        import hashlib
+        pdf = b"%PDF-1.4 no-errands gather attachment probe"
+        f_pdf = upload(base, bob_tok, ts["id"], "spec-probe.pdf", pdf)
+        f_png = upload(base, bob_tok, ts["id"], "pic-probe.png", bytes([0x89]) + b"PNG probe")
+        p_f = api(base, "POST", "/posts", bob_tok, {"channel_id": ts["id"], "message": "files probe", "file_ids": [f_pdf, f_png]})
+        api(base, "POST", "/posts/%s/pin" % p_f["id"], bob_tok)
+        api(base, "PUT", "/channels/%s/patch" % ts["id"], admin_tok, {"header": "probe header", "purpose": "probe purpose"})
+        time.sleep(1.5)
+        o = tool("gather.py", "sync", "--target", gid or "")
+        r2 = (o.get("results") or [{}])[0]
+        idx = os.path.join(home, "gather", "mattermost", gid or "x", "files", "index.jsonl")
+        items = {json.loads(l)["file_id"]: json.loads(l) for l in open(idx, encoding="utf-8")} if os.path.exists(idx) else {}
+        ip = items.get(f_pdf, {})
+        saved = os.path.join(os.path.dirname(idx), ip.get("path") or "x")
+        check("g 文件附件收到：原檔存在、sha256 相符", ip.get("status") == "received" and os.path.exists(saved)
+              and hashlib.sha256(open(saved, "rb").read()).hexdigest() == ip.get("sha256") == hashlib.sha256(pdf).hexdigest(), (r2, ip))
+        check("g 照片預設不收、列進未收清單（依設定不收）", items.get(f_png, {}).get("reason") == "依設定不收"
+              and os.path.exists(os.path.join(os.path.dirname(idx), "未收清單.md")), items.get(f_png))
+        rd = tool("gather.py", "read", "--target", gid or "")
+        ann = rd.get("announcements") or {}
+        check("g 頻道標題與用途", ann.get("header") == "probe header" and ann.get("purpose") == "probe purpose", ann)
+        check("g 釘選貼文收進公告", any(x.get("id") == p_f["id"] for x in ann.get("pinned") or []), ann.get("pinned"))
+        o = tool("gather.py", "fetch", "--target", gid or "", "--kind", "photo")
+        items = {json.loads(l)["file_id"]: json.loads(l) for l in open(idx, encoding="utf-8")}
+        check("g fetch --kind photo：照片補收、轉成已收", items.get(f_png, {}).get("status") == "received" and o.get("received") == 1, o)
+        st = tool("gather.py", "status")
+        row = next((x for x in st.get("targets", []) if x.get("target") == gid), {})
+        check("g status 列出已收／未收與公告數", (row.get("items") or {}).get("received", 0) >= 2 and row.get("announcements", 0) >= 1, row)
 
         # 收掉發件匣伺服器
         try:
