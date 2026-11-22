@@ -46,7 +46,8 @@ PROFILES = {
         "unread_format_known": True,
         "messages": "messages",
         "header_prefix": "open chat: ",        # 目前開啟的對話標頭「open chat: 名稱 (N)」（只比對、不輸出）
-        "forbidden_names": {"message input", "Send", "Emoji"},
+        "view_buttons": {"notes": "記事本"},     # 標頭工具列（第一顆＝對話名稱）裡的記事本：開一個獨立視窗 NE-NOTES
+        "forbidden_names": {"message input", "Send", "Emoji", "記事本"},
         "forbidden_roles_main": {"textfield"},          # 主視窗裡的任何文字框都不碰
         "menu_path": ["Chat", "Export chat"],
         "export_via": "popup",                 # 像 LINE：標頭的「More」按鈕 → 彈出選單（獨立頂層視窗）→ Save chat
@@ -121,6 +122,20 @@ def _header_display(prof, snap):
         kids = [k for k in node.get("children") or [] if k.get("role") == "button"]
         if node.get("role") != "listbox" and len(kids) >= 6 and kids[0].get("name"):
             return kids[0]["name"]
+    return None
+
+
+def is_header_toolbar(node, chat):
+    """開著的對話標頭工具列：非 listbox、≥6 顆按鈕、第一顆的名稱（去掉人數）和指名對話相符。"""
+    kids = [k for k in (node or {}).get("children") or [] if k.get("role") == "button"]
+    return bool(node) and node.get("role") != "listbox" and len(kids) >= 6 and bool(chat) \
+        and name_level(kids[0].get("name") or "", chat) > 0
+
+
+def header_toolbar(snap, chat):
+    for node, _ in walk(snap["tree"]):
+        if is_header_toolbar(node, chat):
+            return node
     return None
 
 
@@ -315,8 +330,12 @@ def assert_allowed(prof, action, node, parents, ctx):
     "allow": "list-target"|"menu"|"close"|"dialog"}。不合規就丟 Refused。"""
     name = node.get("name", "")
     role = node.get("role", "")
-    if ctx.get("allow") == "view-button" and action == "click" and role == "button"             and name in (prof.get("view_buttons") or {}).values()             and any(len([k for k in (p_.get("children") or []) if k.get("role") == "button"]) >= 6 for p_ in parents):
-        return   # 只讀檢視（例如記事本）：必須是開著的對話標頭工具列裡的那顆
+    if ctx.get("allow") == "view-button":
+        # 只讀檢視（例如記事本）：按鈕的直接父節點必須就是「指名對話」的標頭工具列（第一顆名稱相符），和 list-target 一樣再比對一次
+        if action == "click" and role == "button" and name in (prof.get("view_buttons") or {}).values() \
+                and parents and is_header_toolbar(parents[-1], ctx.get("target_chat") or ""):
+            return
+        raise Refused("檢視按鈕只能是開著的指名對話標頭工具列裡的那顆")
     if ctx["zone"] == "dialog":
         nid = str((node.get("native_id") or {}).get("value", ""))
         if action == "set-value" and role in ("textfield", "combobox") and nid in prof["dialog_filename_ids"]:
@@ -562,9 +581,37 @@ def _shape(node, depth=0, maxd=14):
     return d
 
 
-def cmd_probe(app, prof, chat, view):
-    """只讀探索 UI 結構（Sprint E）：開著的必須是指名對話；可選擇點一顆檢視按鈕（notes）或打開選單（menu）看項目，
-    看完關掉。輸出只有角色、可用動作與名稱字數（介面用語除外）。不輸入、不點其他東西。"""
+def _close_new(pid, before, res):
+    """收尾：這次探索新出現的視窗一律關掉——彈出視窗用 close_popup，有標題的頂層視窗送 WM_CLOSE 並確認真的關了。"""
+    import ctypes
+    u32 = ctypes.windll.user32
+    closed, left = 0, 0
+    for w in popup_menu.popup_windows(pid, exclude=before):
+        titled = u32.GetWindowTextLengthW(w["hwnd"]) > 0
+        try:
+            if titled:
+                u32.PostMessageW(w["hwnd"], 0x0010, 0, 0)   # WM_CLOSE
+            else:
+                popup_menu.close_popup(w["hwnd"])
+        except Exception:
+            pass
+        for _ in range(20):
+            time.sleep(0.15)
+            if not u32.IsWindow(w["hwnd"]) or not u32.IsWindowVisible(w["hwnd"]):
+                break
+        if u32.IsWindow(w["hwnd"]) and u32.IsWindowVisible(w["hwnd"]):
+            left += 1
+        else:
+            closed += 1
+    res["closed_windows"], res["windows_left_open"] = closed, left
+
+
+def cmd_probe(app, prof, chat, view, pol):
+    """只讀探索 UI 結構（Sprint E）：只限白名單對話，開著的必須是指名對話；可點一顆檢視按鈕（notes，必須在驗過的標頭工具列裡）
+    或打開選單（menu）看項目。輸出只有角色、可用動作與名稱字數（介面用語除外）。不輸入、不點其他東西。
+    收尾（成功或失敗都一樣）：新出現的視窗一律關掉；記事本若是在主視窗內原地切換，標明 left_open。"""
+    if not policy.in_whitelist(pol, chat):
+        raise Refused("probe 只限白名單裡的對話（點開記事本等可能清掉「有新內容」的標記）")
     if popup_menu is None or os.name != "nt":
         raise Refused("probe 目前只支援 Windows")
     win = find_window(prof)
@@ -574,37 +621,47 @@ def cmd_probe(app, prof, chat, view):
     pid = win.get("pid")
     res = {"view": view, "main_before": _shape(full["tree"])}
     before = popup_menu.visible_hwnds(pid)
-    titled_before = {w["id"] for w in ad("list-windows") if w.get("pid") == pid}
-    snap = snapshot(win)
-    if view == "menu":
-        btn, bp = find_node(snap, lambda n: n.get("role") == "button" and n.get("name") == prof["menu_button"])
-        if not btn:
-            raise Refused("找不到選單按鈕")
-        guarded(prof, "click", btn, bp, {"zone": "main", "allow": "menu-button"})
-    elif view in (prof.get("view_buttons") or {}):
-        nm = prof["view_buttons"][view]
-        btn, bp = find_node(snap, lambda n: n.get("role") == "button" and n.get("name") == nm)
-        if not btn:
-            raise Refused("找不到「%s」按鈕" % nm)
-        guarded(prof, "click", btn, bp, {"zone": "main", "allow": "view-button"})
-    elif view:
-        raise Refused("不認得的檢視")
-    time.sleep(1.5)
-    res["main_after"] = _shape(snapshot(win, interactive=False)["tree"])
-    res["new_popups"] = []
-    for w in popup_menu.popup_windows(pid, exclude=before):
-        it = popup_menu.popup_items(w["hwnd"])
-        res["new_popups"].append({"class": w["class"], "w": w["rect"][2] - w["rect"][0], "h": w["rect"][3] - w["rect"][1],
-                                  "items": [{"n": _mask(i.get("name")), "t": i.get("type")} for i in (it.get("items") or [])][:80]})
+    try:
         if view == "menu":
-            popup_menu.close_popup(w["hwnd"])
-    res["new_windows"] = []
-    for w in ad("list-windows"):
-        if w.get("pid") == pid and w["id"] not in titled_before:
-            try:
-                res["new_windows"].append({"title": _mask(w.get("title") or ""), "tree": _shape(snapshot(w, interactive=False)["tree"])})
-            except Exception as e:
-                res["new_windows"].append({"title": _mask(w.get("title") or ""), "error": str(e)[:80]})
+            snap = snapshot(win)
+            btn, bp = find_node(snap, lambda n: n.get("role") == "button" and n.get("name") == prof["menu_button"])
+            if not btn:
+                raise Refused("找不到選單按鈕")
+            guarded(prof, "click", btn, bp, {"zone": "main", "allow": "menu-button"})
+        elif view in (prof.get("view_buttons") or {}):
+            nm = prof["view_buttons"][view]
+            tb = header_toolbar(full, chat)
+            btn = next((k for k in (tb or {}).get("children") or [] if k.get("role") == "button" and k.get("name") == nm), None)
+            if not btn:
+                raise Refused("標頭工具列裡找不到「%s」" % nm)
+            _, bp = find_node(full, lambda n: n is btn)
+            guarded(prof, "click", btn, bp, {"zone": "main", "allow": "view-button", "target_chat": chat})
+        elif view:
+            raise Refused("不認得的檢視")
+        time.sleep(1.5)
+        res["main_after"] = _shape(snapshot(win, interactive=False)["tree"])
+        res["new_popups"], res["new_windows"] = [], []
+        import ctypes
+        for w in popup_menu.popup_windows(pid, exclude=before):
+            if ctypes.windll.user32.GetWindowTextLengthW(w["hwnd"]) > 0:
+                aw = next((x for x in ad("list-windows") if x.get("pid") == pid and str(x.get("hwnd") or "") == str(w["hwnd"])), None)
+                entry = {"class": w["class"], "w": w["rect"][2] - w["rect"][0], "h": w["rect"][3] - w["rect"][1]}
+                try:
+                    it = popup_menu.popup_items(w["hwnd"])
+                    entry["items"] = [{"n": _mask(i.get("name")), "t": i.get("type")} for i in (it.get("items") or [])][:120]
+                except Exception as e:
+                    entry["error"] = type(e).__name__
+                if aw:
+                    entry["title"] = _mask(aw.get("title") or "")
+                res["new_windows"].append(entry)
+            else:
+                it = popup_menu.popup_items(w["hwnd"])
+                res["new_popups"].append({"class": w["class"], "w": w["rect"][2] - w["rect"][0], "h": w["rect"][3] - w["rect"][1],
+                                          "items": [{"n": _mask(i.get("name")), "t": i.get("type")} for i in (it.get("items") or [])][:80]})
+        if view in (prof.get("view_buttons") or {}) and not res["new_windows"] and not res["new_popups"]:
+            res["left_open"] = True   # 主視窗內原地切換：先不自己亂點返回，回報結構再決定正式路徑怎麼回去
+    finally:
+        _close_new(pid, before, res)
     ledger(app, "probe", True, view or "", chat)
     out(dict(res, ok=True))
 
@@ -1097,6 +1154,8 @@ def main():
         pol = policy.load(HOME)
         if not policy.is_granted(pol, app):
             raise Refused("使用者尚未授權這個 app（同意閘門）：先在對話中取得指名同意")
+        if sub == "probe" and not policy.in_whitelist(pol, policy.canonical_chat(pol, arg(a, "--chat") or "") or ""):
+            raise Refused("probe 只限白名單裡的對話（點開記事本等可能清掉「有新內容」的標記）")
         if sub in ("open", "export", "close", "act", "probe") or (sub == "read" and not arg(a, "--file")):
             idle_gate(prof, pol, a)
             HANDBACK["may_restore"] = True   # 只有過了閒置閘門的指令可以把縮小的視窗還原
@@ -1117,7 +1176,7 @@ def main():
         elif sub == "close":
             cmd_close(app, prof, cancel_late="--cancel-late-dialog" in a)
         elif sub == "probe":
-            cmd_probe(app, prof, arg(a, "--chat") or "", arg(a, "--view"))
+            cmd_probe(app, prof, arg(a, "--chat") or "", arg(a, "--view"), pol)
         elif sub == "act" and len(a) >= 3 and a[2] in ("click", "set-value"):
             cmd_act(app, prof, a[2], arg(a, "--target") or "", arg(a, "--text", ""))
         else:

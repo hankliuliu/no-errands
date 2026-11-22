@@ -10,6 +10,7 @@
   B3-6 群組名稱結尾的人數標示（-CountNames，名稱全是虛構的）：人數變了照樣找得到；名稱本身以括號數字結尾不被誤削；
        名稱含「/」（預設檔名被換成「_」）；全形括號；帶人數整串存進白名單；去掉人數後同名 → 拒
   B3-7 存檔對話框延遲 10 秒才出現（像 LINE 準備大群組的匯出）：等得到、只點一次、只存一份、沒有殘留對話框
+  B3-8 probe（只讀探索）：白名單對話點開記事本 → 放行、輸出不含名稱與內容、開出來的視窗有關掉；不在白名單 → 拒絕、沒點開
   另：未授權的 app → 拒；沒有送出子指令
 每一步前後記錄前景視窗 handle 與游標位置（N4 不干擾量測），結果寫 JSON。
 
@@ -254,6 +255,24 @@ def main():
         check("B3-7 只存了一份", events("export") - e0 == 1, events("export") - e0)
         check("B3-7 沒有殘留的存檔對話框", not any(w.get("title") == "Save chat history" for w in lw.get("data", [])))
         trigger({"op": "reset"})
+
+        # B3-8 probe
+        n0, c0 = events("notes-open"), events("notes-close")
+        cg("open", "--chat", "Kilo")
+        o = cg("probe", "--chat", "Kilo", "--view", "notes")
+        dump = json.dumps(o, ensure_ascii=False)
+        check("B3-8 probe 白名單對話的記事本：放行、點開了一次", o.get("ok") and events("notes-open") - n0 == 1, o.get("error") or o.keys())
+        check("B3-8 probe 輸出不含對話名稱與記事內容", "Kilo" not in dump and "deploy" not in dump and "Ann" not in dump, dump[:300])
+        lw = json.loads(subprocess.run([a.ad, "list-windows"], capture_output=True, text=True, encoding="utf-8").stdout)
+        check("B3-8 probe 收尾：開出來的記事本視窗已關掉", o.get("closed_windows", 0) >= 1 and o.get("windows_left_open") == 0
+              and events("notes-close") - c0 == 1 and not any(w.get("title") == "NE-NOTES" for w in lw.get("data", [])), o)
+        cg("close")
+        cg("open", "--chat", "Delta Friends", "--expect", cg("locate", "--chat", "Delta Friends").get("fingerprint") or "x")
+        o = cg("probe", "--chat", "Delta Friends", "--view", "notes")
+        check("B3-8 probe 不在白名單 → 拒絕、記事本沒被點開", o.get("refused") is True and "白名單" in o.get("error", "")
+              and events("notes-open") - n0 == 1, o)
+        cg("close")
+        check("B3-8 違規偵測器為空", violations() == [], violations())
 
         o = cg("send", "--chat", "Alpha Team")
         check("沒有送出子指令", o.get("refused") is True, o)

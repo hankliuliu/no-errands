@@ -156,6 +156,34 @@ $emoji.Text = 'Emoji'; $emoji.AccessibleName = 'Emoji'; $emoji.Left = 568; $emoj
 $send = New-Object System.Windows.Forms.Button
 $send.Text = 'Send'; $send.AccessibleName = 'Send'; $send.Left = 646; $send.Top = 396; $send.Width = 84
 
+# Header tool bar (like LINE): first button = open chat's display name, then a notes button (CJK name) and others.
+# The notes button opens a separate top-level window 'NE-NOTES' (no activation); events notes-open / notes-close.
+$tools = New-Object System.Windows.Forms.FlowLayoutPanel
+$tools.Left = 270; $tools.Top = 430; $tools.Width = 470; $tools.Height = 34; $tools.AccessibleName = 'chat tools'
+$cjkNotes = -join [char[]](0x8A18, 0x4E8B, 0x672C)
+$script:toolFirst = New-Object System.Windows.Forms.Button
+$script:toolFirst.Width = 120; $script:toolFirst.Text = '(none)'; $script:toolFirst.AccessibleName = '(none)'
+$tools.Controls.Add($script:toolFirst)
+foreach ($nm in @($cjkNotes, 'Mute', 'Search tools', 'Call', 'Pin')) {
+    $tb = New-Object System.Windows.Forms.Button
+    $tb.Text = $nm; $tb.AccessibleName = $nm; $tb.Width = 64
+    $tools.Controls.Add($tb)
+    if ($nm -eq $cjkNotes) { $script:notesBtn = $tb }
+}
+$script:notesBtn.Add_Click({
+    if (-not $script:current) { return }
+    $nf = New-Object NeNoActivateForm
+    $nf.Text = 'NE-NOTES'; $nf.Width = 360; $nf.Height = 240; $nf.StartPosition = 'Manual'; $nf.Left = 900; $nf.Top = 120
+    $nl = New-Object System.Windows.Forms.ListBox
+    $nl.Dock = 'Fill'; $nl.AccessibleName = 'notes'
+    [void]$nl.Items.Add('Note by Ann: deploy checklist v2')
+    [void]$nl.Items.Add('Note by Ben: buoy maintenance schedule')
+    $nf.Controls.Add($nl)
+    $nf.Add_FormClosed({ Write-JsonLine $eventFile @{ kind = 'notes-close' } })
+    $nf.Show()
+    Write-JsonLine $eventFile @{ kind = 'notes-open'; chat = $script:current.name }
+})
+
 $script:current = $null
 $script:exportNameOverride = $null
 $script:firstLineOverride = $null
@@ -168,6 +196,7 @@ function Show-Chat($c) {
     $c.custom = $null
     $header.Text = (Get-Display $c)
     $header.AccessibleName = 'open chat: ' + (Get-Display $c)
+    $script:toolFirst.Text = (Get-Display $c); $script:toolFirst.AccessibleName = (Get-Display $c)
     $msgList.Items.Clear()
     foreach ($m in $c.msgs) { [void]$msgList.Items.Add($m) }
     Update-List
@@ -211,6 +240,7 @@ $emoji.Add_Click({
 $closeBtn.Add_Click({
     if ($script:current) { Write-JsonLine $eventFile @{ kind = 'close'; chat = $script:current.name } }
     $script:current = $null; $header.Text = '(no chat open)'; $header.AccessibleName = 'open chat: (none)'; $msgList.Items.Clear()
+    $script:toolFirst.Text = '(none)'; $script:toolFirst.AccessibleName = '(none)'
 })
 
 $script:exportAction = {
@@ -311,7 +341,7 @@ $timer.Add_Tick({
     }
 })
 
-$f.Controls.AddRange(@($menu, $left, $header, $moreBtn, $closeBtn, $msgList, $input, $emoji, $send))
+$f.Controls.AddRange(@($menu, $left, $header, $moreBtn, $closeBtn, $msgList, $input, $emoji, $send, $tools))
 Update-List
 $timer.Start()
 Write-JsonLine $eventFile @{ kind = 'start'; pid = $PID }
