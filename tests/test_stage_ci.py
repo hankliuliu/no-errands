@@ -77,19 +77,20 @@ def main():
     for W, H in L.RESOLUTIONS:
         d = tempfile.mkdtemp(prefix="ne-stage-")
         geom = os.path.join(d, "geom.json")
-        json.dump({"status": "running", "card": None, "role": "長官", "role_color": "#c2410c", "section": "第一道關卡",
+        json.dump({"status": "waiting_next", "card": None, "role": "長官", "role_color": "#c2410c", "section": "第一道關卡",
                    "step_index": 8, "steps_total": 13, "beat": {"text": two_lines, "i": 2, "n": 3}, "accounts": {}},
                   open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
-        env = dict(os.environ, NE_STAGE_SCREEN="%dx%d" % (W, H), NE_STAGE_GEOM=geom, NE_STAGE_NO_HOTKEYS="1")
+        json.dump({"state": "playing", "advance": "step", "next_seq": 0}, open(os.path.join(d, "control.json"), "w"))
+        env = dict(os.environ, NE_STAGE_SCREEN="%dx%d" % (W, H), NE_STAGE_GEOM=geom, NE_STAGE_NO_HOTKEYS="1", NO_ERRANDS_HOME=d)
         p = spawn(d, env)
-        g = wait(lambda: rd(geom).get("caption_text") and rd(geom).get("next", [0, 0]) != [0, 0] and rd(geom))
+        g = wait(lambda: rd(geom).get("caption_box") and rd(geom).get("next") and rd(geom))
         lines = L.caption_lines(two_lines, W, H)
         check("%d×%d：字幕估算兩行以內（%d 行）" % (W, H, lines), lines <= 2, lines)
-        check("%d×%d：字幕實際排出來的高度放得進字幕帶（不截斷）" % (W, H),
-              g and g["caption_req_h"] <= g["caption_h"], g)
+        check("%d×%d：字幕塊實際排出來最多兩行、不超過最大寬度（舞台寬 62%%）" % (W, H),
+              g and g["caption_req"][1] <= 2 * g["cap_line_h"] + 2 * g["cap_pad"] + 12 and g["caption_req"][0] <= g["cap_max_w"] + 2, g)
         check("%d×%d：字幕就是這一拍的句子" % (W, H), g and g["caption_text"] == two_lines, g and g.get("caption_text"))
-        check("%d×%d：「下一步」在字幕帶的右半部" % (W, H), g and g["next"][0] > W * 0.6 and g["next"][1] > H - L.layout(W, H)["caption"][3],
-              g and g.get("next"))
+        check("%d×%d：講者模式輪到他按 → 控制列出現，「下一步」在右下角" % (W, H),
+              g and g["controls_visible"] and g["next"][0] > W * 0.6 and g["next"][1] > H * 0.8, g and g.get("next"))
         json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
         try:
             p.wait(10)

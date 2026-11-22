@@ -149,6 +149,26 @@ def content_rect(hwnd):
     return max(found, key=lambda r: r[2] * r[3]) if found else None
 
 
+def caption_pos_file():
+    return os.path.join(os.environ.get("NO_ERRANDS_HOME") or os.path.join(os.path.expanduser("~"), ".no-errands"),
+                        "stage-caption.json")
+
+
+def load_caption_pos():
+    try:
+        v = json.load(open(caption_pos_file(), encoding="utf-8")).get("pos")
+        return tuple(v) if v else None
+    except Exception:
+        return None
+
+
+def save_caption_pos(pos):
+    try:
+        json.dump({"pos": list(pos) if pos else None}, open(caption_pos_file(), "w", encoding="utf-8"))
+    except OSError:
+        pass
+
+
 def pid_alive(pid):
     if os.name != "nt":
         try:
@@ -234,32 +254,52 @@ class Stage:
         self.where.pack(side="right", padx=lay["pad"])        # 「5 / 13 · 現場操作」：這是現場操作，不是錄影
         self.rule = tk.Frame(self.band, height=3, bg=ACCENT)
         self.rule.place(relx=0, rely=1.0, anchor="sw", relwidth=1.0)
-        # 字幕帶
-        cx, cy, cw, ch = lay["caption"]
-        self.capw = self._top(cx, cy, cw, ch)
-        self.capw.configure(bg=BG)
-        tx, _, tw, _ = lay["caption_text"]
-        self.cap = tk.Label(self.capw, text="", font=(FONT, px(lay["cap_font"]), "bold"), fg=FG, bg=BG, justify="left",
-                            anchor="w", wraplength=tw)
-        self.cap.place(x=tx, y=0, width=tw, height=ch)
-        ox, _, ow, _ = lay["controls"]
-        ctl = tk.Frame(self.capw, bg=BG)
-        ctl.place(x=ox, y=0, width=ow, height=ch)
+        # 字幕塊（Sprint F-2）：浮在舞台上、大小跟著文字、可拖、可關。Tk 做不到「底半透明而字完全不透明」，
+        # 選整塊 85% 不透明（字仍清楚、底下的頁面隱約可見）。
+        CAPBG = "#000000"
+        self.capw = self._top(0, 0, 10, 10)
+        self.capw.configure(bg=CAPBG)
+        try:
+            self.capw.attributes("-alpha", 0.85)
+        except Exception:
+            pass
+        cp = lay["cap_pad"]
+        self.cap = tk.Label(self.capw, text="", font=(FONT, px(lay["cap_font"]), "bold"), fg=FG, bg=CAPBG,
+                            justify="center", wraplength=lay["cap_max_w"] - 2 * cp, padx=cp, pady=max(4, cp // 2))
+        self.cap.pack()
+        self.cap_x = tk.Label(self.capw, text="×", font=(FONT, px(max(12, lay["cap_font"] // 2))), fg="#dddddd", bg=CAPBG)
+        self.cap_on, self.cap_user, self.cap_drag0 = True, load_caption_pos(), None
+        for w in (self.capw, self.cap):
+            w.bind("<ButtonPress-1>", self.cap_press)
+            w.bind("<B1-Motion>", self.cap_move)
+            w.bind("<ButtonRelease-1>", self.cap_release)
+            w.bind("<Double-Button-1>", self.cap_reset)
+            w.bind("<Enter>", lambda e: self.cap_x.place(relx=1.0, x=-4, y=2, anchor="ne"))
+        self.capw.bind("<Leave>", lambda e: self.cap_x.place_forget())
+        self.cap_x.bind("<Button-1>", lambda e: self.toggle_caption())
+        # 控制列（像影片播放器）：右下角一小塊；自動播放時滑鼠動了才出現
+        ox, oy, ow, oh = lay["controls"]
+        CTLBG = "#11151d"
+        self.ctlw = self._top(ox, oy, ow, oh)
+        self.ctlw.configure(bg=CTLBG)
         cf = (FONT, px(lay["ctl_font"]), "bold")
-        mk = lambda t, cmd: tk.Button(ctl, text=t, command=cmd, font=cf, bg="#1b2029", fg="#9aa4b2", relief="flat",
-                                      activebackground="#2a3140", activeforeground=FG, padx=10, pady=4, takefocus=0, bd=0)
-        row = tk.Frame(ctl, bg=BG)
-        row.place(relx=1.0, rely=0.5, anchor="e")
+        mk = lambda t, cmd: tk.Button(self.ctlw, text=t, command=cmd, font=cf, bg="#1b2029", fg="#9aa4b2", relief="flat",
+                                      activebackground="#2a3140", activeforeground=FG, padx=8, pady=2, takefocus=0, bd=0)
         self.b_more = mk("⋯", self.more)
+        self.b_cap = mk("字幕", self.toggle_caption)
         self.b_pause = mk("⏸", self.toggle_pause)
         self.b_next = mk("下一步 →", self.next)
         self.b_planb = mk("備案畫面", self.planb)
-        for b in (self.b_next, self.b_pause, self.b_more):
-            b.pack(in_=row, side="left", padx=3)
-        self.dots = tk.Canvas(ctl, bg=BG, highlightthickness=0, height=14, width=ow)
-        self.dots.place(relx=1.0, rely=0.5, anchor="e", y=-lay["ctl_font"] * 2.4)
-        self.state = tk.Label(ctl, text="", font=(FONT, px(max(11, lay["ctl_font"] - 2))), fg=ACCENT, bg=BG, anchor="e")
-        self.state.place(relx=1.0, rely=0.5, anchor="e", y=lay["ctl_font"] * 2.4)
+        for b in (self.b_more, self.b_cap, self.b_pause, self.b_next):
+            b.pack(side="right", padx=3, pady=4)
+        self.dots = tk.Canvas(self.ctlw, bg=CTLBG, highlightthickness=0, height=12, width=70)
+        self.dots.pack(side="left", padx=6)
+        # 控制列旁的提示（輪到你／已暫停／已收到…）：控制列上方一行
+        self.hintw = self._top(ox, oy - lay["ctl_font"] * 2, ow, lay["ctl_font"] * 2)
+        self.hintw.configure(bg=CTLBG)
+        self.state = tk.Label(self.hintw, text="", font=(FONT, px(max(11, lay["ctl_font"] - 1))), fg=ACCENT, bg=CTLBG, anchor="e")
+        self.state.pack(fill="both", expand=True, padx=8)
+        self.ctl_shown, self._cur, self._moved_t = True, None, None
         # 外框：四條置頂細窗
         self.edges = [self._top(0, 0, 1, 1) for _ in range(4)]
         for e in self.edges:
@@ -283,6 +323,34 @@ class Stage:
                 u32.SetForegroundWindow(int(self.root.frame(), 16))
         except Exception:
             pass
+
+    def cap_press(self, e):
+        self.cap_drag0 = (e.x_root, e.y_root, self.capw.winfo_x(), self.capw.winfo_y())
+
+    def cap_move(self, e):
+        if not self.cap_drag0:
+            return
+        x0, y0, wx, wy = self.cap_drag0
+        sx, sy, sw, sh = self.lay["stage"]
+        bw, bh = self.capw.winfo_width(), self.capw.winfo_height()
+        x = min(max(wx + e.x_root - x0, sx), sx + sw - bw)
+        y = min(max(wy + e.y_root - y0, sy), sy + sh - bh)
+        self.capw.geometry("+%d+%d" % (x, y))
+        self.cap_user = L.caption_ratio((x, y), self.lay)        # 拖過就以使用者的位置為準（不再自動讓開）
+
+    def cap_release(self, e):
+        if self.cap_drag0:
+            self.cap_drag0 = None
+            save_caption_pos(self.cap_user)
+
+    def cap_reset(self, e=None):
+        """在字幕上按兩下：回到預設位置、恢復自動讓開。"""
+        self.cap_user = None
+        save_caption_pos(None)
+
+    def toggle_caption(self):
+        self.cap_on = not self.cap_on
+        self.toast("字幕：" + ("開" if self.cap_on else "關"))
 
     def drop(self, why=""):
         """撤下舞台：先把我們的瀏覽器取消置頂、送出停止，再收掉所有視窗（任何情況都不能留一個蓋住螢幕的視窗）。"""
@@ -383,7 +451,7 @@ class Stage:
         if os.name != "nt" or os.environ.get("NE_STAGE_NO_HOTKEYS"):
             return
         # VK_RIGHT、VK_NEXT（PageDown）、VK_SPACE；撤下用 Ctrl+Shift+F12（不攔單獨的 Esc：台上的瀏覽器與其他程式都收得到）
-        keys = {1: (0, 0x27), 2: (0, 0x22), 3: (0, 0x20), 4: (0x0002 | 0x0004, 0x7B)}
+        keys = {1: (0, 0x27), 2: (0, 0x22), 3: (0, 0x20), 4: (0x0002 | 0x0004, 0x7B), 5: (0, 0x43)}   # 5＝C（字幕開關）
 
         def loop():
             for i, (mod, vk) in keys.items():
@@ -395,6 +463,8 @@ class Stage:
                         self.root.after(0, self.next)
                     elif msg.wParam == 3:
                         self.root.after(0, self.toggle_pause)
+                    elif msg.wParam == 5:
+                        self.root.after(0, self.toggle_caption)
                     elif msg.wParam == 4:
                         self.root.after(0, lambda: self.drop("esc"))
             for i in keys:
@@ -446,6 +516,7 @@ class Stage:
         if box and not now.get("card") and acct and self.placed.get(acct) not in (None, "off"):
             rect = L.css_to_screen(box, self.lay["stage"], now.get("crop") or {}, float(now.get("zoom") or 1.5),
                                    getattr(self, "dpr", 1.0))
+        self.look_rect = rect
         if not rect:
             for e in self.edges:
                 e.withdraw()
@@ -553,36 +624,66 @@ class Stage:
         else:
             self.band.deiconify()
         beat = now.get("beat") or {}
-        slow = st == "waiting_system" and now.get("slow_s") and float(now.get("waited_s") or 0) >= float(now["slow_s"])
-        text = now.get("slow_say") if slow else beat.get("text", "")
-        if now.get("card") == "checklist":
-            text = ""
-        self.cap.configure(text=text or "")
-        # 還剩幾句：小圓點（講者看；觀眾不需要知道「第幾拍」）
+        slow = bool(st == "waiting_system" and now.get("slow_s") and float(now.get("waited_s") or 0) >= float(now["slow_s"]))
+        # 角色帶右端：等待提示（字幕只講內容）＋「5 / 13 · 現場操作」
+        wait_txt = ""
+        if st == "waiting_system":
+            wait_txt = (now.get("slow_say") or "") if slow else "等待%s %d 秒%s　·　" % (
+                now.get("wait_label") or "系統", now.get("waited_s") or 0,
+                ("（通常約 %d 秒）" % now["expect_s"]) if now.get("expect_s") else "")
+        base_where = ("%d / %d　·　現場操作" % (i_, n_)) if i_ and not now.get("card") else "現場操作"
+        self.where.configure(text=(wait_txt + ("　·　" if slow and wait_txt else "") + base_where) if wait_txt else base_where,
+                             fg="#d29922" if slow else DIM)
+        # 控制列：像影片播放器（自動：滑鼠動了才出現；講者輪到他、暫停、超時：常駐）
+        paused = ctl.get("state") == "paused"
+        presenter = ctl.get("advance") == "step"
+        cur = None
+        if os.name == "nt":
+            pt = wintypes.POINT(); u32.GetCursorPos(ctypes.byref(pt)); cur = (pt.x, pt.y)
+        if self._cur is not None and cur != self._cur:
+            self._moved_t = time.time()
+        self._cur = cur
+        end_wait = now.get("card") == "end" and presenter
+        cs = L.controls_state(presenter, "waiting_next" if end_wait else st, paused, slow,
+                              (time.time() - self._moved_t) if self._moved_t else None)
+        tt = getattr(self, "_toast", None)
+        toast_on = bool(tt and time.time() - tt[1] < 1.5)
+        show_ctl = (cs["visible"] or toast_on) and now.get("card") != "checklist"
+        if show_ctl != self.ctl_shown:
+            for w in (self.ctlw, self.hintw):
+                w.deiconify() if show_ctl else w.withdraw()
+            self.ctl_shown = show_ctl
+        self.b_next.configure(text="結束" if now.get("card") == "end" else "下一步 →",
+                              bg=ACCENT if cs["next_hot"] else "#1b2029", fg="#fff" if cs["next_hot"] else "#9aa4b2")
+        self.b_pause.configure(text="▶" if paused else "⏸")
+        if not toast_on:
+            self.state.configure(text=("● " + cs["hint"]) if cs["hint"] else "", fg="#d29922" if paused or slow else ACCENT)
+        if cs["planb"] and not self.b_planb.winfo_ismapped():
+            self.b_planb.pack(side="right", padx=3, pady=4, before=self.b_more)
+            self.b_planb.configure(bg="#b8860b", fg="#fff")
+        elif not cs["planb"] and self.b_planb.winfo_ismapped():
+            self.b_planb.pack_forget()
         self.dots.delete("all")
         n, i = int(beat.get("n") or 0), int(beat.get("i") or 0)
-        r_ = 4
         for k in range(n):
-            x = self.dots.winfo_width() - 8 - (n - 1 - k) * (r_ * 3)
-            self.dots.create_oval(x - r_, 7 - r_, x + r_, 7 + r_, fill=ACCENT if k < i else "#2a3140", width=0)
-        paused = ctl.get("state") == "paused"
-        waiting = st in ("waiting_next", "ready", "failed") or now.get("card") == "end"
-        self.b_next.configure(text="結束" if now.get("card") == "end" else "下一步 →",
-                              bg=ACCENT if waiting and not paused else "#1b2029", fg="#fff" if waiting else "#9aa4b2")
-        self.b_pause.configure(text="▶" if paused else "⏸")
-        tt = getattr(self, "_toast", None)
-        if tt and time.time() - tt[1] < 1.2:
-            pass
-        else:
-            self.state.configure(text="● 已暫停" if paused else "● 等你按下一步" if waiting else
-                             ("● 等待%s %d 秒" % (now.get("wait_label") or "系統", now.get("waited_s") or 0))
-                             if st == "waiting_system" else "", fg="#d29922" if paused or slow else ACCENT)
-
-        if (slow or st == "failed") and not self.b_planb.winfo_ismapped():
-            self.b_planb.pack(side="left", padx=3, before=self.b_next)
-            self.b_planb.configure(bg="#b8860b", fg="#fff")
-        elif not (slow or st == "failed") and self.b_planb.winfo_ismapped():
-            self.b_planb.pack_forget()
+            x = 70 - 8 - (n - 1 - k) * 12
+            self.dots.create_oval(x - 4, 2, x + 4, 10, fill=ACCENT if k < i else "#2a3140", width=0)
+        # 字幕塊：大小跟著文字；預設下方置中、自動讓開外框與控制列；拖過以使用者位置為準
+        text = beat.get("text", "") if not now.get("card") else ""
+        if self.cap.cget("text") != (text or ""):
+            self.cap.configure(text=text or "")
+        if text and self.cap_on:
+            self.capw.update_idletasks()
+            bw, bh = self.cap.winfo_reqwidth(), self.cap.winfo_reqheight()
+            look = getattr(self, "look_rect", None)
+            ctlr = self.lay["controls"] if show_ctl else None
+            x, y = L.caption_pos((bw, bh), self.lay, look=look, ctl=ctlr, user=self.cap_user)
+            if not self.cap_drag0:
+                self.capw.geometry("%dx%d+%d+%d" % (bw, bh, x, y))
+            if not self.capw.winfo_viewable():
+                self.capw.deiconify()
+        elif self.capw.winfo_viewable():
+            self.capw.withdraw()
         try:
             self.place_browsers(now)
         except Exception:
@@ -603,7 +704,7 @@ class Stage:
             h = getattr(self, "active_hwnd", None)
             if os.name == "nt" and h and not self.now.get("card") and u32.IsWindow(h):
                 u32.SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
-            for w in [self.band, self.capw] + self.edges:
+            for w in [self.band] + self.edges + [self.capw, self.ctlw, self.hintw]:
                 if w.winfo_viewable():
                     w.attributes("-topmost", True)
                     w.lift()
@@ -612,12 +713,15 @@ class Stage:
 
     def dump_geom(self):
         self.root.update_idletasks()
-        if not (self.b_next.winfo_ismapped() and self.b_next.winfo_width() > 1):
-            return                                        # 還沒排好：下一輪再寫（測試不會讀到 0,0）
         g = {"screen": [self.W, self.H], "caption_text": self.cap.cget("text"), "card_texts": getattr(self, "card_texts", []),
-             "caption_req_h": self.cap.winfo_reqheight(), "caption_h": self.lay["caption"][3],
+             "caption_box": [self.capw.winfo_x(), self.capw.winfo_y(), self.capw.winfo_width(), self.capw.winfo_height()]
+             if self.capw.winfo_viewable() else None,
+             "caption_req": [self.cap.winfo_reqwidth(), self.cap.winfo_reqheight()],
+             "cap_max_w": self.lay["cap_max_w"], "cap_line_h": self.lay["cap_line_h"], "cap_pad": self.lay["cap_pad"],
+             "controls_visible": bool(self.ctl_shown),
              "next": [self.b_next.winfo_rootx() + self.b_next.winfo_width() // 2,
-                      self.b_next.winfo_rooty() + self.b_next.winfo_height() // 2]}
+                      self.b_next.winfo_rooty() + self.b_next.winfo_height() // 2]
+             if self.ctl_shown and self.b_next.winfo_ismapped() and self.b_next.winfo_width() > 1 else None}
         tmp = os.environ["NE_STAGE_GEOM"] + ".tmp"
         json.dump(g, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
         try:
