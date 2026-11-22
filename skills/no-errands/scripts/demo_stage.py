@@ -1097,9 +1097,25 @@ class Stage:
         if self.cap.cget("text") != (text or ""):
             self.cap.configure(text=text or "")
         if text and self.cap_on:
+            look = getattr(self, "look_rect", None)
+            # 外框幾乎佔滿高度（對話框、長卡片）而旁邊空位比字幕窄：字幕縮窄改排兩行，放進旁邊的空位（5c）
+            cp_ = self.lay["cap_pad"]
+            wrap = self.lay["cap_max_w"] - 2 * cp_
+            sx_, sy_, sw_, sh_ = self.lay["stage"]
+            if look and look[3] > 0.6 * sh_:
+                gap = max(look[0] - sx_, sx_ + sw_ - (look[0] + look[2])) - 24 - self.xbtn_size - 4 - 2 * cp_
+                if gap >= 260:
+                    try:
+                        import tkinter.font as tkfont
+                        one_line = tkfont.Font(font=self.cap.cget("font")).measure(text)
+                    except Exception:
+                        one_line = 10 ** 6
+                    if one_line <= 2 * gap * 0.92:                # 兩行放得下才縮窄（A2：最多兩行）；放不下維持原寬、選重疊最少的位置
+                        wrap = min(wrap, gap)
+            if int(float(self.cap.cget("wraplength"))) != int(wrap):
+                self.cap.configure(wraplength=wrap)
             self.capw.update_idletasks()
             bw, bh = self.cap.winfo_reqwidth() + self.xbtn_size + 4, self.cap.winfo_reqheight()   # 右側預留 × 的空位
-            look = getattr(self, "look_rect", None)
             box0 = self.cap_box()
             hover = bool(cur and box0 and L.inside((cur[0], cur[1], 0, 0), box0))
             if hover or self.cap_drag0:

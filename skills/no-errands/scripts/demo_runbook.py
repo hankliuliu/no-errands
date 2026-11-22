@@ -683,8 +683,8 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
                 vars_.setdefault("__marks", {})[x] = marks[x]
         ok = True
     elif d == "press":
-        if getattr(br, "look", None) is not None and act.get("show_s", 1.0):
-            time.sleep(float(act.get("show_s", 1.0)))        # 舞台：打完先停一下讓觀眾看到內容，再送出
+        if getattr(br, "look", None) is not None and act.get("show_s", 0.7):
+            time.sleep(float(act.get("show_s", 0.7)))        # 舞台：打完先停一下讓觀眾看到內容，再送出（0.7 秒）
         rc, o, e = br.neb(act_acct(st, act), "press", act["key"], approval=approval, step=st["id"])
         ok = rc == 0
         if not ok:
@@ -838,7 +838,7 @@ class Look:
             dur = 0.6
         else:
             d = math.hypot(x - self.ptr[0], y - self.ptr[1])
-            dur = 0.0 if d < 2 else min(0.9, max(0.3, 0.3 + d / 1400.0))
+            dur = 0.0 if d < 2 else min(0.6, max(0.3, 0.3 + d / 2000.0))    # 5c：移動上限 0.6 秒
         self.ptr, self.ptr_seq = (x, y), self.ptr_seq + 1
         self.ctl.publish(pointer={"x": round(x, 1), "y": round(y, 1), "dur": round(dur, 2), "seq": self.ptr_seq})
         return dur
@@ -1062,7 +1062,7 @@ def beat_secs(b, text):
     """這一拍留多久（像播影片：按一次開始就自己往下走）：1.5 秒＋每字 0.25 秒、最少 3.5 秒；hold（多留一會兒）再加 2.5 秒。"""
     if b.get("s") is not None:
         return float(b["s"])
-    return max(3.5, 1.5 + 0.25 * len(text)) + (2.5 if b.get("hold") else 0.0)
+    return max(3.0, 1.5 + 0.25 * len(text)) + (1.5 if b.get("hold") else 0.0)    # 5c：最短 3 秒、重點拍加 1.5 秒（整場 8 分鐘內）
 
 
 def beat_target(st, b):  # noqa: C901
