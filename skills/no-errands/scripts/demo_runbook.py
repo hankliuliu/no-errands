@@ -801,7 +801,7 @@ def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
     lk = b.get("look")
     if isinstance(lk, dict) and lk.get("css"):
         look.set(st["account"], subst(lk["css"], vars_), scroll=lk.get("scroll", True))
-    elif lk is None or lk is False:
+    elif lk is False:                                     # 沒寫 look：保留上一個外框（例：剛勾好的勾選框）
         look.clear()
     waited = 0.0
     if live and b.get("hold") and ctl.step_mode():
