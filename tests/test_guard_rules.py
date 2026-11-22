@@ -89,6 +89,24 @@ try:
     check("token_guard 不相關的指令不表態", tg.decide(ev("Bash", {"command": "git status"}), pol, projA) is None
           and tg.decide(ev("Read", {"file_path": os.path.join(td, "mattermost.txt.bak")}), pol, projA) is None)
     check("token_guard 政策沒有 token 檔 → 不表態", tg.decide(ev("Read", {"file_path": tok}), {}, projA) is None)
+    # ---- CLI：開 token 組時先把 token_guard.py 放進 bin（不在的話 hook 以代碼 2 結束 = 擋下所有工具）
+    h3, p3 = os.path.join(td, "h3"), os.path.join(td, "p3")
+    os.makedirs(p3)
+    cp = subprocess.run([sys.executable, os.path.join(REPO, "setup.py"), "--project", p3, "--home", h3, "--guard-rules",
+                         "--guard-groups", "token,consent"], capture_output=True, text=True, encoding="utf-8")
+    s3 = json.load(open(os.path.join(p3, ".claude", "settings.json"), encoding="utf-8"))
+    check("CLI --guard-groups token,consent：bin/token_guard.py 已就位、hook 與 ask 寫入、沒有 direct-tools deny",
+          os.path.exists(os.path.join(h3, "bin", "token_guard.py")) and len(s3["hooks"]["PreToolUse"]) == 1
+          and len(s3["permissions"]["ask"]) == 5 and "deny" not in s3["permissions"], (cp.stdout[-300:], s3))
+    hp = subprocess.run(s3["hooks"]["PreToolUse"][0]["hooks"][0]["command"], shell=True, input='{"tool_name":"Bash","tool_input":{"command":"ls"}}',
+                        capture_output=True, text=True)
+    check("寫進設定的 hook 指令真的能跑、不相關的指令回 0 且不表態", hp.returncode == 0 and hp.stdout.strip() == "", (hp.returncode, hp.stdout, hp.stderr[-200:]))
+    cp = subprocess.run([sys.executable, os.path.join(REPO, "setup.py"), "--project", p3, "--home", h3, "--guard-rules",
+                         "--guard-groups", "nope"], capture_output=True, text=True, encoding="utf-8")
+    check("CLI 不認得的組 → 拒絕", cp.returncode == 2)
+    subprocess.run([sys.executable, os.path.join(REPO, "setup.py"), "--project", p3, "--home", h3, "--guard-rules", "--uninstall"],
+                   capture_output=True, text=True, encoding="utf-8")
+    check("CLI --uninstall：三組都拿掉", json.load(open(os.path.join(p3, ".claude", "settings.json"), encoding="utf-8")) == {})
 finally:
     shutil.rmtree(td, ignore_errors=True)
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))

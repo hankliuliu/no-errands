@@ -435,6 +435,13 @@ def main():
         if a.uninstall:
             res = apply_rules(target, guard_rules(home), remove=True); rules = guard_rules(home)
         else:
+            # hook 指向 bin/token_guard.py：檔案不在時 Python 以代碼 2 結束，而 PreToolUse hook 的代碼 2 = 擋下
+            # → 每個工具呼叫都會被擋。所以先把腳本放進 bin/、確認在了才寫設定。
+            if "token" in groups:
+                copy_scripts(home)
+                if not os.path.exists(os.path.join(home, "bin", "token_guard.py")):
+                    print(json.dumps({"ok": False, "error": "bin/token_guard.py 放不進去，沒有寫設定"}, ensure_ascii=False))
+                    sys.exit(1)
             # 重新套用 = 先把三組都拿掉，再加這次選的（關掉某一組就真的關掉）
             apply_rules(target, guard_rules(home), remove=True)
             rules = guard_rules(home, groups)
