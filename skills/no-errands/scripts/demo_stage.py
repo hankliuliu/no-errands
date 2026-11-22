@@ -682,7 +682,9 @@ class Stage:
     def draw_shield(self, now, cur):
         """隔離層：台上有瀏覽器時蓋住舞台；真的游標不動 2 秒就隱藏（隔離層與背板上），一動就出現。
         鍵盤焦點：前景變成我們的瀏覽器時拿回舞台（使用者按鍵不會打進頁面）。"""
-        on = bool(not now.get("card") and now.get("account") and self.placed.get(now.get("account")) not in (None, "off"))
+        fx = now.get("effects") or {}
+        on = bool(not now.get("card") and now.get("account") and self.placed.get(now.get("account")) not in (None, "off")
+                  and fx.get("shield", True))
         if on:
             sx, sy, sw, sh = self.lay["stage"]
             g = "%dx%d+%d+%d" % (sw, sh, sx, sy)
@@ -726,7 +728,8 @@ class Stage:
         """示範游標：卡片（片頭、轉場、片尾）時淡出；新畫面開始時從舞台中間偏下淡入，再平順移到目標。"""
         p = now.get("pointer") or {}
         acct = now.get("account")
-        onstage = bool(not now.get("card") and acct and self.placed.get(acct) not in (None, "off") and p.get("seq") is not None)
+        onstage = bool(not now.get("card") and acct and self.placed.get(acct) not in (None, "off") and p.get("seq") is not None
+                       and (now.get("effects") or {}).get("pointer", True))
         if not onstage:
             if self.ptrw.winfo_viewable():
                 self.ptrw.withdraw()
@@ -838,14 +841,15 @@ class Stage:
         key = (now.get("look") or {}).get("seq")
         if key != self.look_key:
             self.look_key, self.look_t = key, time.time()
-        a = L.look_alpha(time.time() - self.look_t)
+        faint = (now.get("effects") or {}).get("faint_look", True)
+        a = L.look_alpha(time.time() - self.look_t) if faint else 1.0       # 淡外框關掉：原本的粗框、不淡出
         if not rect or a <= 0:
             for e in self.edges:
                 if e.winfo_viewable():
                     e.withdraw()
             return
         x, y, w, h = rect
-        t = max(2, round(self.H * 0.0025))
+        t = max(2, round(self.H * 0.0025)) if faint else max(3, round(self.H * 0.0045))
         pad = t + 6
         x, y, w, h = x - pad, y - pad, w + 2 * pad, h + 2 * pad
         for e, (ex, ey, ew, eh) in zip(self.edges, ((x, y, w, t), (x, y + h - t, w, t), (x, y, t, h), (x + w - t, y, t, h))):
