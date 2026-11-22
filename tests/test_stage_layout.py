@@ -6,7 +6,7 @@
   - 瀏覽器視窗位置：裁切後的頁面剛好填滿舞台；頁面方框換算到舞台、在舞台外不畫。
 用法：python tests/test_stage_layout.py
 """
-import os, sys
+import os, time, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills", "no-errands", "scripts"))
 import stage_layout as L  # noqa: E402
@@ -179,6 +179,49 @@ c = FakeCtl(); lk = DR.Look(FakeBr(boxes, modal=1), c, align=AL); lk.step("a", T
 check("A9 Look：對話框開著 → 不捲、不遮（記為 skip）", c.now["align"]["how"] == "skip" and c.now.get("mask") is None, c.now)
 c = FakeCtl(); br3 = FakeBr(boxes); lk = DR.Look(br3, c, align=AL); lk.step("a", False); lk.set("a", "#t")
 check("這一步不對齊（劇本沒列這個檢視）→ 不做任何對齊查詢", c.now.get("align") is None and not any(x[0] == "scroll" for x in br3.calls))
+
+# ---- F-3：示範游標、捲動、外框淡出、不碰系統輸入
+st_ = lay["stage"] if False else L.layout(1920, 1080)["stage"]
+check("A21 CSS 點 → 螢幕（扣裁切、乘倍率、夾在舞台內）",
+      L.css_point((369, 184), st_, {"top": 84, "left": 269}, 1.0, 1.5) == (150, st_[1] + 150) and
+      L.css_point((0, 0), st_, {"top": 84, "left": 269}, 1.0, 1.5) == (st_[0], st_[1]))
+pts = [L.pointer_path((100, 900), (1500, 300), i / 60.0) for i in range(61)]
+steps = [((pts[i + 1][0] - pts[i][0]) ** 2 + (pts[i + 1][1] - pts[i][1]) ** 2) ** 0.5 for i in range(60)]
+check("A21 示範游標的路徑連續、有加減速（頭尾慢、中間快）、終點準確",
+      pts[0] == (100, 900) and abs(pts[-1][0] - 1500) < 0.01 and abs(pts[-1][1] - 300) < 0.01 and max(steps) < 60
+      and steps[0] < steps[30] / 4 and steps[-1] < steps[30] / 4, (max(steps), steps[0], steps[30]))
+mid = L.pointer_path((0, 0), (1000, 0), 0.5)
+check("A21 路徑略帶弧度（不是直線）", abs(mid[1]) > 20, mid)
+check("A25 讀內容的外框：1.2 秒內維持很淡（0.55），1.6 秒後完全淡出",
+      L.look_alpha(0.5) == 0.55 and 0 < L.look_alpha(1.4) < 0.55 and L.look_alpha(1.6) == 0)
+
+
+class FakeCtl2(FakeCtl):
+    def gate(self, on_resume=None):
+        return 0.0
+
+
+boxes3 = {"#post-list": [269, 141, 984, 354], nth(1): [269, 397, 984, 90.8], "@e9": [600, 700, 200, 40], "#t": [269, 397, 984, 90.8]}
+br4 = FakeBr(boxes3); c = FakeCtl2(); lk = DR.Look(br4, c, align=AL); lk.step("a", True)
+t_ = time.time(); lk.act("a", "@e9", press=True)
+sc = [x for x in br4.calls if x[0] == "scroll"]
+check("A24 目標在訊息區下方 → 分 3–4 段捲過去（每段不超過總量的一半）、總量剛好讓目標進到可視範圍",
+      3 <= len(sc) <= 4 and all(x[1] == "down" for x in sc) and sum(int(x[2]) for x in sc) == round(700 + 40 - (141 + 354 - 8))
+      and max(int(x[2]) for x in sc) <= sum(int(x[2]) for x in sc) / 2, sc)
+check("A21/A22 動作：游標移到元素中心、停一下、按下效果，不畫外框",
+      c.now.get("pointer", {}).get("seq") == 1 and c.now.get("press") == 1 and c.now.get("look") is None
+      and abs(c.now["pointer"]["x"] - 700) < 0.01 and time.time() - t_ >= 0.6 + 0.2 + 0.18 - 0.05, c.now)
+c = FakeCtl2(); lk = DR.Look(FakeBr(boxes3), c, align=AL); lk.step("a", True); lk.set("a", "#t")
+check("A21/A25 讀內容：淡外框（帶這一拍的編號）＋游標指在那一段開頭的左邊、不蓋住字",
+      c.now["look"]["seq"] == 1 and c.now["pointer"]["x"] < 269 and c.now.get("press") is None, c.now)
+import re as _re  # noqa: E402
+bad = {}
+for fn in ("demo_stage.py", "demo_runbook.py", "neb.py", "stage_layout.py"):
+    src = open(os.path.join(os.path.dirname(L.__file__), fn), encoding="utf-8").read()
+    hit = _re.findall(r"\b(SendInput|mouse_event|keybd_event|SetCursorPos|SetPhysicalCursorPos)\b", src)
+    if hit:
+        bad[fn] = sorted(set(hit))
+check("A26 舞台、引擎、守門的程式裡沒有任何系統層的滑鼠鍵盤輸入呼叫", not bad, bad)
 
 import demo_stage as DS  # noqa: E402
 q = r'"C:\x\chrome.exe" "--remote-debugging-port=0" "--user-data-dir=C:\Users\u\p\demo_a" "--window-size=1280,720"'

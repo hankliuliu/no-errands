@@ -637,8 +637,7 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
             ref, used = br.find(acct, act["target"])
             info.pop("error", None)
             if ref and getattr(br, "look", None) is not None:
-                br.look.set(acct, "@" + ref, scroll=True)      # 舞台：agent 要動的元素先框住
-                time.sleep(float(act.get("show_s", 0.8)))
+                br.look.act(acct, "@" + ref, press=d in ("click", "check"))   # 舞台：示範游標移過去、按下效果
             if ref:
                 info["used"] = used
                 cmd = [d, "@" + ref] + ([subst(act["text"], vars_)] if d == "fill" else [])
@@ -676,8 +675,17 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
         if not ok:
             info["error"] = err_of(rc, o)
     elif d == "scroll":
-        rc, o, e = br.neb(acct, "scroll", act.get("dir", "down"), str(act.get("px", 600)))
-        ok = rc == 0
+        total = int(act.get("px", 600))
+        if getattr(br, "look", None) is not None:          # 舞台：滾輪式分段（看得出是捲過去的）
+            ok = True
+            for i in range(4):
+                part = total * (i + 1) // 4 - total * i // 4
+                rc, o, e = br.neb(acct, "scroll", act.get("dir", "down"), str(part))
+                ok = ok and rc == 0
+                time.sleep(0.1)
+        else:
+            rc, o, e = br.neb(acct, "scroll", act.get("dir", "down"), str(total))
+            ok = rc == 0
     elif d in ("wait_text", "expect_absent"):
         budget = float(act.get("budget_s", 30))
         scopes = act.get("scopes") or [None]
@@ -769,20 +777,93 @@ class Look:
         self.br, self.ctl, self.acct, self.sel = br, ctl, None, None
         self.align_cfg, self.align_on, self.box, self.anchor, self._align_t = align, False, None, None, 0.0
         self.color = (align or {}).get("color")
+        self.ptr, self.ptr_seq, self.press_seq, self.look_seq = None, 0, 0, 0
 
     def step(self, acct, on):
-        """換步驟：這一步要不要對齊；殘段遮罩清掉。"""
+        """換步驟：這一步要不要對齊；殘段遮罩清掉。換角色時示範游標從新畫面的中間偏下重新出發（舞台負責淡入）。"""
+        if acct != self.acct:
+            self.ptr = None
         self.acct, self.sel, self.box, self.anchor = acct, None, None, None
         self.align_on = bool(self.align_cfg and on)
-        self.ctl.publish(mask=None, align=None)
+        self.ctl.publish(mask=None, align=None, look=None)
+
+    # ---- F-3：示範游標（畫在舞台上；系統游標不動）與平順捲動
+    def wait(self, secs):
+        """等 secs 秒；暫停的時間不算（游標停在原地）。"""
+        t = time.time()
+        while time.time() - t < secs:
+            time.sleep(0.04)
+            t += self.ctl.gate()
+
+    def point(self, x, y):
+        """示範游標移到頁面上的 CSS 點；回移動秒數（依距離 0.3–0.9 秒；第一次 0.6 秒）。"""
+        import math
+        if self.ptr is None:
+            dur = 0.6
+        else:
+            d = math.hypot(x - self.ptr[0], y - self.ptr[1])
+            dur = 0.0 if d < 2 else min(0.9, max(0.3, 0.3 + d / 1400.0))
+        self.ptr, self.ptr_seq = (x, y), self.ptr_seq + 1
+        self.ctl.publish(pointer={"x": round(x, 1), "y": round(y, 1), "dur": round(dur, 2), "seq": self.ptr_seq})
+        return dur
+
+    def press(self):
+        self.press_seq += 1
+        self.ctl.publish(press=self.press_seq)
+
+    def into_view(self, sel):
+        """目標不在可視範圍時平順地捲過去（訊息區：滾輪式分 3–4 段、約 0.4 秒）；其他地方用 scrollintoview。回目標方框。"""
+        box = self._box(sel)
+        if not box:
+            return None
+        cfg = self.align_cfg or {}
+        lst = self._box(cfg["list"]) if cfg.get("list") and cfg.get("scroller") else None
+        if lst and lst[0] - 2 <= box[0] <= lst[0] + lst[2] and box[1] < lst[1] + lst[3] + 4000:
+            top, bot = lst[1] + 8, lst[1] + lst[3] - 8
+            delta = 0.0
+            if box[1] < top:
+                delta = box[1] - top
+            elif box[1] + box[3] > bot:
+                delta = min(box[1] + box[3] - bot, box[1] - top)
+            if abs(delta) >= 4:
+                n = 4 if abs(delta) > 240 else 3
+                for i in range(n):
+                    part = int(round(abs(delta) * (i + 1) / n)) - int(round(abs(delta) * i / n))
+                    self.br.neb(self.acct, "scroll", "down" if delta > 0 else "up", str(part), "--selector", cfg["scroller"])
+                    time.sleep(0.1)
+                time.sleep(0.15)
+                box = self._box(sel) or box
+            return box
+        self.br.neb(self.acct, "scrollintoview", sel)
+        time.sleep(0.2)
+        return self._box(sel) or box
+
+    def act(self, acct, sel, press):
+        """動作的拍子：捲到目標 → 示範游標移過去（不畫外框，游標就是標示）→ 停 0.2 秒 → 點擊的話加按下效果。"""
+        self.acct, self.sel, self.box = acct, None, None
+        self.ctl.publish(look=None)
+        box = self.into_view(sel)
+        if not box:
+            return
+        if press:
+            x, y = box[0] + box[2] / 2, box[1] + box[3] / 2      # 和真正點擊的位置（元素中心）一致
+        else:
+            x, y = box[0] + min(36, box[2] / 2), box[1] + box[3] / 2   # 輸入框：指在框內左側
+        self.wait(self.point(x, y) + 0.2)
+        if press:
+            self.press()
+            self.wait(0.18)
 
     def set(self, acct, sel, scroll=True):
+        """讀內容的拍子：捲到那一段 → 淡外框（舞台 1.2 秒後淡出）→ 游標指在那一段開頭的左邊、不蓋住字。"""
         self.acct, self.sel = acct, sel
+        self.look_seq += 1
         if sel and scroll:
-            self.br.neb(acct, "scrollintoview", sel)
-            time.sleep(0.3)
+            self.into_view(sel)
         self.refresh(realign=False)
         self.align()
+        if self.box:
+            self.point(max(2.0, self.box[0] - 18), self.box[1] + min(12.0, self.box[3] / 2))
 
     def clear(self):
         self.sel = self.box = None
@@ -793,7 +874,7 @@ class Look:
             rc, o, e = self.br.neb(self.acct, "get", "box", self.sel)
             box = parse_box(o) if rc == 0 else None
             self.box = box
-            self.ctl.publish(look={"box": box} if box else None)
+            self.ctl.publish(look={"box": box, "seq": self.look_seq} if box else None)
         if realign and self.align_on and self.anchor is not None and time.time() - self._align_t >= 1.0:
             b = self._box(self.align_cfg["item_nth"].format(k=1))       # 有新訊息、版面動了 → 重新對齊
             if b is None or abs(b[1] - self.anchor[1]) > 2 or abs(b[3] - self.anchor[3]) > 2:
@@ -852,7 +933,7 @@ class Look:
     def refresh_box_only(self):
         rc, o, e = self.br.neb(self.acct, "get", "box", self.sel)
         self.box = parse_box(o) if rc == 0 else None
-        self.ctl.publish(look={"box": self.box} if self.box else None)
+        self.ctl.publish(look={"box": self.box, "seq": self.look_seq} if self.box else None)
 
     def page_color(self):
         """遮罩用的頁面底色：劇本寫的 > 頁面的 CSS 變數（例：--center-channel-bg）> 黑。"""

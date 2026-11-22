@@ -120,6 +120,39 @@ def css_to_screen(box, stage, crop, zoom, dpr):
     return int(x0), int(y0), int(x1 - x0), int(y1 - y0)
 
 
+def css_point(pt, stage, crop, zoom, dpr):
+    """頁面上的 CSS 點 → 螢幕實體像素（示範游標用）；夾在舞台內。"""
+    k = zoom * dpr
+    sx, sy, sw, sh = stage
+    X = sx + (pt[0] - crop.get("left", 0)) * k
+    Y = sy + (pt[1] - crop.get("top", 0)) * k
+    return int(min(max(X, sx), sx + sw - 1)), int(min(max(Y, sy), sy + sh - 1))
+
+
+def ease(t):
+    """加減速（smoothstep）。"""
+    t = min(max(t, 0.0), 1.0)
+    return t * t * (3 - 2 * t)
+
+
+def pointer_path(p0, p1, t, bend=0.12):
+    """示範游標在 t∈[0,1] 的位置：二次貝茲曲線（略帶弧度），加減速。"""
+    e = ease(t)
+    (x0, y0), (x1, y1) = p0, p1
+    dx, dy = x1 - x0, y1 - y0
+    cx, cy = (x0 + x1) / 2 - dy * bend, (y0 + y1) / 2 + dx * bend
+    x = (1 - e) ** 2 * x0 + 2 * (1 - e) * e * cx + e * e * x1
+    y = (1 - e) ** 2 * y0 + 2 * (1 - e) * e * cy + e * e * y1
+    return x, y
+
+
+def look_alpha(age, peak=0.55, hold=1.2, fade=0.4):
+    """讀內容的淡外框：出現後 hold 秒維持 peak 不透明度，再 fade 秒淡到 0。"""
+    if age <= hold:
+        return peak
+    return max(0.0, peak * (1 - (age - hold) / fade))
+
+
 def caption_pos(box_wh, lay, look=None, user=None, margin=12):
     """字幕塊的左上角。user＝(rx, ry) 舞台比例（使用者拖過的位置；拖過就不自動讓開）；
     否則預設下方置中，與「看這裡」外框重疊（含邊距）→ 改到上方。
