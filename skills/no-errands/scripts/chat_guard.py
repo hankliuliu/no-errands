@@ -547,6 +547,10 @@ def cmd_export(app, prof, dest, chat=None, load_hist=False):
     stray = save_dialogs(prof, win.get("pid"))
     if stray:
         EXPORT_CTX["stray_cancelled"] = cancel_dialogs(prof, stray)
+        for _ in range(20):   # 對話框關掉要一點時間
+            if not save_dialogs(prof, win.get("pid")):
+                break
+            time.sleep(0.25)
         if save_dialogs(prof, win.get("pid")):
             raise Refused("有之前留下的存檔對話框取消不掉：沒有開始匯出（請使用者把它關掉）")
     snap = snapshot(win)
@@ -573,6 +577,7 @@ def cmd_export(app, prof, dest, chat=None, load_hist=False):
             snap = snapshot(win)
     # 2) 等系統另存新檔對話框
     # 真機（2026-11-22）：人多、訊息多的 LINE 群組，點了「儲存聊天」之後要過一陣子對話框才出現 → 持續輪詢到 dialog_wait_s
+    titles = _dialog_titles(prof)   # 後面的覆寫確認、存檔後檢查都用到
     dlg, cands = None, []
     t_end = time.time() + float(prof.get("dialog_wait_s", 90))
     while time.time() < t_end:
