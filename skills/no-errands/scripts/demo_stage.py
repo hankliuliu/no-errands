@@ -24,7 +24,7 @@ import stage_layout as L  # noqa: E402
 import nowin  # noqa: E402,F401
 
 BG, FG, DIM, ACCENT, LOOK = "#0b0d12", "#f4f4f4", "#7d8794", "#2f7de1", "#ffcc33"
-CAP_ALPHA = 0.62                                        # 字幕底板的不透明度（字本身完全不透明）
+CAP_ALPHA = 0.8                                         # 字幕底板的不透明度（字本身完全不透明）
 PAD_ALPHA = 3 / 255.0                                   # 字幕的輸入墊片：看不見，但會接到點擊（alpha 0 會穿透；
                                                         # 不用 1/255：換算成整數時可能被捨入成 0 而整個穿透）
 SHIELD_ALPHA = 3 / 255.0                                # 隔離層：肉眼看不出，但不是 0（同墊片：不用 1/255）
@@ -272,7 +272,7 @@ class Stage:
         #   底板 capbg：黑色、整窗 CAP_ALPHA 透明度（看得到底下的頁面）、圓角（SetWindowRgn）
         #   字   capw ：色鍵透明（KEY 色的像素完全透明、點擊穿到底板），字本身完全不透明 → 白字清楚
         # 兩層一律同時設定位置（tick 與拖動都走 place_caption），不會錯開。
-        CAPBG, KEY = "#000000", "#010203"
+        CAPBG, KEY = "#2a2f38", "#010203"                  # 深灰（不是純黑）：深色頁面上也看得出是浮在上面的一塊
         self.cap_key = KEY
         self.capbg = self._top(0, 0, 10, 10)
         self.capbg.configure(bg=CAPBG)

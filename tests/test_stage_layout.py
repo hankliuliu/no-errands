@@ -36,7 +36,12 @@ bw, bh = 700, 90
 dx, dy = L.caption_pos((bw, bh), lay)
 look = (dx + 100, dy + 10, 300, 40)
 ux, uy = L.caption_pos((bw, bh), lay, look=look)
-check("字幕和「看這裡」外框重疊 → 自動讓到上方（角色帶下面）", uy < lay["stage"][1] + 40 and uy < dy, (ux, uy))
+check("字幕和「看這裡」外框重疊 → 讓到離原位最近、不重疊的位置（這裡是右下）",
+      not L.overlaps((ux - 12, uy - 12, bw + 24, bh + 24), look) and uy == dy and ux > dx, (ux, uy))
+tall = (300, lay["stage"][1] + 40, 920, lay["stage"][3] - 60)            # 表單：外框幾乎佔滿整個高度
+tx_, ty_ = L.caption_pos((600, bh), lay, look=tall)
+check("外框幾乎佔滿整個高度 → 字幕放到旁邊的空位（不壓外框）", not L.overlaps((tx_, ty_, 600, bh), tall), (tx_, ty_))
+check("外框不重疊時字幕不動（優先穩定）", L.caption_pos((bw, bh), lay, look=(10, lay["stage"][1] + 10, 100, 30)) == (dx, dy))
 far = (10, lay["stage"][1] + 10, 100, 30)
 check("外框不重疊 → 留在預設位置", L.caption_pos((bw, bh), lay, look=far) == (dx, dy))
 ctl = lay["controls"]
@@ -205,8 +210,8 @@ boxes3 = {"#post-list": [269, 141, 984, 354], nth(1): [269, 397, 984, 90.8], "@e
 br4 = FakeBr(boxes3); c = FakeCtl2(); lk = DR.Look(br4, c, align=AL); lk.step("a", True)
 t_ = time.time(); lk.act("a", "@e9", press=True)
 sc = [x for x in br4.calls if x[0] == "scroll"]
-check("A24 目標在訊息區下方 → 分 3–4 段捲過去（每段不超過總量的一半）、總量剛好讓目標進到可視範圍",
-      3 <= len(sc) <= 4 and all(x[1] == "down" for x in sc) and sum(int(x[2]) for x in sc) == round(700 + 40 - (141 + 354 - 8))
+check("A24 目標在訊息區下方 → 分 3–4 段捲過去（每段不超過總量的一半）、捲到訊息區上方約四分之一",
+      3 <= len(sc) <= 4 and all(x[1] == "down" for x in sc) and abs(sum(int(x[2]) for x in sc) - (700 - (141 + 0.25 * 354))) <= 2
       and max(int(x[2]) for x in sc) <= sum(int(x[2]) for x in sc) / 2, sc)
 check("A21/A22 動作：游標移到元素中心、停一下、按下效果，不畫外框",
       c.now.get("pointer", {}).get("seq") == 1 and c.now.get("press") == 1 and c.now.get("look") is None
@@ -248,6 +253,12 @@ br6 = FakeBr(boxes3); c = FakeCtl2(); lk = DR.Look(br6, c, align=AL, effects={"s
 lk.act("a", "@e9", press=False)
 check("平順捲動關掉 → 瞬間捲到（scrollintoview），沒有分段捲動",
       any(x[0] == "scrollintoview" for x in br6.calls) and not any(x[0] == "scroll" for x in br6.calls), br6.calls[-6:])
+st_b = {"actions": [{"do": "open"}, {"do": "click", "target": {"role": "button", "names": ["下修改指示"]}}, {"do": "wait_text"}]}
+check("每一拍都有自己的目標：look 沒寫 → 用這一拍接著要做的動作的目標",
+      DR.beat_target(st_b, {"at": 1}) == {"target": {"role": "button", "names": ["下修改指示"]}})
+check("look 沒寫、接著的動作不是點擊或輸入 → 沒有目標；寫了 False → 不框；寫了 CSS → 照寫的",
+      DR.beat_target(st_b, {"at": 2}) is None and DR.beat_target(st_b, {"at": 1, "look": False}) is False
+      and DR.beat_target(st_b, {"at": 1, "look": {"css": "#x"}}) == {"css": "#x"})
 import re as _re  # noqa: E402
 bad = {}
 for fn in ("demo_stage.py", "demo_runbook.py", "neb.py", "stage_layout.py"):

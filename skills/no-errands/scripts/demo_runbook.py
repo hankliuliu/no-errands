@@ -815,7 +815,7 @@ class Look:
         if acct != self.acct:
             self.ptr = None
         self.acct, self.sel, self.box, self.anchor = acct, None, None, None
-        self.align_on = bool(self.align_cfg and on)
+        self.align_on = bool(self.align_cfg and on and self.align_cfg.get("top_align", True))   # 5c：預設不對齊、不遮
         self.ctl.publish(mask=None, align=None, look=None)
 
     # ---- F-3：示範游標（畫在舞台上；系統游標不動）與平順捲動
@@ -872,10 +872,9 @@ class Look:
         if lst and lst[0] - 2 <= box[0] <= lst[0] + lst[2] and box[1] < lst[1] + lst[3] + 4000:
             top, bot = lst[1] + 8, lst[1] + lst[3] - 8
             delta = 0.0
-            if box[1] < top:
-                delta = box[1] - top
-            elif box[1] + box[3] > bot:
-                delta = min(box[1] + box[3] - bot, box[1] - top)
+            if box[1] < lst[1] - 1 or box[1] + box[3] > lst[1] + lst[3] + 1:   # 不完整可見才捲；捲到訊息區上方約四分之一（5c）
+                want = lst[1] + 0.25 * lst[3] if box[3] <= 0.7 * lst[3] else top
+                delta = box[1] - want
             if abs(delta) >= 4:
                 n = 4 if abs(delta) > 240 else 3
                 for i in range(n):
@@ -1052,15 +1051,32 @@ def beat_secs(b, text):
     return max(3.5, 1.5 + 0.25 * len(text)) + (2.5 if b.get("hold") else 0.0)
 
 
-def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
-    """一拍：字幕＋看這裡。自動模式（預設）：留 beat_secs 秒、暫停時計時凍結；逐步模式：hold 的拍才停下等「下一步」。"""
-    ctl.publish(beat={"text": subst(b.get("say", ""), vars_), "i": k, "n": n})
-    t0 = time.time()                                          # 字幕一出來就開始計時（外框、對齊的查詢不拉長這一拍）
+def beat_target(st, b):
+    """這一拍要看的東西：劇本寫的 look（CSS 或 {"target": 角色＋名稱}）；沒寫（None）就用這一拍接著要做的那個動作的目標
+    （5c：每一拍都要有自己真正的目標，不沿用上一拍）。False＝不框。"""
     lk = b.get("look")
+    if lk is None:
+        acts = st.get("actions") or []
+        i = int(b.get("at", 0))
+        if i < len(acts) and acts[i].get("do") in ("click", "fill", "check") and acts[i].get("target"):
+            return {"target": acts[i]["target"]}
+    return lk
+
+
+def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
+    """一拍：先把這一拍的目標捲到看得見、框好，再出字幕（5c：先捲到再出字幕）。
+    自動模式（預設）：字幕留 beat_secs 秒、暫停時計時凍結；逐步模式：hold 的拍才停下等「下一步」。"""
+    lk = beat_target(st, b)
     if isinstance(lk, dict) and lk.get("css"):
         look.set(st["account"], subst(lk["css"], vars_), scroll=lk.get("scroll", True))
-    elif lk is False:                                     # 沒寫 look：保留上一個外框（例：剛勾好的勾選框）
+    elif isinstance(lk, dict) and lk.get("target"):
+        ref, _ = look.br.find(st["account"], lk["target"])
+        if ref:
+            look.set(st["account"], "@" + ref, scroll=lk.get("scroll", True))
+    elif lk is False:
         look.clear()
+    ctl.publish(beat={"text": subst(b.get("say", ""), vars_), "i": k, "n": n})
+    t0 = time.time()                                          # 字幕出來才開始計時
     dur = beat_secs(b, subst(b.get("say", ""), vars_))
     while time.time() - t0 < dur:                           # (停)＝多留一會兒；講者模式只在步與步之間停
         time.sleep(0.5)
@@ -1122,7 +1138,7 @@ def run_step(br, rb, st, vars_, approval, shots_dir, ctl=None):
             ok, info = run_action(br, rb, st, act, vars_, approval, rec, ctl)
             info["i"], info["phase"] = base + i, tag
             rec["actions"].append(info)
-            if not ok and act["do"] in ("fill", "click", "check", "snapshot_ok", "capture"):
+            if not ok and act["do"] in ("fill", "click", "check", "snapshot_ok", "capture") and not act.get("optional"):
                 time.sleep(2)                                   # 一次就地重試（畫面可能還在更新）
                 ok, info2 = run_action(br, rb, st, act, vars_, approval, rec, ctl)
                 info2["i"], info2["phase"], info2["retry"] = base + i, tag, True
