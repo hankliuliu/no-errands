@@ -587,6 +587,8 @@ VIEW_MARKERS = {"notes": ("記事本", "Notes", "Note"), "notes-tab": ("記事�
                 "menu": ("儲存聊天", "儲存聊天記錄", "Save chat", "Save chat history")}
 # 記事本視窗裡可以點的分頁（只讀切換）：名稱完全相符、型別是 Button、在那個視窗裡唯一
 NOTES_TABS = {"notes-tab": ("記事本", "Notes")}
+# 分頁列：要點的分頁旁邊一定有成對的「相簿」分頁（真機第一次探索看到兩顆成對）；兩顆都在才點
+TAB_PAIRS = {"notes-tab": ("相簿", "Album", "Albums")}
 
 
 def _close_new(pid, before, res, view=None):
@@ -643,7 +645,7 @@ def _close_new(pid, before, res, view=None):
         res["left_windows"] = left
 
 
-def _click_notes_tab(pid, before, view, res):
+def _click_notes_tab(pid, before, view, res, app=None, chat=None):
     """在剛開出的記事本視窗裡點「記事本」分頁（只讀切換）。只認：新出現的有標題視窗剛好一個、裡面有記事本項目；
     分頁按鈕名稱完全相符、型別 Button、唯一。投遞滑鼠訊息到那個視窗（游標不動）；不符就不點、照實回報。"""
     import ctypes
@@ -655,14 +657,19 @@ def _click_notes_tab(pid, before, view, res):
         return
     it = popup_menu.popup_items(titled[0]["hwnd"])
     tabs = [i for i in (it.get("items") or []) if i.get("name") in NOTES_TABS[view] and i.get("type") == "Button"]
-    if len(tabs) != 1:
-        res["tab_click"] = {"done": False, "why": "分頁按鈕不唯一（%d）" % len(tabs)}
+    pair = [i for i in (it.get("items") or []) if i.get("name") in TAB_PAIRS[view] and i.get("type") == "Button"]
+    if len(tabs) != 1 or len(pair) != 1:
+        res["tab_click"] = {"done": False, "why": "分頁列對不上（記事本 %d、相簿 %d；兩顆都要剛好一顆）" % (len(tabs), len(pair))}
+        ledger(app or "line", "probe-tab-click", False, res["tab_click"]["why"], chat)
         return
     try:
         popup_menu.click_item(titled[0]["hwnd"], tabs[0], root=it.get("root"))
     except popup_menu.CoordMismatch:
         res["tab_click"] = {"done": False, "why": "座標檢查沒過"}
+        ledger(app or "line", "probe-tab-click", False, "座標檢查沒過：%s" % tabs[0].get("name"), chat)
         return
+    # 對真實聊天程式的每一次點擊都要查得到（這一下走投遞滑鼠訊息，不經 guarded，所以在這裡記）
+    ledger(app or "line", "probe-tab-click", True, "分頁：%s" % tabs[0].get("name"), chat)
     time.sleep(1.5)
     after = popup_menu.popup_items(titled[0]["hwnd"])
     res["tab_click"] = {"done": True}
@@ -703,7 +710,7 @@ def cmd_probe(app, prof, chat, view, pol):
             raise Refused("不認得的檢視")
         time.sleep(1.5)
         if view in NOTES_TABS:
-            _click_notes_tab(pid, before, view, res)
+            _click_notes_tab(pid, before, view, res, app, chat)
         res["main_after"] = _shape(snapshot(win, interactive=False)["tree"])
         res["new_popups"], res["new_windows"] = [], []
         import ctypes

@@ -271,6 +271,9 @@ def main():
         o = cg("probe", "--chat", "Kilo", "--view", "notes-tab")
         check("B3-8 probe notes-tab：分頁切換點到一次、視窗有關、輸出不含內容", o.get("ok") and (o.get("tab_click") or {}).get("done")
               and events("notes-tab") - nt0 == 1 and events("notes-close") - c1 == 1 and "deploy" not in json.dumps(o, ensure_ascii=False), o.get("tab_click"))
+        led = [json.loads(l) for l in open(os.path.join(home, "chat-guard-ledger.jsonl"), encoding="utf-8") if l.strip()]
+        check("B3-8 分頁點擊留在 ledger（投遞滑鼠訊息的點擊也查得到）", any(e.get("sub") == "probe-tab-click" and e.get("allowed") for e in led),
+              [e.get("sub") for e in led][-5:])
         # 記事本開著時 LINE 剛好跳出別的有標題視窗（像來電）：兩個新視窗 → 都不關（關掉來電可能等於拒接），照實回報
         trigger({"op": "callonnotes"})
         o = cg("probe", "--chat", "Kilo", "--view", "notes")
