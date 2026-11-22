@@ -5,6 +5,22 @@ import os, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills", "no-errands", "scripts"))
 import chat_guard as cg  # noqa: E402
+import tempfile as _tf, json as _js, hashlib as _hl  # noqa: E402
+
+# 記事本／peek 的目標資料夾：名稱帶不帶人數都落在 gather 那個目標
+_h = _tf.mkdtemp(prefix="ne-tid-")
+_old = cg.HOME
+try:
+    cg.HOME = _h
+    import os as _os
+    _os.makedirs(_os.path.join(_h, "gather"))
+    _js.dump({"abc123def456": {"service": "line", "chat": "週末登山隊 (21)"}}, open(_os.path.join(_h, "gather", "targets.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    _tid_ok = cg.target_id("line", "週末登山隊") == "abc123def456" and cg.target_id("line", "週末登山隊, 22人") == "abc123def456"
+    _tid_fb = cg.target_id("line", "別的群組") == _hl.sha256("line|別的群組".encode("utf-8")).hexdigest()[:12]
+finally:
+    cg.HOME = _old
+    import shutil as _sh
+    _sh.rmtree(_h, ignore_errors=True)
 
 R = []
 
@@ -213,5 +229,10 @@ check("白名單：Report(2024) 不被當成 Report", policy.canonical_chat(pol,
       and not policy.in_whitelist(pol, "Report"))
 check("白名單：去掉人數後兩筆都對得上 → None（不猜）",
       policy.canonical_chat({"chat": {"whitelist": ["Echo (3)", "Echo (7)"]}}, "Echo") is None)
+check("記事本目標資料夾：名稱帶不帶人數都對到 gather 那個目標", _tid_ok)
+check("記事本目標資料夾：gather 沒有這個目標 → 和 gather 同一個算法", _tid_fb)
+import inspect as _ins  # noqa: E402
+check("記事本擷取的逾時有硬上限 180 秒（參數繞不過）、張數硬上限 40", cg.NOTES_TIMEOUT_MAX_S == 180 and cg.NOTES_HARD_MAX == 40
+      and "min(float(timeout_s), NOTES_TIMEOUT_MAX_S)" in _ins.getsource(cg.cmd_notes) and "min(int(max_shots), NOTES_HARD_MAX)" in _ins.getsource(cg.cmd_notes))
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
 sys.exit(0 if all(R) else 1)

@@ -10,6 +10,8 @@
   B3-6 群組名稱結尾的人數標示（-CountNames，名稱全是虛構的）：人數變了照樣找得到；名稱本身以括號數字結尾不被誤削；
        名稱含「/」（預設檔名被換成「_」）；全形括號；帶人數整串存進白名單；去掉人數後同名 → 拒
   B3-7 存檔對話框延遲 10 秒才出現（像 LINE 準備大群組的匯出）：等得到、只點一次、只存一份、沒有殘留對話框
+  B3-9 notes（記事本擷取）：只點記事本按鈕一次、滾輪只投遞到清單、到底停／上限停、圖在 _notes_shots、輸出與 ledger 無內容、
+        視窗有關、錯聊天室丟圖、不在白名單拒絕
   B3-8 probe（只讀探索）：白名單對話點開記事本 → 放行、輸出不含名稱與內容、開出來的視窗有關掉；不在白名單 → 拒絕、沒點開
   另：未授權的 app → 拒；沒有送出子指令
 每一步前後記錄前景視窗 handle 與游標位置（N4 不干擾量測），結果寫 JSON。
@@ -310,6 +312,51 @@ def main():
               and events("notes-open") == n1, (o, events("notes-open"), n1))
         cg("close")
         check("B3-8 違規偵測器為空", violations() == [], violations())
+
+        # B3-9 記事本擷取
+        import glob as _glob
+        trigger({"op": "notescount", "n": 60})
+        n0, c0 = events("notes-open"), events("notes-close")
+        cg("open", "--chat", "Kilo")
+        o = cg("notes", "--chat", "Kilo", "--max-shots", "20")
+        dump = json.dumps(o, ensure_ascii=False)
+        shots_dir = os.path.join(home, "gather", "fake-chat")
+        pngs = _glob.glob(os.path.join(shots_dir, "*", "_notes_shots", "*", "*.png"))
+        mans = _glob.glob(os.path.join(shots_dir, "*", "_notes_shots", "*", "manifest.json"))
+        check("B3-9 notes：只點記事本按鈕一次、捲到底停下（stop=bottom）", o.get("ok") and o.get("stop") == "bottom"
+              and events("notes-open") - n0 == 1, {k: o.get(k) for k in ("ok", "stop", "shots", "wheels", "error", "why", "lists_seen", "window_wh", "list_err", "types_seen")})
+        check("B3-9 擷取了好幾張（清單有捲動）、圖與 manifest 在 _notes_shots", (o.get("shots") or 0) >= 3 and len(pngs) == o.get("shots")
+              and len(mans) == 1, (o.get("shots"), len(pngs), len(mans)))
+        man = json.load(open(mans[0], encoding="utf-8")) if mans else {}
+        ov = [x.get("overlap") for x in man.get("shots", [])[1:]]
+        check("B3-9 相鄰兩張都量得到重疊（0.2～0.8）", ov and all(v is not None and 0.2 <= v <= 0.8 for v in ov), ov)
+        check("B3-9 輸出不含對話名稱與記事內容", "Kilo" not in dump and "deploy" not in dump and "Ann" not in dump, dump[:300])
+        check("B3-9 收尾：記事本視窗關掉", o.get("windows_left_open") == 0 and events("notes-close") - c0 == 1, o)
+        led = [json.loads(l) for l in open(os.path.join(home, "chat-guard-ledger.jsonl"), encoding="utf-8") if l.strip()]
+        ln = [e for e in led if e.get("sub") == "notes-capture"]
+        check("B3-9 ledger 一筆 notes-capture，只有數字", ln and ln[-1]["allowed"] and "deploy" not in json.dumps(ln[-1], ensure_ascii=False)
+              and "wheels" in ln[-1]["reason"], ln[-1:] if ln else led[-3:])
+        for f_ in pngs + mans:
+            os.remove(f_)
+        o = cg("notes", "--chat", "Kilo", "--max-shots", "2")
+        check("B3-9 張數上限：停在 2 張（stop=cap）", o.get("ok") and o.get("stop") == "cap" and o.get("shots") == 2, o)
+        o = cg("notes", "--chat", "Kilo", "--max-shots", "40", "--skip-notches", "6")
+        check("B3-9 接續：先捲過 6 格再擷取，照樣到底", o.get("ok") and o.get("stop") == "bottom" and (o.get("wheels") or 0) >= 1, o)
+        for f_ in _glob.glob(os.path.join(shots_dir, "*", "_notes_shots", "*", "*")):
+            os.remove(f_)
+        trigger({"op": "switchonnotes"})
+        o = cg("notes", "--chat", "Kilo", "--max-shots", "40")
+        left = _glob.glob(os.path.join(shots_dir, "*", "_notes_shots", "*", "*.png"))
+        check("B3-9 擷取期間標頭換成別的對話 → wrong_chat、圖全丟", o.get("stop") == "wrong_chat" and not o.get("ok") and not left
+              and events("header-switched") >= 1, (o, len(left)))
+        trigger({"op": "reset"})
+        cg("close")
+        n1 = events("notes-open")
+        cg("open", "--chat", "Delta Friends", "--expect", cg("locate", "--chat", "Delta Friends").get("fingerprint") or "x")
+        o = cg("notes", "--chat", "Delta Friends")
+        check("B3-9 不在白名單 → 拒絕、記事本沒被點開", o.get("refused") is True and events("notes-open") == n1, o)
+        cg("close")
+        check("B3-9 違規偵測器為空", violations() == [], violations())
 
         o = cg("send", "--chat", "Alpha Team")
         check("沒有送出子指令", o.get("refused") is True, o)

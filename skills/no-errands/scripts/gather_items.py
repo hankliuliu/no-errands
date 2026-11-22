@@ -348,6 +348,14 @@ def write_outputs(tdir, t, items, title=None, msgs=None, tid=None):
     number(items)
     save_items(tdir, items)
     md = render_missing(items, title or t.get("label") or t.get("chat") or t.get("service"), msgs, tid, t.get("service"))
+    if t.get("service") == "line":
+        import gather_notes
+        ns = gather_notes.missing_section(tdir)
+        if ns:
+            md = md.replace("沒有未收的東西。", "附件沒有未收的東西。")
+            md = re.sub(r"(還沒收下來的照片、影片和檔案（已收 \d+、未收 \d+）)。", r"\1；最後一節是記事本。", md)
+            cut = md.find("\n---\n")
+            md = (md[:cut + 1] + "\n".join(ns) + "\n" + md[cut + 1:]) if cut >= 0 else md.rstrip("\n") + "\n\n" + "\n".join(ns) + "\n"
     open(os.path.join(items_dir(tdir), "未收清單.md"), "w", encoding="utf-8").write(md)
     if t.get("dest"):
         d = os.path.join(t["dest"], "files")
@@ -392,5 +400,7 @@ def load_announcements(tdir):
 
 
 def count_notes(tdir):
+    p = os.path.join(tdir, "notes.jsonl")
+    n = sum(1 for l in open(p, encoding="utf-8") if l.strip()) if os.path.exists(p) else 0
     d = os.path.join(tdir, "notes")
-    return len([f for f in os.listdir(d) if f.endswith(".md")]) if os.path.isdir(d) else 0
+    return n + (len([f for f in os.listdir(d) if f.endswith(".md")]) if os.path.isdir(d) else 0)

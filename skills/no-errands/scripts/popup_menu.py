@@ -54,7 +54,14 @@ try {
 def capture_window(hwnd, path):
     """單一視窗擷取（PrintWindow，PW_RENDERFULLCONTENT）：只取這個 hwnd 自己的內容，被擋住也一樣；不是螢幕擷取。
     存成 PNG（純 stdlib 編碼）。回 (寬, 高)。"""
-    import ctypes.wintypes as wt, struct, zlib
+    w, h, raw = grab_window(hwnd)
+    write_png(path, w, h, raw)
+    return w, h
+
+
+def grab_window(hwnd):
+    """單一視窗擷取的原始像素：回 (寬, 高, BGRA bytes，由上往下)。"""
+    import ctypes.wintypes as wt
     u32, g32 = _u32(), ctypes.windll.gdi32
     r = wt.RECT(); u32.GetWindowRect(hwnd, ctypes.byref(r))
     w, h = r.right - r.left, r.bottom - r.top
@@ -75,7 +82,11 @@ def capture_window(hwnd, path):
         g32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bi), 0)
     finally:
         g32.DeleteObject(bmp); g32.DeleteDC(mdc); u32.ReleaseDC(hwnd, hdc)
-    raw = buf.raw
+    return w, h, buf.raw
+
+
+def write_png(path, w, h, raw):
+    import struct, zlib
     rows = bytearray()
     for y in range(h):
         rows.append(0)
@@ -85,7 +96,6 @@ def capture_window(hwnd, path):
     sig = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
     png = sig + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(bytes(rows), 6)) + chunk(b"IEND", b"")
     open(path, "wb").write(png)
-    return w, h
 
 
 DEEP_PS = r"""param([long]$Hwnd)
@@ -133,7 +143,8 @@ def child_windows(hwnd):
     def cb(h, _):
         cls = ctypes.create_unicode_buffer(256); u32.GetClassNameW(h, cls, 256)
         r = wt.RECT(); u32.GetWindowRect(h, ctypes.byref(r))
-        out.append({"hwnd": h, "class": cls.value, "w": r.right - r.left, "h": r.bottom - r.top, "visible": bool(u32.IsWindowVisible(h))})
+        out.append({"hwnd": h, "class": cls.value, "w": r.right - r.left, "h": r.bottom - r.top, "visible": bool(u32.IsWindowVisible(h)),
+                    "rect": [r.left, r.top, r.right, r.bottom]})
         return True
     u32.EnumChildWindows(hwnd, PROC(cb), 0)
     return out
@@ -273,8 +284,12 @@ try {
 """
 
 
+LIST_ERR = {"last": None}
+
+
 def list_rects(hwnd, timeout=30):
-    """視窗裡每個 UIA List 的位置、子項數、其中按鈕數（不回任何名稱）。"""
+    """視窗裡每個 UIA List 的位置、子項數、其中按鈕數（不回任何名稱）。失敗原因（不含內容）記在 LIST_ERR。"""
+    LIST_ERR["last"] = None
     with tempfile.TemporaryDirectory() as td:
         ps1 = os.path.join(td, "lists.ps1")
         open(ps1, "w", encoding="ascii").write(LISTS_PS)
@@ -282,17 +297,60 @@ def list_rects(hwnd, timeout=30):
             p = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, str(hwnd)],
                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         except subprocess.TimeoutExpired:
+            LIST_ERR["last"] = "timeout"
             return []
     try:
         d = json.loads(p.stdout.strip().splitlines()[-1])
+        if not d.get("ok"):
+            LIST_ERR["last"] = "uia: " + str(d.get("error"))[:120]
         ls = d.get("lists") or []
         return [ls] if isinstance(ls, dict) else ls
-    except Exception:
+    except Exception as e:
+        LIST_ERR["last"] = "parse: %s (stdout %d bytes)" % (type(e).__name__, len(p.stdout or ""))
         return []
 
 
 def wheel_up(hwnd, sx, sy, notches=10):
     """對視窗投遞 WM_MOUSEWHEEL（往上）。座標是螢幕座標，Qt 依它分派給底下的元件；實體游標不動。"""
+    return wheel(hwnd, sx, sy, notches)
+
+
+def row_keys(raw, w, h, x0, x1, y0, y1):
+    """視窗擷取裡某個矩形（相對視窗左上角）每一列像素的雜湊；整列同色的回 None（空白列不拿來比對位移）。"""
+    x0, x1, y0, y1 = max(0, x0), min(w, x1), max(0, y0), min(h, y1)
+    out = []
+    for y in range(y0, y1):
+        row = raw[(y * w + x0) * 4:(y * w + x1) * 4]
+        out.append(None if row[:4] * (len(row) // 4) == row else hash(row))
+    return out
+
+
+def vertical_shift(a, b, min_rows=20):
+    """往下捲之後內容往上移：b 的第 y 列 = a 的第 y+s 列。回 (s, 相符比例)；找不到可信的位移回 (None, 0)。
+    只拿非空白列比；重疊少於 min_rows 列的位移不考慮。完全相同回 (0, 1.0)。"""
+    n = min(len(a), len(b))
+    if n == 0:
+        return None, 0.0
+    if a[:n] == b[:n]:
+        return 0, 1.0
+    best = (None, 0.0)
+    for s in range(1, n - min_rows):
+        tot = hit = 0
+        for y in range(n - s):
+            ka, kb = a[y + s], b[y]
+            if ka is None and kb is None:
+                continue
+            tot += 1
+            hit += ka == kb
+        if tot >= min_rows:
+            r = hit / tot
+            if r > best[1] + 1e-9:
+                best = (s, r)
+    return best if best[1] >= 0.9 else (None, best[1])
+
+
+def wheel(hwnd, sx, sy, notches):
+    """對視窗投遞 WM_MOUSEWHEEL；notches 正＝往上、負＝往下。座標是螢幕座標；實體游標不動。"""
     import ctypes.wintypes as wt
     u32 = _u32()
     wr = wt.RECT(); u32.GetWindowRect(hwnd, ctypes.byref(wr))
@@ -300,4 +358,5 @@ def wheel_up(hwnd, sx, sy, notches=10):
         raise CoordMismatch("滾輪座標不在視窗裡（%s 不在 %s）" % ([sx, sy], [wr.left, wr.top, wr.right, wr.bottom]))
     wparam = ((120 * notches) & 0xFFFF) << 16
     lparam = ((sy & 0xFFFF) << 16) | (sx & 0xFFFF)
-    return bool(u32.PostMessageW(hwnd, 0x020A, wparam, lparam))
+    # 明確包成 WPARAM／LPARAM：往下捲時 wparam 高位是負數的補數（> 2^31），交給 ctypes 預設的 int 轉換會溢位
+    return bool(u32.PostMessageW(wt.HWND(hwnd), 0x020A, wt.WPARAM(wparam), wt.LPARAM(lparam)))

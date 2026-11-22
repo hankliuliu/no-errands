@@ -12,6 +12,12 @@
   gather.py config --target <id> [--photos on|off] [--videos on|off]   # 照片／影片預設不收（量大）
   gather.py rebuild [--target <id> | --all]                 # 離線：修正已存資料的發話者名字、重建附件索引與未收清單
   gather.py fetch --target <id> [--kind photo|video|file|audio] [--from D] [--to D] [--item <編號>]   # 依未收清單補收
+  gather.py notes capture --target <id> [--max-shots N] [--continue]   # LINE 記事本：擷取（單一視窗，閒置閘門）
+  gather.py notes pending --target <id>                                 # 還沒轉寫的圖（agent 一次看一張）
+  gather.py notes add --target <id> --shot <run>/<NN> --visible <則數> --file <items.json>   # 交一張的轉寫，通過就刪圖
+  gather.py notes finish --target <id>                                  # 去重、建索引、更新未收清單與總覽
+  gather.py notes discard --target <id>                                 # 第一張就不是記事本清單：整輪丟掉（刪圖）
+  gather.py notes status --target <id>
 附件：看到的每一筆都進 <目標>/files/index.jsonl（status received|missing＋原因）；人看的清單是 files/未收清單.md。
 Mattermost 另存頻道標題／用途與釘選貼文（announcements.json）；read 會一併回傳公告與記事本。
 
@@ -29,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nowin  # noqa: E402,F401
 import policy  # noqa: E402
 import gather_items as gi  # noqa: E402
+import gather_notes as gn  # noqa: E402
 
 HOME = policy.HOME
 GROOT = os.path.join(HOME, "gather")
@@ -562,7 +569,8 @@ def write_overview():
          "想補沒收下的東西，對 agent 說，例如：「把〈%s〉未收清單裡的照片補回來」。" % first]
     if has_line:
         L += ["", "LINE 的範圍：桌面版只拿得到這台電腦登入後同步下來的歷史（各聊天室的「最早拿得到」）；更早的要在手機上匯出聊天記錄給 agent 匯入。"
-              "LINE 的記事本、公告、檔案還沒開始收，目前只記下訊息裡看得到的照片、影片、檔案。"]
+              "LINE 的公告與檔案分頁還沒開始收；記事本由 AI 看圖轉寫（原文以 LINE 為準），各聊天室的「記事本」一行寫了收到哪裡。"
+              "附件目前只記下訊息裡看得到的照片、影片、檔案。"]
     L.append("")
     for tid, t in order:
         d = tdir(tid, t); ms = load_msgs(d); st = load_state(d); items = gi.load_items(d); s = gi.summary(items)
@@ -576,8 +584,8 @@ def write_overview():
         gaps = st.get("gaps") or []
         L.append("- 缺口：%s" % ("無" if not gaps else "%d 處（中間有訊息沒接上，見 gather.py status）" % len(gaps)))
         if t["service"] == "line":
-            nn = gi.count_notes(d)
-            L.append("- 記事本、公告：%s" % ("記事本 %d" % nn if nn else "還沒收（收集尚未完成）"))
+            L.append("- 記事本：%s" % (gn.overview_line(d) or "還沒收"))
+            L.append("- 公告：還沒收（收集尚未完成）")
         else:
             L.append("- 公告：頻道標題%s、釘選 %d 則" % ("有" if ann.get("header") else "無", len(ann.get("pinned") or [])))
         bykind = gi.missing_by_kind(items)
@@ -632,10 +640,10 @@ def cmd_read(a):
     d = tdir(tid, ts[tid])
     ms = load_msgs(d)
     lo, hi = arg(a, "--from", "0000"), arg(a, "--to", "9999")
-    notes = []
+    notes = gn.load_notes(d)
     nd = os.path.join(d, "notes")
     if os.path.isdir(nd):
-        notes = [open(os.path.join(nd, f), encoding="utf-8").read() for f in sorted(os.listdir(nd)) if f.endswith(".md")]
+        notes += [open(os.path.join(nd, f), encoding="utf-8").read() for f in sorted(os.listdir(nd)) if f.endswith(".md")]
     out({"ok": True, "messages": [m for m in ms if lo <= m["date"] <= hi], "announcements": gi.load_announcements(d),
          "notes": notes})
 
@@ -732,12 +740,99 @@ def cmd_targets(a):
                                  for k, v in load_targets().items()]})
 
 
+def _notes_target(a):
+    tid = arg(a, "--target")
+    ts = load_targets()
+    if tid not in ts:
+        out({"ok": False, "error": "沒有這個目標（gather.py targets 看代號）"}, 2)
+    t = ts[tid]
+    if t["service"] != "line":
+        out({"ok": False, "error": "記事本擷取只有 LINE（Mattermost 的釘選與頻道標題在同步時就收了）"}, 2)
+    return tid, t, tdir(tid, t)
+
+
+def _refresh_outputs(tid, t, d):
+    gi.write_outputs(d, t, gi.load_items(d), target_title(t, tid), load_msgs(d), tid)
+    write_overview()
+
+
+def cmd_notes(a):
+    """LINE 記事本（見 gather_notes.py 開頭）。看圖得到的內容只寫進收集資料夾；這裡的輸出只有數字、日期與圖檔路徑。"""
+    act = a[1] if len(a) > 1 else ""
+    tid, t, d = _notes_target(a)
+    os.makedirs(d, exist_ok=True)
+    if act == "capture":
+        st = gn.load_state(d)
+        skip = st.get("resume_skip_notches", 0) if "--continue" in a else 0
+        if gn.pending(d):
+            out({"ok": False, "error": "還有沒轉寫的圖：先 notes pending／add／finish 轉完再擷取"}, 3)
+        cg = [sys.executable, os.path.join(HERE, "chat_guard.py"), "line"]
+        r = subprocess.run(cg + ["open", "--chat", t["chat"]] + GATE["args"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=3 * 3600)
+        o = json.loads(r.stdout) if r.stdout.strip().startswith("{") else {"ok": False, "error": "chat_guard 沒有回應"}
+        if o.get("ok"):
+            r = subprocess.run(cg + ["notes", "--chat", t["chat"], "--max-shots", str(arg(a, "--max-shots", 15)),
+                                     "--skip-notches", str(skip)] + GATE["args"],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3 * 3600)
+            o = json.loads(r.stdout) if r.stdout.strip().startswith("{") else {"ok": False, "error": "chat_guard 沒有回應"}
+        subprocess.run(cg + ["close"] + GATE["close"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
+        ledger(target=tid, action="notes-capture", ok=bool(o.get("ok")), shots=o.get("shots"), stop=o.get("stop"))
+        keep = {k: o.get(k) for k in ("ok", "error", "run", "shots", "stop", "wheels", "overlap_min", "overlap_unverified",
+                                       "windows_left_open", "foreground_taken", "foreground_returned") if k in o}
+        out(dict(keep, skipped_notches=skip, pending=len(gn.pending(d)),
+                 next="notes pending 拿第一張圖，看完用 notes add 交轉寫" if o.get("shots") else None), 0 if o.get("ok") else 1)
+    if act == "pending":
+        p = gn.pending(d)
+        if p:   # 轉寫暫存檔只能寫在這一輪的擷取資料夾裡（notes add 只收這裡的檔，通過後工具自己刪）
+            p[0]["write_items_to"] = p[0]["path"][:-4] + ".agent.json"
+        out({"ok": True, "pending": len(p), "first": p[0] if p else None,
+             "rule": "一次看一張；畫面上每一則寫成 JSON（author, posted_at 照畫面原字, text, truncated, images；被圖邊切到的加 cut_top／cut_bottom）。"
+                     "--visible＝這張圖上看得到開頭的則數（含被下緣切到的、不含被上緣切到的）。"
+                     "轉寫結果寫到 first.write_items_to（只收那個資料夾裡的檔，通過後工具會刪）；看到的內容不寫進回覆、紀錄或其他檔案。"
+                     "第一張圖如果不是記事本清單（例如相簿的縮圖格）：不轉寫、不描述，用 notes discard 丟掉這一輪並回報「不是記事本分頁」。"})
+    if act == "add":
+        f = arg(a, "--file") or ""
+        try:
+            rdir, _, _ = gn._find_shot(d, arg(a, "--shot") or "")
+            # 轉寫檔裡有記事內文：只收這一輪擷取資料夾裡的檔（別處的拒收），通過後工具自己刪 → 內文不會留在別的地方
+            if os.path.dirname(os.path.realpath(f)) != os.path.realpath(rdir):
+                raise gn.Bad("轉寫檔要放在這一輪的擷取資料夾裡（notes pending 給的 write_items_to），別的位置不收")
+            items = json.load(open(f, encoding="utf-8"))
+            vis = int(arg(a, "--visible", "-1"))
+            r = gn.add(d, arg(a, "--shot") or "", items, vis)
+        except gn.Bad as e:
+            out({"ok": False, "error": str(e)}, 2)
+        except (OSError, ValueError) as e:
+            out({"ok": False, "error": "讀不到轉寫檔或格式不對：%s" % type(e).__name__}, 2)
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+        ledger(target=tid, action="notes-add", shot=r["shot"], notes=r["notes"], count_ok=r["count_ok"])
+        out(r)
+    if act == "finish":
+        r = gn.finish(d)
+        _refresh_outputs(tid, t, d)
+        ledger(target=tid, action="notes-finish", new=r["new_notes"], total=r["notes_total"], mismatch=r["overlap_mismatch"])
+        out(dict(r, ok=True))
+    if act == "discard":
+        n = gn.discard(d, arg(a, "--reason", "not-notes-tab"))
+        ledger(target=tid, action="notes-discard", shots=n, reason=arg(a, "--reason", "not-notes-tab"))
+        out({"ok": True, "discarded_shots": n})
+    if act == "status":
+        st = gn.load_state(d)
+        out({"ok": True, "pending": len(gn.pending(d)), **{k: st.get(k) for k in (
+            "notes", "truncated", "needs_review", "note_images", "older_not_captured", "oldest_captured", "resume_skip_notches",
+            "expired_shots", "last_run", "updated")}})
+    out({"ok": False, "error": "notes 後面要接 capture|pending|add|finish|discard|status"}, 2)
+
+
 def main():
     a = sys.argv[1:]
     if not a or a[0] in ("-h", "--help"):
         print(__doc__); sys.exit(2)
     {"add": cmd_add, "sync": cmd_sync, "status": cmd_status, "read": cmd_read, "import": cmd_import,
-     "targets": cmd_targets, "config": cmd_config, "fetch": cmd_fetch, "rebuild": cmd_rebuild}.get(a[0], lambda _: out({"ok": False, "error": "沒有這個子指令"}, 2))(a)
+     "targets": cmd_targets, "config": cmd_config, "fetch": cmd_fetch, "rebuild": cmd_rebuild, "notes": cmd_notes}.get(a[0], lambda _: out({"ok": False, "error": "沒有這個子指令"}, 2))(a)
 
 
 if __name__ == "__main__":
