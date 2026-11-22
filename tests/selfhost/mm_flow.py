@@ -53,6 +53,44 @@ def login_token(base, user, pw):
     return r.headers.get("Token")
 
 
+LOGIN_PAGE = re.compile(r"log in to your account|email or username", re.I)
+
+
+def on_login_page(a):
+    return bool(LOGIN_PAGE.search(a.run("snapshot").stdout or ""))
+
+
+def page_state(a, label):
+    """失敗時留下當下頁面的狀態（測試伺服器、虛構帳號）：網址、是否停在登入頁、頁上的錯誤訊息、結構開頭。"""
+    snap = a.run("snapshot").stdout or ""
+    errs = re.findall(r'(?:alert|status)[^\n]*"([^"]{3,120})"', snap)
+    print("[%s] url=%s login_page=%s errors=%s" % (label, a.url(), bool(LOGIN_PAGE.search(snap)), errs[:3]))
+    print("[%s] snapshot head:\n%s" % (label, snap[:700]))
+
+
+def ui_login(a, base, user, pw, tries=3):
+    """網頁登入，並確認真的登入了（登入頁消失）。CI 曾經三次都停在登入頁，後面找 Save 按鈕是找錯地方。"""
+    for attempt in range(tries):
+        a.run("open", base + "/login")
+        a.run("wait", "--load", "networkidle")
+        if a.find("button|link", r"view in browser", tries=3):   # 「要在哪裡開？」的中繼頁
+            a.click("button|link", r"view in browser")
+        if not on_login_page(a):
+            return True   # 已經登入（session 還在）
+        try:
+            a.fill("textbox", r"email|user", user)
+            a.fill("textbox", r"password", pw)
+            a.click("button", r"log in|sign in")
+        except RuntimeError as e:
+            print("login attempt %d: %s" % (attempt + 1, e))
+        for _ in range(20):   # 最多等 20 秒：登入頁要消失
+            time.sleep(1)
+            if not on_login_page(a):
+                return True
+        page_state(a, "login attempt %d" % (attempt + 1))
+    return False
+
+
 def main():
     ab_bin = sys.argv[sys.argv.index("--ab") + 1]
     base = os.environ["MM_URL"].rstrip("/")
@@ -62,13 +100,8 @@ def main():
     try:
         a = AB(ab_bin, "ne-mm", os.path.join(td, "profile"))
         a.run("open", "about:blank")
-        a.run("open", base + "/login")
-        a.run("wait", "--load", "networkidle")
-        if a.find("button|link", r"view in browser", tries=3):   # 「要在哪裡開？」的中繼頁
-            a.click("button|link", r"view in browser")
-        a.fill("textbox", r"email|user", adm)
-        a.fill("textbox", r"password", admpw)
-        a.click("button", r"log in|sign in")
+        logged = ui_login(a, base, adm, admpw)
+        check("0 網頁登入成功（登入頁消失）", logged)
         # a. System Console → Integration Management → Enable Personal Access Tokens = true → Save
         a.run("open", base + "/admin_console/integrations/integration_management")
         a.run("wait", "--load", "networkidle")
@@ -80,6 +113,12 @@ def main():
         saved = False
         for attempt in range(3):
             if attempt:
+                a.run("open", base + "/admin_console/integrations/integration_management")
+                a.run("wait", "--load", "networkidle")
+                time.sleep(2)
+            if on_login_page(a):   # 被導回登入頁：先重新登入再開管理頁，不在登入頁上找 Save
+                print("admin console redirected to login (attempt %d): logging in again" % (attempt + 1))
+                ui_login(a, base, adm, admpw)
                 a.run("open", base + "/admin_console/integrations/integration_management")
                 a.run("wait", "--load", "networkidle")
                 time.sleep(2)
@@ -97,6 +136,7 @@ def main():
             print("save button not found (attempt %d); retrying" % (attempt + 1))
         if not saved:
             print("admin console: Save button never appeared after 3 attempts")
+            page_state(a, "admin console")
         admin_tok = login_token(base, adm, admpw)
         cfg = api(base, "GET", "/config", admin_tok)
         check("a 管理介面打開 PAT（伺服器設定為 true）", cfg["ServiceSettings"].get("EnableUserAccessTokens") is True,
