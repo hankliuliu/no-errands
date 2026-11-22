@@ -26,6 +26,7 @@ import nowin  # noqa: E402,F401
 BG, FG, DIM, ACCENT, LOOK = "#0b0d12", "#f4f4f4", "#7d8794", "#2f7de1", "#ffcc33"
 FONT = "Microsoft JhengHei UI"
 OFF = -32000                                            # 移到螢幕外
+EXIT_HINT = "要離開這個畫面：按 Esc 或 Ctrl+Shift+F12，或雙擊背景"
 
 
 def px(n):
@@ -144,6 +145,32 @@ def content_rect(hwnd):
     return max(found, key=lambda r: r[2] * r[3]) if found else None
 
 
+def pid_alive(pid):
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenProcess(0x00100000 | 0x1000, False, pid)   # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return False
+    try:
+        return k32.WaitForSingleObject(h, 0) == 0x102      # WAIT_TIMEOUT＝還在跑
+    finally:
+        k32.CloseHandle(h)
+
+
+def user_input_since(tick):
+    """GetLastInputInfo 的時間晚於 tick（GetTickCount 單位）→ 有人動了鍵盤或滑鼠。"""
+    class LII(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+    li = LII(); li.cbSize = ctypes.sizeof(LII)
+    u32.GetLastInputInfo(ctypes.byref(li))
+    return li.dwTime > tick
+
+
 def dpr_of(hwnd):
     try:
         return u32.GetDpiForWindow(hwnd) / 96.0
@@ -162,6 +189,8 @@ class Stage:
         import tkinter as tk
         self.tk, self.run_dir = tk, run_dir
         self.now, self.wins, self.placed = {}, {}, {}
+        self.t_start = time.time()
+        self.tick0 = u32.GetTickCount() + 3000 if os.name == "nt" else 0
         self.root = r = tk.Tk()
         r.title("no-errands 示範舞台")
         W, H = r.winfo_screenwidth(), r.winfo_screenheight()
@@ -177,6 +206,8 @@ class Stage:
         r.configure(bg=BG)
         self.card = tk.Canvas(r, bg=BG, highlightthickness=0, width=W, height=H)
         self.card.pack(fill="both", expand=True)
+        self.card.bind("<Double-Button-1>", lambda e: self.drop("double_click"))   # 使用者自己的出口：雙擊背板
+        r.bind_all("<Escape>", lambda e: self.drop("esc"))                        # 舞台有焦點時按 Esc（不攔全域）
         # 角色帶
         self.band = self._top(*lay["band"])
         self.band.configure(bg="#11151d")
@@ -239,6 +270,43 @@ class Stage:
         except Exception:
             pass
 
+    def drop(self, why=""):
+        """撤下舞台：先把我們的瀏覽器取消置頂、送出停止，再收掉所有視窗（任何情況都不能留一個蓋住螢幕的視窗）。"""
+        try:
+            h = getattr(self, "active_hwnd", None)
+            if os.name == "nt" and h and u32.IsWindow(h):
+                u32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        except Exception:
+            pass
+        try:
+            write_control(self.run_dir, state="stopped", dropped=why or "drop")
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def safety(self, ctl):
+        """三個安全出口之二：主控端（引擎或 standby）不在了 → 撤下；絕對上限 2 小時；
+        無人值守（排練、agent 示範）時偵測到使用者的輸入 → 撤下（講者模式不做：講者本來就會按鍵）。"""
+        now_t = time.time()
+        if now_t - self.t_start > float(os.environ.get("NE_STAGE_MAX_S") or 7200):
+            return self.drop("max_lifetime") or True
+        if now_t - getattr(self, "_own_t", 0) >= 2:
+            self._own_t = now_t
+            pid = self.now.get("owner_pid")
+            if pid and not pid_alive(int(pid)):
+                self._dead_since = getattr(self, "_dead_since", None) or now_t
+                if now_t - self._dead_since >= 5:
+                    return self.drop("owner_gone") or True
+            else:
+                self._dead_since = None
+        if ctl.get("unattended") and os.name == "nt" and now_t - self.t_start > 3:
+            if user_input_since(self.tick0):
+                return self.drop("user_input") or True
+        return False
+
     def _top(self, x, y, w, h):
         t = self.tk.Toplevel(self.root)
         t.overrideredirect(True)
@@ -247,14 +315,36 @@ class Stage:
         return t
 
     # ---------- 控制
+    def toast(self, text):
+        """按鍵有沒有被收到，畫面上一定有反應（字幕帶右下的狀態列）。"""
+        try:
+            self._toast = (text, time.time())
+            self.state.configure(text="● " + text, fg="#d29922")
+        except Exception:
+            pass
+
+    def engine_alive(self):
+        pid = self.now.get("owner_pid")
+        return (not pid) or pid_alive(int(pid))
+
     def next(self):
+        if not self.engine_alive():
+            self.toast("示範已經結束，正在關閉")
+            self.root.after(1200, lambda: self.drop("no_engine"))
+            return
+        self.toast("已收到：下一步")
         if self.now.get("card") == "end":
             write_control(self.run_dir, finish=True, next=True)    # 片尾按「結束」：引擎還原後收掉舞台
         else:
             write_control(self.run_dir, next=True)
 
     def toggle_pause(self):
+        if not self.engine_alive():
+            self.toast("示範已經結束，正在關閉")
+            self.root.after(1200, lambda: self.drop("no_engine"))
+            return
         c = read_json(os.path.join(self.run_dir, "control.json"))
+        self.toast("已收到：" + ("繼續" if c.get("state") == "paused" else "暫停"))
         write_control(self.run_dir, state="playing" if c.get("state") == "paused" else "paused")
 
     def toggle_mode(self):
@@ -278,11 +368,12 @@ class Stage:
         """→／PageDown 下一步、空白暫停（簡報筆送的是 PageDown）。只在舞台存在期間註冊。"""
         if os.name != "nt" or os.environ.get("NE_STAGE_NO_HOTKEYS"):
             return
-        keys = {1: 0x27, 2: 0x22, 3: 0x20}                 # VK_RIGHT、VK_NEXT（PageDown）、VK_SPACE
+        # VK_RIGHT、VK_NEXT（PageDown）、VK_SPACE；撤下用 Ctrl+Shift+F12（不攔單獨的 Esc：台上的瀏覽器與其他程式都收得到）
+        keys = {1: (0, 0x27), 2: (0, 0x22), 3: (0, 0x20), 4: (0x0002 | 0x0004, 0x7B)}
 
         def loop():
-            for i, vk in keys.items():
-                u32.RegisterHotKey(None, i, 0x4000, vk)    # MOD_NOREPEAT
+            for i, (mod, vk) in keys.items():
+                u32.RegisterHotKey(None, i, 0x4000 | mod, vk)    # MOD_NOREPEAT
             msg = wintypes.MSG()
             while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
                 if msg.message == 0x0312:                  # WM_HOTKEY
@@ -290,6 +381,8 @@ class Stage:
                         self.root.after(0, self.next)
                     elif msg.wParam == 3:
                         self.root.after(0, self.toggle_pause)
+                    elif msg.wParam == 4:
+                        self.root.after(0, lambda: self.drop("esc"))
             for i in keys:
                 u32.UnregisterHotKey(None, i)
         self.hk = threading.Thread(target=loop, daemon=True)
@@ -364,7 +457,11 @@ class Stage:
         if kind == "title":
             c.create_text(W // 2, H * 0.32, text=now.get("title", ""), fill=FG, font=(FONT, px(big), "bold"), width=W * 0.8)
             if d.get("subtitle"):
-                c.create_text(W // 2, H * 0.42, text=d["subtitle"], fill=DIM, font=(FONT, px(mid)), width=W * 0.8)
+                c.create_text(W // 2, H * 0.42, text=d["subtitle"], fill="#c9d1dc", font=(FONT, px(mid)), width=W * 0.8)
+            if d.get("mode"):                              # 現在是哪個模式（講者開場前一眼確認）
+                c.create_text(W // 2, H * 0.86, text=d["mode"], fill=DIM, font=(FONT, px(small)))
+            c.create_text(W * 0.98, H * 0.97, text=EXIT_HINT, fill="#4a5260", font=(FONT, px(small - 6)), anchor="e")
+            self.card_texts = [d.get("subtitle", ""), d.get("mode", "")]
             y = H * 0.54
             for acct, info in (now.get("accounts") or {}).items():          # 角色圖例
                 col = info.get("color") or ACCENT
@@ -373,6 +470,7 @@ class Stage:
                 y += mid * 1.9
         elif kind == "checklist":
             c.create_text(W // 2, H * 0.18, text=d.get("heading", "準備中…"), fill=FG, font=(FONT, px(mid), "bold"))
+            c.create_text(W * 0.98, H * 0.97, text=EXIT_HINT, fill=DIM, font=(FONT, px(small - 4)), anchor="e")
             y = H * 0.28
             for it in d.get("items", []):
                 mark, col = {"ok": ("✓", "#3fb950"), "fail": ("✗", "#f47067"), "warn": ("!", "#d29922"),
@@ -407,13 +505,31 @@ class Stage:
         changed_card = now.get("card") != self.now.get("card") or now.get("card_data") != self.now.get("card_data")
         self.now = now
         st = now.get("status")
-        if st == "closing" or (ctl.get("state") == "stopped" and now.get("card") == "checklist"):
-            self.root.destroy()                          # 結束，或預備沒過時講者按「停止」
+        if self.safety(ctl):
+            return
+        if now.get("card") == "title" and time.time() - getattr(self, "_title_t", 0) >= 2:
+            self._title_t = time.time()
+            changed_card = True                          # 片頭定期重畫（副標、模式那一行一定畫得上）
+        if st == "closing":
+            self.root.destroy()
+            return
+        if ctl.get("state") == "stopped" or st == "stopped":
+            # 示範停了（講者按停止、驅動偵測到使用者回來、引擎結束）：不管是哪張卡片都說一句、自己關，
+            # 絕不留一個蓋滿螢幕、按什麼都沒反應的背板（第一次排練就是這樣卡住使用者）
+            if not getattr(self, "_closing_at", None):
+                self._closing_at = time.time()
+                self.toast("示範已經停止，畫面即將關閉")
+            elif time.time() - self._closing_at >= 1.5:
+                return self.drop("stopped")
+            self.root.after(200, self.tick)
             return
         if changed_card:
             self.draw_card(now)
         col = now.get("role_color") or ACCENT
-        self.chip.configure(text=now.get("role") or "", bg=col)
+        if now.get("role"):
+            self.chip.configure(text=now["role"], bg=col)
+        else:
+            self.chip.configure(text="", bg="#11151d")   # 片頭／預備時沒有角色：不畫空的名牌
         self.rule.configure(bg=col)
         self.sect.configure(text=now.get("section") or "")
         i_, n_ = now.get("step_index") or 0, now.get("steps_total") or 0
@@ -440,9 +556,14 @@ class Stage:
         self.b_next.configure(text="結束" if now.get("card") == "end" else "下一步 →",
                               bg=ACCENT if waiting and not paused else "#1b2029", fg="#fff" if waiting else "#9aa4b2")
         self.b_pause.configure(text="▶" if paused else "⏸")
-        self.state.configure(text="● 已暫停" if paused else "● 等你按下一步" if waiting else
+        tt = getattr(self, "_toast", None)
+        if tt and time.time() - tt[1] < 1.2:
+            pass
+        else:
+            self.state.configure(text="● 已暫停" if paused else "● 等你按下一步" if waiting else
                              ("● 等待%s %d 秒" % (now.get("wait_label") or "系統", now.get("waited_s") or 0))
                              if st == "waiting_system" else "", fg="#d29922" if paused or slow else ACCENT)
+
         if (slow or st == "failed") and not self.b_planb.winfo_ismapped():
             self.b_planb.pack(side="left", padx=3, before=self.b_next)
             self.b_planb.configure(bg="#b8860b", fg="#fff")
@@ -479,7 +600,7 @@ class Stage:
         self.root.update_idletasks()
         if not (self.b_next.winfo_ismapped() and self.b_next.winfo_width() > 1):
             return                                        # 還沒排好：下一輪再寫（測試不會讀到 0,0）
-        g = {"screen": [self.W, self.H], "caption_text": self.cap.cget("text"),
+        g = {"screen": [self.W, self.H], "caption_text": self.cap.cget("text"), "card_texts": getattr(self, "card_texts", []),
              "caption_req_h": self.cap.winfo_reqheight(), "caption_h": self.lay["caption"][3],
              "next": [self.b_next.winfo_rootx() + self.b_next.winfo_width() // 2,
                       self.b_next.winfo_rooty() + self.b_next.winfo_height() // 2]}
