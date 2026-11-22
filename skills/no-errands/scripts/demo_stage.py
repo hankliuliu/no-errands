@@ -290,7 +290,17 @@ class Stage:
         self.cap = tk.Label(self.capw, text="", font=(FONT, px(lay["cap_font"]), "bold"), fg=FG, bg=KEY,
                             justify="center", wraplength=lay["cap_max_w"] - 2 * cp, padx=cp, pady=max(4, cp // 2))
         self.cap.pack()
-        self.cap_x = tk.Label(self.capw, text="×", font=(FONT, px(max(12, lay["cap_font"] // 2))), fg="#dddddd", bg="#000000")
+        # × 關字幕：字幕塊右上角「外側」的獨立小視窗（不壓到字；CI 擷圖：放在塊內時蓋住最後一個字）。
+        # 滑鼠停在字幕上或 × 上才出現（用游標位置判斷）。
+        xs = max(20, round(lay["cap_font"] * 0.9))
+        self.xbtn_size = xs
+        self.xbtn = self._top(0, 0, xs, xs)
+        self.xbtn.configure(bg="#1b2029", cursor="hand2")
+        self.xlbl = tk.Label(self.xbtn, text="×", font=(FONT, px(max(12, round(xs * 0.75))), "bold"), fg="#e6e6e6", bg="#1b2029")
+        self.xlbl.pack(fill="both", expand=True)
+        for w in (self.xbtn, self.xlbl):
+            w.bind("<Button-1>", lambda e: self.toggle_caption())
+        self.xbtn.withdraw()
         self.cap_on, self.cap_user, self.cap_drag0, self._cap_rgn = True, load_caption_pos(), None, None
         self.cap_geom, self._force_place = None, False
         # 輸入墊片：疊在字幕兩層之上、同一個位置大小、透明度 1/255。字幕上的所有滑鼠操作（拖動、按兩下回預設、
@@ -306,8 +316,6 @@ class Stage:
         self.cappad.bind("<B1-Motion>", self.cap_move)
         self.cappad.bind("<ButtonRelease-1>", self.cap_release)
         self.cappad.bind("<Double-Button-1>", self.cap_reset)
-        self.cappad.bind("<Enter>", lambda e: self.cap_x.place(relx=1.0, x=-4, y=2, anchor="ne"))
-        self.cappad.bind("<Leave>", lambda e: self.cap_x.place_forget())
         self.cappad.withdraw()
         # 遮罩：頁面底色的一塊，蓋住訊息區頂端被切一半的那則訊息露出的殘段（引擎算好位置，now.json 的 mask）
         self.maskw = self._top(0, 0, 1, 1)
@@ -395,17 +403,26 @@ class Stage:
         except Exception:
             pass
 
-    def x_hit(self, e):
-        """按在字幕右上角的 × 上（墊片座標）。"""
-        w = self.cappad.winfo_width()
-        s = max(18, self.lay["cap_font"])
-        return e.x >= w - s - 4 and e.y <= s + 4
+    def xbtn_rect(self):
+        """× 的位置：字幕塊右上角外側（塊的上方、右緣對齊）。"""
+        g = self.cap_geom
+        if not g:
+            return None
+        xs = self.xbtn_size
+        return (g[0] + g[2] - xs, max(self.lay["stage"][1], g[1] - xs - 4), xs, xs)
+
+    def update_xbtn(self, cur):
+        xr = self.xbtn_rect() if getattr(self, "_cap_shown", False) else None
+        hot = bool(cur and xr and self.cap_geom and (L.inside((cur[0], cur[1], 0, 0), self.cap_geom)
+                                                   or L.inside((cur[0], cur[1], 0, 0), (xr[0] - 4, xr[1] - 4, xr[2] + 8, xr[3] + 12))))
+        if hot and not self.cap_drag0:
+            self.xbtn.geometry("%dx%d+%d+%d" % (xr[2], xr[3], xr[0], xr[1]))
+            if not self.xbtn.winfo_viewable():
+                self.xbtn.deiconify()
+        elif self.xbtn.winfo_viewable():
+            self.xbtn.withdraw()
 
     def cap_press(self, e):
-        if self.x_hit(e):
-            self.cap_drag0 = None
-            self.toggle_caption()
-            return
         g = self.cap_geom or (self.capbg.winfo_x(), self.capbg.winfo_y(), 0, 0)
         self.cap_drag0 = (e.x_root, e.y_root, g[0], g[1])
 
@@ -942,14 +959,16 @@ class Stage:
         toast_on = bool(tt and time.time() - tt[1] < 1.5)
         show_ctl = (cs["visible"] or toast_on) and now.get("card") != "checklist"
         if show_ctl != self.ctl_shown:
-            for w in (self.ctlw, self.hintw):
-                w.deiconify() if show_ctl else w.withdraw()
+            self.ctlw.deiconify() if show_ctl else self.ctlw.withdraw()
             self.ctl_shown = show_ctl
         self.b_next.configure(text="結束" if now.get("card") == "end" else "下一步 →",
                               bg=ACCENT if cs["next_hot"] else "#1b2029", fg="#fff" if cs["next_hot"] else "#9aa4b2")
         self.b_pause.configure(text="▶" if paused else "⏸")
         if not toast_on:
             self.state.configure(text=("● " + cs["hint"]) if cs["hint"] else "", fg="#d29922" if paused or slow else ACCENT)
+        hint_on = show_ctl and bool(self.state.cget("text"))     # 提示列有字才顯示（沒字時不留一塊空的深色方塊）
+        if hint_on != self.hintw.winfo_viewable():
+            self.hintw.deiconify() if hint_on else self.hintw.withdraw()
         if cs["planb"] and not self.b_planb.winfo_ismapped():
             self.b_planb.pack(side="right", padx=3, pady=4, before=self.b_more)
             self.b_planb.configure(bg="#b8860b", fg="#fff")
@@ -992,6 +1011,7 @@ class Stage:
             self.show_caption(True)
         else:
             self.show_caption(False)
+        self.update_xbtn(cur)
         # 控制列：和字幕重疊時往上讓到字幕上方（字幕不動）
         cx_, cy_, cw_, ch_ = L.controls_pos(self.lay, self.cap_box() if (text and self.cap_on) else None)
         # 控制列顯示中（使用者可能正要按）只往上讓、不往下跳回：例如按 × 收起字幕時，按鈕不會在游標底下移走；
@@ -1040,7 +1060,7 @@ class Stage:
 
     def overlays(self):
         """我們疊在瀏覽器之上的視窗，由下到上。"""
-        return [self.shield, self.maskw, self.band] + self.edges + [self.ptrw, self.capbg, self.capw, self.cappad, self.ctlw, self.hintw]
+        return [self.shield, self.maskw, self.band] + self.edges + [self.ptrw, self.capbg, self.capw, self.cappad, self.xbtn, self.ctlw, self.hintw]
 
     def restack(self):
         """實際的上下順序（都在置頂層；工作列、通知被壓在下面），由上到下：控制列…字幕（墊片在字之上）→ 外框 →
@@ -1101,7 +1121,7 @@ class Stage:
         return {"z_order": self.z_order(),
                 "cap_btn": [self.b_cap.winfo_rootx() + self.b_cap.winfo_width() // 2, self.b_cap.winfo_rooty() + self.b_cap.winfo_height() // 2]
                 if self.ctl_shown and self.b_cap.winfo_ismapped() else None,
-                "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad),
+                "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": box(self.xbtn), "hint_visible": bool(self.hintw.winfo_viewable()),
                 "caption_on": self.cap_on, "controls_rect": box(self.ctlw), "controls_want": list(getattr(self, "_ctl_xy", None) or []),
                 "controls_moves": getattr(self, "ctl_moves", 0), "controls_stuck": getattr(self, "_ctl_retry", 0) > 3,
                 "shield": box(self.shield), "pointer": [round(v) for v in self.ptr_pos] if self.ptr_pos and self.ptrw.winfo_viewable() else None,
