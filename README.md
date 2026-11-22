@@ -105,15 +105,29 @@ python doctor.py
 另外，有些模型起草後會一直在前景等你核准；工具提供有上限的等待指令並提醒它結束回合，但沒辦法強制它停。
 網頁與桌面的守門（`neb`／`ned`）只在 agent 經過它們時才生效。受管區塊要求網頁一律經 neb、桌面一律經 ned：**沒裝權限規則時，這是建議**——agent 直接呼叫瀏覽器或桌面工具就繞過了。**裝了權限規則（`python setup.py --user --guard-rules`）之後，直接呼叫會被擋**（實測擋得住：裸名稱、完整路徑的各種寫法、先 cd 再相對路徑、`bash -c` 包裝、PowerShell）；仍繞得過的：把工具名稱拆開再組起來、用 Python 子行程拼出路徑、用 `agent-b*` 這種萬用字元。副作用：只是提到工具名稱的指令（例如 `grep agent-browser`）也會被擋。**正在開發 no-errands 本身的機器，不要在使用者層級套用這條規則**（或等開發告一段落再開）：grep、git commit 訊息、跑測試，只要指令裡出現那兩個名稱都會被擋，而且 deny 沒辦法在專案層級蓋掉。兩個守門的放行清單是對工具每個子指令與選項逐項對過的（`docs/agent-browser-command-audit.md`、`docs/agent-desktop-command-audit.md`），升級版本要重對。
 
-**權限規則一共三組（`--guard-rules`，選配、預設不開；開的時候預設三組都開，可以用 `--guard-groups` 只開其中幾組）：**
+**權限規則一共四組（`--guard-rules`，選配、預設不開；開的時候預設開前三組，可以用 `--guard-groups` 自己選）：**
 
 | 組 | 做什麼 | 機制 | 為什麼 |
 |---|---|---|---|
 | `direct-tools` | 指令裡出現 `agent-browser`／`agent-desktop`（Bash 與 PowerShell）就擋 | deny 規則 | 網頁一律經 neb、桌面一律經 ned |
 | `token` | 預設不准 agent 讀 Mattermost token 檔；你特別設了白名單的專案資料夾才放行 | PreToolUse hook（`token_guard.py`） | token 只給工具在執行時讀 |
 | `consent` | `policy.py grant`／`set`／`whitelist`／`domain`／`token-allow` 要先問你 | ask 規則 | 這幾個會擴大或改變你同意的範圍；`revoke`、`show` 只縮小或唯讀，不詢問 |
+| `daily-ops`（不在預設裡） | 用安裝路徑呼叫的 gather、chat_guard、ned、neb、outbox、mm_ro、demo_runbook 直接放行，不再每次詢問，自動模式下也不會被當成可疑動作擋下 | allow 規則＋`autoMode` 條目 | 這些工具自己守門（白名單、授權、只讀、對外訊息只能起草），每次都問只會讓例行工作卡住；改變同意範圍的 policy.py 子指令不在裡面，`consent` 組照樣先問你 |
 
-例：只開後兩組 `python setup.py --user --guard-rules --guard-groups token,consent`。重新執行會先拿掉三組、再加這次選的；移除 `python setup.py --uninstall --user --guard-rules` 一律拿掉三組，只動我們自己的規則與 hook。
+例：`python setup.py --user --guard-rules --guard-groups token,consent,daily-ops`。重新執行會先拿掉全部、再加這次選的；移除 `python setup.py --uninstall --user --guard-rules` 一律拿掉全部，只動我們自己的規則、hook 與 autoMode 條目。
+
+**自動模式（auto mode）與 `daily-ops`：為什麼光有 allow 規則不夠**
+- 自動模式下，每個動作由分類器判斷。Claude Code 一進自動模式，就會丟掉「可以執行任意程式」的寬鬆 allow 規則；`Bash("<python>" "<工具>.py":*)` 這種以直譯器開頭、後面接萬用字元的規則就屬於這種。
+- 我們實測過（巢狀 `claude -p --permission-mode auto`，`claude-haiku-5-5`，任務寫在專案檔案裡，不是你在對話裡說的）：
+  - 只有 allow 規則：4 次都被擋。
+  - 改成 `.cmd` 啟動檔的 allow 規則：2 次都被擋。
+- 官方支援的做法是 `~/.claude/settings.json` 的 `autoMode` 區塊：寫給分類器讀的文字規則，`environment` 說明這套工具是你自己的，`allow` 說明可以放行哪些。這個區塊只在使用者層級有效，專案設定不讀，所以 `--project` 安裝時這部分不起作用。
+- 加上 `autoMode` 條目後：
+  - 同樣由檔案下指示的匯出：2 次通過 1 次。沒通過的那次，是檔案要它加上「使用者已同意」的旗標，被分類器認定在削弱監督；這是對的，「你同意了」只能由你在對話裡說。
+  - 由檔案下指示的 `policy.py grant`：2 次都沒執行，政策沒有被改。
+- 你在對話裡直接要求的例行工作（例如「更新聊天收集」），有沒有 `autoMode` 都會放行（4/4）。
+- 小結：`daily-ops` 讓例行工作不會因為指令來自工具說明或排程就被擋；授權與同意範圍的改變，永遠要你本人說。
+- **不開 `consent` 時**：policy.py 的 grant／set／whitelist／domain／token-allow 不會跳出確認，但也不在放行規則裡，改由自動模式的分類器判斷——你在哪個對話裡明確要求，那個對話就能做；agent 自己起意、或靠別的 session 轉達的，會被擋（`autoMode` 條目也寫明了這幾個不在放行範圍）。不用自動模式的話，這些指令照 Claude Code 平常的方式問你。
 
 **token 白名單**：`policy.py token-allow add <專案資料夾> --reason "<你的原話>"`（寫 ledger；這個指令本身在 `consent` 組裡要先問你）。
 為什麼用 hook 不用 deny：Claude Code 的 deny 規則沒辦法被專案層級蓋掉，做不到「白名單時可以」。hook 在每次 Read／Bash／PowerShell／Grep／Glob／Edit／Write 之前讀政策檔判斷：工具輸入裡出現 token 檔的路徑（各種寫法）或檔名、而目前專案（Claude Code 啟動的資料夾）不在白名單 → 擋下並說明。

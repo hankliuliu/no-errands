@@ -119,6 +119,25 @@ try:
     check("token_guard：Grep 的搜尋樣式是檔名 → 不擋", tg.decide(ev("Grep", {"pattern": "mattermost.txt", "path": td}), pol, projA) is None)
     check("token_guard：殼層指令提到檔名 → 擋（已知副作用，寫在 README）",
           tg.decide(ev("Bash", {"command": "grep -rn mattermost.txt docs/"}), pol, projA) is not None)
+    # ---- daily-ops：放行規則＋autoMode 條目（分類器讀的自然語言規則）
+    g_do = ne.guard_rules(h2, ("daily-ops",))
+    check("daily-ops：7 個工具 × Bash/PowerShell 放行，policy.py 不在放行裡", len(g_do["allow"]) == 14
+          and not any("policy.py" in r for r in g_do["allow"]), g_do["allow"])
+    check("daily-ops：autoMode environment／allow 各一條、標明不含改變同意範圍的 policy.py 子指令",
+          len(g_do["autoMode"]["environment"]) == 1 and len(g_do["autoMode"]["allow"]) == 1
+          and "does NOT" in g_do["autoMode"]["allow"][0] and "token-allow" in g_do["autoMode"]["allow"][0])
+    check("預設組不含 daily-ops（放行要使用者自己選）", "daily-ops" not in ne.DEFAULT_GROUPS and "daily-ops" in ne.GUARD_GROUPS)
+    sp4 = os.path.join(td, "s4.json")
+    json.dump({"autoMode": {"soft_deny": ["$defaults", "mine: never touch prod"]}}, open(sp4, "w"))
+    ne.apply_rules(sp4, g_do); r4b = ne.apply_rules(sp4, g_do)
+    c4 = json.load(open(sp4, encoding="utf-8"))
+    check("autoMode：新建的清單先放 $defaults，再放我們的條目；使用者自己的 soft_deny 保留",
+          c4["autoMode"]["allow"][0] == "$defaults" and c4["autoMode"]["environment"][0] == "$defaults"
+          and c4["autoMode"]["soft_deny"] == ["$defaults", "mine: never touch prod"], c4.get("autoMode"))
+    check("autoMode：冪等（第二次 changed=0、不重複）", r4b["changed"] == 0 and len(c4["autoMode"]["allow"]) == 2, r4b)
+    ne.apply_rules(sp4, ne.guard_rules(h2), remove=True)
+    c4 = json.load(open(sp4, encoding="utf-8"))
+    check("autoMode：移除只拿掉我們的；只剩 $defaults 的清單整個拿掉", c4 == {"autoMode": {"soft_deny": ["$defaults", "mine: never touch prod"]}}, c4)
     cp = subprocess.run([sys.executable, os.path.join(REPO, "setup.py"), "--project", p3, "--home", h3, "--guard-rules",
                          "--guard-groups", "nope"], capture_output=True, text=True, encoding="utf-8")
     check("CLI 不認得的組 → 拒絕", cp.returncode == 2)

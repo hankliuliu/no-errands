@@ -95,6 +95,11 @@ check("清單中非目標項目 → 擋下", refused("click", "Friend B, ok, 202
 check("清單中目標項目 → 放行", not refused("click", "Group A, 4人, 5, someone sent a sticker, 2026年11月21日", allow="list-target", target="Group A"))
 check("選單按鈕「其他功能」（allow=menu-button）→ 放行", not refused("click", "其他功能", allow="menu-button"))
 check("選單按鈕在沒有 allow 時 → 擋下", refused("click", "其他功能"))
+T1 = "Group A, 4人, 5, someone sent a sticker, 2026年11月21日"
+check("scroll-to：目標對話的清單項目（allow=list-target）→ 放行", not refused("scroll-to", T1, allow="list-target", target="Group A"))
+check("scroll-to：清單中非目標項目 → 擋下", refused("scroll-to", "Group A Ops, 3人, hi, 2026年11月20日", allow="list-target", target="Group A"))
+check("scroll-to：沒有 allow → 擋下", refused("scroll-to", T1, target="Group A"))
+check("scroll-to：清單外的元素 → 擋下", refused("scroll-to", "其他功能", allow="list-target", target="其他功能"))
 
 # ---- 名稱只看群組名、忽略結尾人數標示（2026-11-22；名稱全是虛構的）
 import policy  # noqa: E402

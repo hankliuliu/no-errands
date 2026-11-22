@@ -243,7 +243,13 @@ def rule_path(path):
     return "//" + ap_.lstrip("/")
 
 
-GUARD_GROUPS = ("direct-tools", "token", "consent")
+GUARD_GROUPS = ("direct-tools", "token", "consent", "daily-ops")
+DEFAULT_GROUPS = ("direct-tools", "token", "consent")      # daily-ops 是放行規則，要使用者自己選
+# daily-ops：用安裝路徑呼叫的這些工具直接放行（不再每次詢問、自動模式下不再被分類器擋）。
+# 它們自己守門：白名單與授權（chat_guard／gather）、只讀（mm_ro）、網域與 app 範圍（neb／ned）、
+# 對外訊息只能起草、核准只在發件匣頁面（outbox／demo_runbook 都沒有核准或送出的子指令）。
+# 改變同意範圍的 policy.py 子指令不在這裡（consent 組讓它們先問使用者）。
+DAILY_TOOLS = ("gather", "chat_guard", "ned", "neb", "outbox", "mm_ro", "demo_runbook")
 
 
 def token_hook_cmd(py_bin, home):
@@ -259,14 +265,33 @@ def token_hook_cmd(py_bin, home):
 TOKEN_HOOK_MATCHER = "Read|Bash|PowerShell|Grep|Glob|Edit|Write|NotebookEdit"
 
 
-def guard_rules(home, groups=GUARD_GROUPS):
+def guard_rules(home, groups=GUARD_GROUPS):   # 呼叫端沒指定 = 全部（移除時用）
     """建議的 Claude Code 設定，分三組可分開開關（預設三組都開）：
       direct-tools：deny 直接呼叫 agent-browser／agent-desktop（網頁一律經 neb、桌面一律經 ned）
       token       ：PreToolUse hook——預設不准讀 Mattermost token 檔，政策檔 token_read_allow 裡的專案資料夾放行
                     （deny 規則無法被專案層級蓋掉，做不到白名單，所以用 hook）
       consent     ：ask——policy.py 會改變同意範圍的子指令"""
     py_bin = ned_cmd(home).rsplit(" ", 1)[0]
-    deny, ask, hooks = [], [], []
+    deny, ask, hooks, allow = [], [], [], []
+    auto = {"environment": [], "allow": []}
+    if "daily-ops" in groups:
+        for t in DAILY_TOOLS:
+            sp = os.path.join(home, "bin", t + ".py")
+            allow.append('Bash(%s "%s":*)' % (py_bin, sp))
+            allow.append('PowerShell(& %s "%s":*)' % (py_bin, sp))
+        # 自動模式（實測 2026-11-22）：上面這種「直譯器開頭＋萬用字元」的放行規則一進自動模式就被丟掉，分類器照樣擋。
+        # 官方支援的做法是 autoMode 區塊：給分類器讀的自然語言規則（只認使用者層級設定；專案設定不讀）。
+        tools = ", ".join(t + ".py" for t in DAILY_TOOLS)
+        b = os.path.join(home, "bin")
+        auto["environment"].append(
+            "%s [no-errands] is the user's own local toolkit installed at %s; its tools in %s (%s) are the user's guarded "
+            "tools, and the app grants and chat whitelist in %s were set by the user." % (AUTO_MARK, home, b, tools, os.path.join(home, "policy.json")))
+        auto["allow"].append(
+            "%s [no-errands] Running the tools in %s (%s) with the installed Python is allowed, including exporting or syncing "
+            "whitelisted chats (gather.py, chat_guard.py) and read-only Mattermost (mm_ro.py): the tools enforce the user's app grants, "
+            "chat whitelist, read-only access and the approval outbox themselves, and none of them can send a message. This does NOT "
+            "cover policy.py subcommands that change consent (grant, set, whitelist, domain, token-allow): those need the user's "
+            "explicit request in the conversation." % (AUTO_MARK, b, tools))
     if "token" in groups:
         hooks.append({"matcher": TOKEN_HOOK_MATCHER, "hooks": [{"type": "command", "command": token_hook_cmd(py_bin, home), "timeout": 10}]})
     # 守門從「建議」變成「只有這條路」：不准直接呼叫兩個執行檔（ned／neb 用子行程呼叫，不受權限規則影響）。
@@ -281,7 +306,10 @@ def guard_rules(home, groups=GUARD_GROUPS):
     # 再多一層詢問只會讓無人在場的同步卡住。
     for sub in POLICY_ASK if "consent" in groups else ():
         ask.append("Bash(%s \"%s\" %s:*)" % (py_bin, os.path.join(home, "bin", "policy.py"), sub))
-    return {"deny": deny, "ask": ask, "hooks": {"PreToolUse": hooks}}
+    return {"deny": deny, "ask": ask, "allow": allow, "hooks": {"PreToolUse": hooks}, "autoMode": auto}
+
+
+AUTO_MARK = "(managed by no-errands setup.py)"
 
 
 POLICY_ASK = ("grant", "set", "whitelist", "domain", "token-allow")
@@ -297,7 +325,7 @@ def apply_rules(path, rules, remove=False):
     cfg = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
     perms = cfg.setdefault("permissions", {})
     changed = 0
-    for kind in ("deny", "ask"):
+    for kind in ("deny", "ask", "allow"):
         cur = perms.setdefault(kind, [])
         for r in rules.get(kind, []):
             if remove and r in cur:
@@ -322,6 +350,23 @@ def apply_rules(path, rules, remove=False):
             hk.pop(ev)
         if not hk:
             cfg.pop("hooks")
+    # autoMode：我們的條目以 AUTO_MARK 認；新建清單時先放 "$defaults"（少了它會失去內建規則）；
+    # 移除後只剩 "$defaults" 就整個拿掉（等於沒設）。使用者自己的條目不動。
+    for key, mine in (rules.get("autoMode") or {}).items():
+        am = cfg.setdefault("autoMode", {})
+        cur = am.get(key)
+        old = [e for e in (cur or []) if AUTO_MARK in e]
+        if cur is None and not remove and mine:
+            cur = ["$defaults"]
+        if cur is not None:
+            cur = [e for e in cur if AUTO_MARK not in e] + ([] if remove else list(mine))
+            if cur == ["$defaults"] or not cur:
+                am.pop(key, None)
+            else:
+                am[key] = cur
+        changed += len(old) if remove else (0 if old == list(mine) else len(mine))
+        if not am:
+            cfg.pop("autoMode")
     json.dump(cfg, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     return {"ok": True, "changed": changed, "removed" if remove else "added": changed}
 
@@ -430,8 +475,8 @@ def main():
     ap.add_argument("--codex-home", default=os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex"))
     ap.add_argument("--guard-rules", action="store_true",
                     help="把建議的 Claude Code 權限規則加進 settings.json（只增刪自己這幾筆；搭配 --uninstall 移除）")
-    ap.add_argument("--guard-groups", default=",".join(GUARD_GROUPS),
-                    help="要開哪幾組（逗號分隔）：direct-tools、token、consent；預設三組都開。--uninstall 一律移除三組")
+    ap.add_argument("--guard-groups", default=",".join(DEFAULT_GROUPS),
+                    help="要開哪幾組（逗號分隔）：direct-tools、token、consent、daily-ops；預設前三組。--uninstall 一律移除全部")
     a = ap.parse_args()
 
     if a.guard_rules:

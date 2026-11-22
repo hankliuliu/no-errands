@@ -164,6 +164,7 @@ def file_key(s):
 
 
 EXPORT_CTX = {}
+OPEN_CTX = {}
 
 
 def _safe_remove(path, tries=20):
@@ -332,6 +333,12 @@ def assert_allowed(prof, action, node, parents, ctx):
                 and not any(_is_chat_list(p_) for p_ in parents):
             return
         raise Refused("捲動只允許在目前對話的訊息區（往上載入歷史），不可捲聊天清單")
+    if action == "scroll-to":
+        # 把「目標對話自己的清單項目」捲進可見範圍（UIA ScrollIntoView，不動游標）：LINE 依最新訊息排序，
+        # 目標可能被擠到清單下方看不到的地方，這時語意點擊會 ACTION_FAILED（真機 2026-11-22）
+        if ctx.get("allow") == "list-target" and any(_is_list(prof, p_) for p_ in parents)                 and prof["chat_name"](name) == ctx.get("target_chat"):
+            return
+        raise Refused("只能把目標對話的清單項目捲進畫面")
     if action != "click":
         raise Refused("主視窗只允許語意點擊（不輸入任何文字）")
     in_list = any(_is_list(prof, p_) for p_ in parents)
@@ -435,6 +442,8 @@ def guarded(prof, action, node, parents, ctx, text=None):
             ad("set-value", node["ref_id"], text)
         elif action == "scroll":
             ad("scroll", node["ref_id"], "--direction", "up", "--amount", str(text or 25))
+        elif action == "scroll-to":
+            ad("scroll-to", node["ref_id"])
     finally:
         after = _fg()
         if before is not None and after is not None and before != after:
@@ -480,12 +489,28 @@ def cmd_open(app, prof, chat, expect, pol):
         if prof["has_unread"](packed):
             raise Refused("這個對話有未讀訊息，未讀保護開啟中，不開")
     _, parents = find_node(snap, lambda n: n is node)
-    guarded(prof, "click", node, parents, {"zone": "main", "allow": "list-target", "target_chat": prof["chat_name"](packed)})
+    ctx = {"zone": "main", "allow": "list-target", "target_chat": prof["chat_name"](packed)}
+    try:
+        guarded(prof, "click", node, parents, ctx)
+    except RuntimeError as e:
+        if "ACTION_FAILED" not in str(e):
+            raise
+        # 項目可能在清單看不到的地方：捲進畫面、重新取樹、再點一次（只一次）
+        guarded(prof, "scroll-to", node, parents, ctx)
+        time.sleep(0.6)
+        snap = snapshot(win)
+        hits = match_chat(prof, snap, chat)
+        if len(hits) != 1 or prof["chat_name"](hits[0].get("name", "")) != ctx["target_chat"]:
+            raise Refused("捲動後對不到同一個對話（符合 %d 個），停手" % len(hits))
+        node = hits[0]
+        _, parents = find_node(snap, lambda n: n is node)
+        guarded(prof, "click", node, parents, ctx)
+        OPEN_CTX["scrolled_into_view"] = True
     time.sleep(0.8)
     if not header_ok(prof, snapshot(win, interactive=False), chat):
         raise Refused("開啟後確認不到開著的是指名對話（標頭不符或沒有開成）：停手，不再點任何東西")
-    ledger(app, "open", True, "whitelist" if white else "fingerprint", chat)
-    out({"ok": True, "opened": True, "via": "whitelist" if white else "fingerprint"})
+    ledger(app, "open", True, ("whitelist" if white else "fingerprint") + (" scrolled" if OPEN_CTX.get("scrolled_into_view") else ""), chat)
+    out({"ok": True, "opened": True, "via": "whitelist" if white else "fingerprint", "scrolled_into_view": bool(OPEN_CTX.get("scrolled_into_view"))})
 
 
 def cmd_read(app, prof, chat, file_):
