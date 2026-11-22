@@ -742,6 +742,16 @@ class Stage:
             self.ptr_anim = (self.ptr_pos, dst, time.time(), max(0.0, float(p.get("dur") or 0)))
         if now.get("press") and now["press"] != self.press_seq:
             self.press_seq, self.press_t = now["press"], time.time()
+            self.ptrc.itemconfigure(self.ripple, state="normal")      # 漣漪這一格就畫出來
+            R = self.ptr_R
+            self.ptrc.coords(self.ripple, R - 4, R - 4, R + 4, R + 4)
+            try:
+                self.ptrw.update_idletasks()
+                p_ = os.path.join(self.run_dir, "stage_ack.json")    # 回報引擎：按下的效果已經畫出來（引擎等到這個才點擊）
+                json.dump({"press": self.press_seq, "t": round(time.time(), 3)}, open(p_ + ".tmp", "w"))
+                os.replace(p_ + ".tmp", p_)
+            except OSError:
+                pass
         if not getattr(self, "_ptr_shown", False):
             self._ptr_shown = True
             self.place_ptr(*self.ptr_pos)
@@ -756,6 +766,17 @@ class Stage:
         """約 60 fps：示範游標的移動（加減速、弧線）、淡入、按下的漣漪；外框淡出。暫停時引擎不發新目標，游標停在原地。"""
         try:
             now_t = time.time()
+            # 游標目標與「按下」不等 200 ms 的 tick：now.json 一更新就處理（引擎發出按下後 0.18 秒就點擊，
+            # 晚 200 ms 才讀到會讓漣漪出現在點擊之後；游標也會晚出發）。用另一份副本，不動 tick 判斷卡片切換用的 self.now。
+            try:
+                mt = os.stat(os.path.join(self.run_dir, "now.json")).st_mtime_ns
+            except OSError:
+                mt = None
+            if mt and mt != getattr(self, "_now_mt", None):
+                self._now_mt = mt
+                nf = read_json(os.path.join(self.run_dir, "now.json"))
+                if nf:
+                    self.update_pointer(nf)
             if self.ptr_anim:
                 p0, p1, t0, dur = self.ptr_anim
                 t = 1.0 if dur <= 0 else (now_t - t0) / dur
@@ -1126,7 +1147,7 @@ class Stage:
                 "caption_on": self.cap_on, "controls_rect": box(self.ctlw), "controls_want": list(getattr(self, "_ctl_xy", None) or []),
                 "controls_moves": getattr(self, "ctl_moves", 0), "controls_stuck": getattr(self, "_ctl_retry", 0) > 3,
                 "shield": box(self.shield), "pointer": [round(v) for v in self.ptr_pos] if self.ptr_pos and self.ptrw.winfo_viewable() else None,
-                "cursor_hidden": self.cursor_hidden, "look_alpha": self.look_a if any(e.winfo_viewable() for e in self.edges) else 0,
+                "cursor_hidden": self.cursor_hidden, "ripple_on": self.ptrc.itemcget(self.ripple, "state") == "normal", "look_alpha": self.look_a if any(e.winfo_viewable() for e in self.edges) else 0,
                 "look_rect": list(self.look_rect) if getattr(self, "look_rect", None) else None,
                 "mask_rect": list(self.mask_rect) if getattr(self, "mask_rect", None) else None,
                 "fit": self.fit, "card": self.now.get("card"), "beat": (self.now.get("beat") or {}).get("text"),

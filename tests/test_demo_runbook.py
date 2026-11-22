@@ -66,6 +66,12 @@ elif sub == "keyboard" and a[1:2] == ["inserttext"]:
     print("ok")
 elif sub == "focus":
     print("ok")
+elif sub == "press" and a[1:2] == ["Enter"] and os.path.exists(os.path.join(d, "simulate-field")):
+    # 舞台段落：模擬真的輸入框——按 Enter 送出後欄位清空
+    f = rd("focus.json", None) or {}
+    f["value"] = ""
+    json.dump(f, open(os.path.join(d, "focus.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    print("did press")
 elif sub == "batch":
     open(os.path.join(d, "batch-stdin.txt"), "a", encoding="utf-8").write(sys.stdin.read() + "\n"); print("ok")
 elif sub == "screenshot":
@@ -736,6 +742,12 @@ def main():
                                        {"say": "第二句", "at": 3, "s": 0.5}]
             sg["steps"][1]["beats"] = [{"say": "長官這邊", "at": 0, "s": 0.5}]
             sgp = os.path.join(rbdir, "stage.json"); json.dump(sg, open(sgp, "w", encoding="utf-8"), ensure_ascii=False)
+            # 舞台的 fill 走逐步輸入（守門逐段讀回焦點欄位）：假瀏覽器在這一段模擬真的輸入框（空的開始、插入附加、Enter 清空）
+            open(os.path.join(home, "simulate-field"), "w").write("1")
+            for f_ in ("inserts.txt", "prog-hook.json"):
+                if os.path.exists(os.path.join(home, f_)):
+                    os.remove(os.path.join(home, f_))
+            focus(["訊息"], "")
             # 預設像播影片：不按任何鍵也會自己播到片尾（片頭片尾才停）
             rc, o, txt = rbj("live", sgp, "--approval", aid, "--no-player")
             rda = o.get("run_dir") or ""
@@ -746,6 +758,7 @@ def main():
                   and {"第一句：看這裡", "第二句", "長官這邊"} <= seen, (now_of(rda).get("card"), seen))
             rbj("control", rda, "stop"); time.sleep(1)
             # 講者模式（逐步）：拍子自己往下走（hold 只是多留），每一「步」做完才停下等「下一步」
+            focus(["訊息"], "")
             rc, o, txt = rbj("live", sgp, "--approval", aid, "--no-player", "--step-mode")
             rds_ = o.get("run_dir") or ""
             t0 = time.time(); seen2 = []; cards_seen = set()
@@ -779,6 +792,9 @@ def main():
             check("舞台：片尾按「結束」→ 引擎自己跑還原、片尾卡顯示結果、收掉舞台",
                   n.get("status") == "closing" and "reset" in rj_ and (n.get("card_data") or {}).get("reset"), (n, rj_.get("reset")))
 
+            # 舞台段落結束：假瀏覽器不再模擬輸入框，焦點欄位還原成後面的測試預期的狀態
+            os.remove(os.path.join(home, "simulate-field"))
+            focus(["訊息"], "/case help")
             # ---------- standby 成功路徑：開通道、清 profile、排好畫面停在第一步前；再跑一次會先關掉上一次
             PYF = sys.executable.replace("\\", "/")
             tp = free_port()

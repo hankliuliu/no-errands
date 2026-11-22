@@ -214,6 +214,27 @@ check("A21/A22 動作：游標移到元素中心、停一下、按下效果，�
 c = FakeCtl2(); lk = DR.Look(FakeBr(boxes3), c, align=AL); lk.step("a", True); lk.set("a", "#t")
 check("A21/A25 讀內容：淡外框（帶這一拍的編號）＋游標指在那一段開頭的左邊、不蓋住字",
       c.now["look"]["seq"] == 1 and c.now["pointer"]["x"] < 269 and c.now.get("press") is None, c.now)
+import tempfile as _tf, threading as _th, json as _js  # noqa: E402
+_ackd = _tf.mkdtemp()
+
+
+class FakeCtl3(FakeCtl2):
+    dir = _ackd
+
+
+def _ack_later():
+    time.sleep(0.3)
+    _ack_t[0] = time.time()
+    _js.dump({"press": 1, "t": _ack_t[0]}, open(os.path.join(_ackd, "stage_ack.json"), "w"))
+
+
+_ack_t = [None]
+c = FakeCtl3(); lk = DR.Look(FakeBr(boxes3), c, align=AL); lk.step("a", True)
+lk.ptr = (700, 720)                                          # 游標已在目標上（不用移動），只看按下與點擊的先後
+_th.Thread(target=_ack_later).start()
+t_ = time.time(); lk.act("a", "@e9", press=True); t_done = time.time()
+check("A22 點擊在「按下的效果已畫出」之後：舞台 0.3 秒後才回報 → 引擎等到回報、再停一下才回來送出點擊",
+      _ack_t[0] is not None and t_done >= _ack_t[0] + 0.1 and getattr(lk, "acked", 0) == 1, (_ack_t[0], t_done))
 import re as _re  # noqa: E402
 bad = {}
 for fn in ("demo_stage.py", "demo_runbook.py", "neb.py", "stage_layout.py"):
