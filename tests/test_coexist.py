@@ -138,12 +138,12 @@ def main():
         mine = lambda: sorted(f for f in os.listdir(root) if f.startswith("."))
         check("5 正確目的地：裝好、有標記、沒留暫存", os.path.isfile(os.path.join(dst, "SKILL.md"))
               and os.path.isfile(os.path.join(dst, S.OWN_MARK)) and mine() == [], mine())
-        open(os.path.join(dst, "stale.txt"), "w").write("舊版才有")
+        open(os.path.join(dst, "stale.txt"), "w", encoding="utf-8").write("舊版才有")
         S.install_skill(dst)
         check("5 換版：新版就位、舊版內容拿掉、沒留暫存", not os.path.exists(os.path.join(dst, "stale.txt"))
               and S.skill_tree_hash(dst) == S.skill_tree_hash(os.path.join(REPO, "skills", "no-errands")) and mine() == [], mine())
 
-        open(os.path.join(dst, "stale.txt"), "w").write("舊版才有")
+        open(os.path.join(dst, "stale.txt"), "w", encoding="utf-8").write("舊版才有")
         before = tree(dst)
         real_replace = os.replace
         calls = []
@@ -197,7 +197,7 @@ def main():
 
         # 上次換版當掉：正式位置不見、旁邊有帶標記的舊版 → 先搬回再換；別人的點開頭資料夾不碰
         real_replace(dst, os.path.join(root, ".no-errands.old-1-1"))
-        os.makedirs(os.path.join(root, ".no-errands.old-9-9")); open(os.path.join(root, ".no-errands.old-9-9", "x"), "w").write("不是我們的")
+        os.makedirs(os.path.join(root, ".no-errands.old-9-9")); open(os.path.join(root, ".no-errands.old-9-9", "x"), "w", encoding="utf-8").write("不是我們的")
         S.install_skill(dst)
         check("5 當掉後的善後：正式位置回來、我們的殘留清掉、別人的不碰",
               os.path.isfile(os.path.join(dst, "SKILL.md")) and mine() == [".no-errands.old-9-9"], mine())
