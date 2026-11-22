@@ -779,6 +779,11 @@ class Stage:
                 self.ptrw.withdraw()
             self.ptr_pos, self.ptr_anim, self._ptr_shown, self.ptr_seq = None, None, False, None
             return
+        bk = ((now.get("beat") or {}).get("i"), now.get("step_id"))
+        if bk != getattr(self, "_ptr_beat", None):
+            self._ptr_beat = bk
+            if not self.ptrw.winfo_viewable():                # 保底（5c）：每一拍開始時游標該在台上卻沒顯示 → 重新處理一次
+                self.ptr_seq, self._ptr_shown = None, False
         if p.get("seq") != self.ptr_seq:
             self.ptr_seq = p["seq"]
             dst = self.ptr_screen(now, (p["x"], p["y"]))
