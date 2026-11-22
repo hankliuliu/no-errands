@@ -32,6 +32,8 @@ def rd(n, dflt):
     return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else dflt
 if sub == "open":
     open(st, "w").write(a[1]); print("ok")
+elif sub == "get" and a[1:2] == ["box"]:
+    print("x:      10 y:      120 width:  300 height: 40")
 elif sub == "get" and a[1:2] == ["url"]:
     print(cur())
 elif sub == "get" and a[1:2] == ["text"]:
@@ -596,6 +598,40 @@ def main():
             rjf = json.load(open(os.path.join(rdf, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rdf, "run.json")) else {}
             check("紀錄寫下跳過的步驟", rjf.get("skipped_after_fail") == ["s1"] and len(rjf.get("steps", [])) == 3, rjf.get("skipped_after_fail"))
 
+            # ---------- 舞台：拍子字幕、看這裡外框、換角色轉場、片尾卡、按結束後引擎自己還原
+            sg = json.loads(json.dumps(RUNBOOK))
+            sg["stage"] = {"views": {"read": {"top": 84, "bottom": 120}}, "transition_s": 1.2,
+                           "end": {"heading": "示範結束", "text": "謝謝"}}
+            sg["accounts"]["demo_a"]["role"] = "第一線人員"; sg["accounts"]["demo_b"]["role"] = "長官"
+            sg["steps"][0]["section"] = "建檔"
+            sg["steps"][0]["beats"] = [{"say": "第一句：看這裡", "at": 0, "look": {"css": "#post-list"}, "hold": True},
+                                       {"say": "第二句", "at": 3, "s": 0.5}]
+            sg["steps"][1]["beats"] = [{"say": "長官這邊", "at": 0, "s": 0.5}]
+            sgp = os.path.join(rbdir, "stage.json"); json.dump(sg, open(sgp, "w", encoding="utf-8"), ensure_ascii=False)
+            rc, o, txt = rbj("live", sgp, "--approval", aid, "--no-player")
+            rds_ = o.get("run_dir") or ""
+            n = wait_for(rds_, lambda n: (n.get("beat") or {}).get("text") == "第一句：看這裡" and n.get("status") == "waiting_next", 30)
+            check("舞台：拍子字幕＋停住等下一步、角色名牌與段落", n.get("role") == "第一線人員" and n.get("section") == "建檔"
+                  and (n.get("beat") or {}).get("n") == 2 and n.get("crop") == {"top": 84, "bottom": 120}, n)
+            check("舞台：看這裡的外框位置（get box 取得）", (n.get("look") or {}).get("box") == [10.0, 120.0, 300.0, 40.0], n.get("look"))
+            check("舞台：知道兩個帳號的 profile（舞台用來找自己的瀏覽器視窗）",
+                  all((n.get("accounts") or {}).get(a, {}).get("profile") for a in ("demo_a", "demo_b")), n.get("accounts"))
+            rbj("control", rds_, "next")
+            n = wait_for(rds_, lambda n: n.get("card") == "transition", 30)
+            check("舞台：換角色有轉場卡（換成：長官）", n.get("card") == "transition" and n.get("role") == "長官", n)
+            t0 = time.time()
+            while time.time() - t0 < 60 and now_of(rds_).get("card") != "end":
+                if now_of(rds_).get("status") in ("waiting_next", "failed"):
+                    time.sleep(0.5); rbj("control", rds_, "next")
+                time.sleep(0.5)
+            n = now_of(rds_)
+            check("舞台：跑完停在片尾卡（講者可以回頭講）", n.get("card") == "end" and (n.get("card_data") or {}).get("heading") == "示範結束", n)
+            rbj("control", rds_, "next")
+            n = wait_for(rds_, lambda n: n.get("status") == "closing", 30)
+            rj_ = json.load(open(os.path.join(rds_, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rds_, "run.json")) else {}
+            check("舞台：片尾按「結束」→ 引擎自己跑還原、片尾卡顯示結果、收掉舞台",
+                  n.get("status") == "closing" and "reset" in rj_ and (n.get("card_data") or {}).get("reset"), (n, rj_.get("reset")))
+
             # ---------- standby 成功路徑：開通道、清 profile、排好畫面停在第一步前；再跑一次會先關掉上一次
             PYF = sys.executable.replace("\\", "/")
             tp = free_port()
@@ -817,6 +853,13 @@ def main():
         badp = os.path.join(rbdir, "bad.json"); json.dump(bad, open(badp, "w", encoding="utf-8"), ensure_ascii=False)
         rc, o, _ = rbj("validate", badp)
         check("validate：本機指令有管線 → 錯誤（上場環境不一定有殼層）", rc == 1 and any("管線" in e for e in o.get("errors", [])), o)
+
+        # ---------- 舞台：字幕在五種解析度下最多兩行（劇本驗證的錯誤）
+        stg = json.loads(json.dumps(RUNBOOK)); stg["stage"] = {"views": {"read": {"top": 84}}}
+        stg["steps"][0]["beats"] = [{"say": "短的一句。", "at": 0}, {"say": "這一句故意寫得非常非常長，" * 6, "at": 1}]
+        stgp = os.path.join(rbdir, "stage-bad.json"); json.dump(stg, open(stgp, "w", encoding="utf-8"), ensure_ascii=False)
+        rc, o, _ = rbj("validate", stgp)
+        check("舞台：字幕超過兩行 → validate 錯誤（指出步驟與第幾句）", rc == 1 and any("s1" in e and "第 2 句" in e for e in o.get("errors", [])), o)
 
         # ---------- standby：可修的修一次；任何一項不過就報出來、不啟動引擎
         PYF = sys.executable.replace("\\", "/")
