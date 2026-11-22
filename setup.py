@@ -160,6 +160,12 @@ def skill_is_ours(skill_dst, home):
 
 
 def install_skill(skill_dst, name="no-errands"):
+    # 目的地一定是「<skills 目錄>/<name>」：傳成上層 skills 目錄會把使用者其他 skill 整個刪掉（真的發生過）。
+    if os.path.basename(os.path.normpath(skill_dst)) != name:
+        raise ValueError("install_skill: 目的地必須以 %s 結尾，收到 %s；不刪不裝" % (name, skill_dst))
+    if os.path.isdir(skill_dst) and not os.path.exists(os.path.join(skill_dst, OWN_MARK)) and any(
+            os.path.isfile(os.path.join(skill_dst, d, "SKILL.md")) for d in os.listdir(skill_dst)):
+        raise ValueError("install_skill: %s 底下有其他 skill，不是單一 skill 目錄；不刪不裝" % skill_dst)
     shutil.rmtree(skill_dst, ignore_errors=True)
     shutil.copytree(os.path.join(REPO, "skills", name), skill_dst)
     open(os.path.join(skill_dst, OWN_MARK), "w", encoding="utf-8").write("installed by no-errands setup.py" + chr(10))

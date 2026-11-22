@@ -5,6 +5,7 @@
   2. 既有 settings.json（hooks + permissions）→ 一般安裝完全不碰（逐位元組相同）
   3. 已有同名 skill 目錄但不是我們裝的 → 中止、不覆蓋；移除時也不刪它
   4. 已有可用 Python → stage-0 直接用，不下載 uv
+  5. install_skill 目的地傳成上層 skills 目錄 → 拒絕，其他 skill 一個檔案都不少
 """
 import json, os, shutil, subprocess, sys, tempfile
 
@@ -96,6 +97,28 @@ def main():
             check("4 有可用 Python → 沒有下載 uv", not any(b.startswith("uv") for b in bins), bins)
         else:
             print("SKIP 4 這台機器 PATH 上沒有可用 Python（例如只有 Microsoft Store 假捷徑），下載 uv 是正確行為")
+        # 5 install_skill 傳錯目的地（上層 skills 目錄）→ 拒絕、不刪
+        sys.path.insert(0, REPO); import setup as S
+        sk = os.path.join(td, "skills5"); os.makedirs(os.path.join(sk, "other-skill"))
+        open(os.path.join(sk, "other-skill", "SKILL.md"), "w", encoding="utf-8").write("x")
+        for args in ((sk,), (sk, "errand-audit")):
+            try:
+                S.install_skill(*args); refused = False
+            except ValueError:
+                refused = True
+            check("5 install_skill%s 傳上層 skills 目錄 → 拒絕" % ("" if len(args) == 1 else "(errand-audit)"), refused)
+        check("5 其他 skill 還在、沒有被蓋上我們的檔案",
+              os.path.isfile(os.path.join(sk, "other-skill", "SKILL.md")) and not os.path.exists(os.path.join(sk, "SKILL.md")),
+              os.listdir(sk))
+        hold = os.path.join(sk, "no-errands"); os.makedirs(os.path.join(hold, "inner"))
+        open(os.path.join(hold, "inner", "SKILL.md"), "w", encoding="utf-8").write("x")
+        try:
+            S.install_skill(hold); refused = False
+        except ValueError:
+            refused = True
+        check("5 名稱對但底下放著別的 skill（沒有我們的標記）→ 拒絕", refused and os.path.isfile(os.path.join(hold, "inner", "SKILL.md")))
+        S.install_skill(os.path.join(sk, "fresh", "no-errands"))
+        check("5 正確目的地照常安裝", os.path.isfile(os.path.join(sk, "fresh", "no-errands", "SKILL.md")))
     finally:
         shutil.rmtree(td, ignore_errors=True)
     print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
