@@ -283,8 +283,12 @@ try {
 """
 
 
+LIST_ERR = {"last": None}
+
+
 def list_rects(hwnd, timeout=30):
-    """視窗裡每個 UIA List 的位置、子項數、其中按鈕數（不回任何名稱）。"""
+    """視窗裡每個 UIA List 的位置、子項數、其中按鈕數（不回任何名稱）。失敗原因（不含內容）記在 LIST_ERR。"""
+    LIST_ERR["last"] = None
     with tempfile.TemporaryDirectory() as td:
         ps1 = os.path.join(td, "lists.ps1")
         open(ps1, "w", encoding="ascii").write(LISTS_PS)
@@ -292,12 +296,16 @@ def list_rects(hwnd, timeout=30):
             p = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, str(hwnd)],
                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         except subprocess.TimeoutExpired:
+            LIST_ERR["last"] = "timeout"
             return []
     try:
         d = json.loads(p.stdout.strip().splitlines()[-1])
+        if not d.get("ok"):
+            LIST_ERR["last"] = "uia: " + str(d.get("error"))[:120]
         ls = d.get("lists") or []
         return [ls] if isinstance(ls, dict) else ls
-    except Exception:
+    except Exception as e:
+        LIST_ERR["last"] = "parse: %s (stdout %d bytes)" % (type(e).__name__, len(p.stdout or ""))
         return []
 
 

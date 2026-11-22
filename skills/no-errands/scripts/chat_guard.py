@@ -951,11 +951,15 @@ def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0)
     import ctypes, ctypes.wintypes as wt
     u32 = ctypes.windll.user32
     wr = wt.RECT(); u32.GetWindowRect(hwnd, ctypes.byref(wr))
-    lists = [l for l in popup_menu.list_rects(hwnd)
-             if wr.left <= l["rect"][0] < l["rect"][2] <= wr.right and wr.top <= l["rect"][1] < l["rect"][3] <= wr.bottom
-             and l["rect"][3] - l["rect"][1] >= 100]
+    seen = popup_menu.list_rects(hwnd)
+    inside = lambda r: wr.left - 2 <= r[0] < r[2] <= wr.right + 2 and wr.top - 2 <= r[1] < r[3] <= wr.bottom + 2
+    lists = [l for l in seen if inside(l["rect"]) and l["rect"][3] - l["rect"][1] >= 100]
     if not lists:
-        res["stop"] = "no_list"
+        res["stop"] = "no_list"   # 診斷只有尺寸與位置關係，不含內容
+        res["lists_seen"] = [{"w": l["rect"][2] - l["rect"][0], "h": l["rect"][3] - l["rect"][1], "inside": inside(l["rect"]),
+                              "children": l.get("children")} for l in seen][:6]
+        res["window_wh"] = [wr.right - wr.left, wr.bottom - wr.top]
+        res["list_err"] = popup_menu.LIST_ERR.get("last")
         return
     lr = max(lists, key=lambda l: (l["rect"][2] - l["rect"][0]) * (l["rect"][3] - l["rect"][1]))["rect"]
     cx, cy = (lr[0] + lr[2]) // 2, (lr[1] + lr[3]) // 2
