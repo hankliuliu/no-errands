@@ -16,13 +16,19 @@
 #   <StateDir>\trigger.jsonl  polled every 300 ms, consumed after reading. One JSON object per line:
 #        {"op":"message","chat":"Alpha Team","text":"..."}   new incoming message (+1 unread, name changes)
 #        {"op":"rename","chat":"Alpha Team","name":"..."}    overwrite the packed accessible name
+#        {"op":"members","chat":"Field Crew","count":22}     change a group's member count (display suffix "(N)")
+# -CountNames adds groups whose display name ends with a member count, like LINE: "Name (21)". Includes a name that
+#   itself ends with digits in parens, a decoy whose count looks like that name, a name with "/", two groups that are
+#   the same name after the count is removed, and full-width parens. The default export file name replaces characters
+#   Windows does not allow in file names with "_" (like LINE does with "/").
 #   <StateDir>\feed.jsonl     tailed: lines written by the outbox fake adapter after user approval
 #                             ({"via":"ne-outbox","to":...,"text":...}); shown as sent, NOT a violation.
 param(
     [string]$StateDir = "$env:TEMP\ne-fakechat",
     [string]$Title = 'NE-FAKECHAT',
     [switch]$NoActivate,  # show without taking focus (for non-interference tests)
-    [switch]$SyncDialog   # open the save dialog inside the click handler (blocks UIA Invoke; hang test target)
+    [switch]$SyncDialog,  # open the save dialog inside the click handler (blocks UIA Invoke; hang test target)
+    [switch]$CountNames   # add groups whose display name carries a member count (see header)
 )
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -48,8 +54,10 @@ function Write-JsonLine([string]$path, [hashtable]$obj) {
 
 # ---- chat data -------------------------------------------------------------
 $chats = New-Object System.Collections.ArrayList
-function Add-Chat($name, $unread, $time, $msgs) {
-    $c = @{ name = $name; unread = $unread; time = $time; msgs = (New-Object System.Collections.ArrayList); custom = $null }
+function Add-Chat($name, $unread, $time, $msgs, $members = $null, $base = $null, [switch]$FullWidth) {
+    if (-not $base) { $base = $name }
+    $c = @{ name = $name; unread = $unread; time = $time; msgs = (New-Object System.Collections.ArrayList); custom = $null
+            members = $members; base = $base; fw = [bool]$FullWidth }
     foreach ($m in $msgs) { [void]$c.msgs.Add($m) }
     [void]$chats.Add($c)
 }
@@ -58,14 +66,28 @@ Add-Chat 'Beta Project'    0 '08:40' @('Cara: build passed', 'me: thanks', 'Cara
 Add-Chat 'Gamma Lab'       1 '08:05' @('Dev: meeting moved to 3pm')
 Add-Chat 'Delta Friends'   0 'Mon'   @('Eve: photos are in the album', 'me: nice')
 Add-Chat 'Alpha Team Ops'  0 'Sun'   @('Finn: server rebooted')
+if ($CountNames) {
+    Add-Chat 'Field Crew'       0 '07:10' @('Gus: buoy 3 is back online', 'Hal: logged') 21
+    Add-Chat 'Report(2024)'     0 '07:00' @('Ivy: annual report draft') 5
+    Add-Chat 'Report'           0 '06:50' @('Jon: decoy group whose count looks like a year') 2024
+    Add-Chat '11/30 Buoy Test'  0 '06:40' @('Kai: test window confirmed') 6
+    Add-Chat 'Echo'             0 '06:30' @('Lee: first Echo') 3
+    Add-Chat 'echo-2'           0 '06:20' @('Max: second Echo') 7 'Echo'
+    Add-Chat 'Kilo'             0 '06:10' @('Ned: full-width count') 8 -FullWidth
+}
+function Get-Display($c) {
+    if ($null -eq $c.members) { return $c.base }
+    if ($c.fw) { return ($c.base + [char]0xFF08 + $c.members + [char]0xFF09) }
+    return ('{0} ({1})' -f $c.base, $c.members)
+}
 [IO.File]::WriteAllText($contactsFile, (ConvertTo-Json @($chats | ForEach-Object { $_.name }) -Compress), $utf8)
 
 function Get-PackedName($c) {
     if ($c.custom) { return $c.custom }
     $last = ''
     if ($c.msgs.Count -gt 0) { $last = $c.msgs[$c.msgs.Count - 1] }
-    if ($c.unread -gt 0) { return ('{0} | {1} unread | {2} | {3}' -f $c.name, $c.unread, $c.time, $last) }
-    return ('{0} | {1} | {2}' -f $c.name, $c.time, $last)
+    if ($c.unread -gt 0) { return ('{0} | {1} unread | {2} | {3}' -f (Get-Display $c), $c.unread, $c.time, $last) }
+    return ('{0} | {1} | {2}' -f (Get-Display $c), $c.time, $last)
 }
 
 # ---- UI --------------------------------------------------------------------
@@ -142,8 +164,8 @@ function Show-Chat($c) {
     $script:current = $c
     $c.unread = 0
     $c.custom = $null
-    $header.Text = $c.name
-    $header.AccessibleName = 'open chat: ' + $c.name
+    $header.Text = (Get-Display $c)
+    $header.AccessibleName = 'open chat: ' + (Get-Display $c)
     $msgList.Items.Clear()
     foreach ($m in $c.msgs) { [void]$msgList.Items.Add($m) }
     Update-List
@@ -195,10 +217,10 @@ $script:exportAction = {
     $dlg.Title = 'Save chat history'
     $dlg.Filter = 'Text files (*.txt)|*.txt'
     # Like LINE: the default file name carries the chat name (test hook can override it).
-    $dlg.FileName = ('[NE] Chat with ' + $script:current.name + '.txt')
+    $dlg.FileName = ('[NE] Chat with ' + ((Get-Display $script:current) -replace '[\\/:*?"<>|]', '_') + '.txt')
     if ($script:exportNameOverride) { $dlg.FileName = $script:exportNameOverride }
     if ($dlg.ShowDialog($f) -eq [System.Windows.Forms.DialogResult]::OK) {
-        $first = '# ' + $script:current.name
+        $first = '# ' + (Get-Display $script:current)
         if ($script:firstLineOverride) { $first = $script:firstLineOverride }
         $lines = @($first) + @($script:current.msgs)
         [IO.File]::WriteAllText($dlg.FileName, (($lines -join "`r`n") + "`r`n"), $utf8)
@@ -245,7 +267,11 @@ $timer.Add_Tick({
                 if ($t.op -eq 'message') {
                     [void]$c.msgs.Add($t.text); $c.time = (Get-Date).ToString('HH:mm'); $c.custom = $null
                     if ($script:current -eq $c) { [void]$msgList.Items.Add($t.text) } else { $c.unread = $c.unread + 1 }
-                } elseif ($t.op -eq 'rename') { $c.custom = $t.name }
+                } elseif ($t.op -eq 'rename') { $c.custom = $t.name
+                } elseif ($t.op -eq 'members') {
+                    $c.members = [int]$t.count
+                    if ($script:current -eq $c) { $header.Text = (Get-Display $c); $header.AccessibleName = 'open chat: ' + (Get-Display $c) }
+                }
             }
             Update-List
         } catch { }

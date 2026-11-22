@@ -251,10 +251,14 @@ def cmd_add(a):
         out({"ok": False, "error": "需要 --service line|mattermost、--chat、--since YYYY-MM-DD[ HH:MM]"}, 2)
     pol = policy.load(HOME)
     if service == "line":
-        wl = (pol.get("chat") or {}).get("whitelist") or []
-        if chat not in wl:
+        # 目標 id 用白名單裡的那筆名稱：帶不帶人數標示貼進來、之後人數怎麼變，都是同一個目標
+        canon = policy.canonical_chat(pol, chat)
+        if canon is None:
+            out({"ok": False, "refused": True, "error": "白名單裡去掉人數標示後有兩筆以上對得上：不猜，請使用者整理白名單"}, 3)
+        if not policy.in_whitelist(pol, canon):
             out({"ok": False, "refused": True, "error": "LINE 的聊天室必須在白名單（匯出要打開對話，會變已讀）。"
                  "請使用者說「把〈聊天室〉加進白名單」，由 policy.py whitelist add 加入後再登記"}, 3)
+        chat = canon
     tid = hashlib.sha256(("%s|%s" % (service, chat)).encode("utf-8")).hexdigest()[:12]
     ts = load_targets()
     ts[tid] = {"service": service, "chat": chat, "since": since, "dest": arg(a, "--dest"), "label": arg(a, "--label"),
@@ -264,19 +268,23 @@ def cmd_add(a):
     out({"ok": True, "target": tid, "service": service, "since": since, "next": "gather.py sync --target %s" % tid})
 
 
+# 預設等使用者離開（閒置閘門）；--now = 使用者在對話中說「現在直接做」（他在電腦前、同意 LINE 跳出來）。
+# 兩種都保留輸入監看：操作中他一碰鍵盤滑鼠就停手、把 LINE 縮回去（避免他打的字落進 LINE）。
+GATE = {"args": ["--wait-idle", "--wait-timeout", "7200"], "close": ["--wait-idle", "--wait-timeout", "600"]}
+
+
 def _line_export(chat, load_hist):
     tmp = os.path.join(GROOT, "_tmp_export")
     os.makedirs(tmp, exist_ok=True)
-    cmd = [sys.executable, os.path.join(HERE, "chat_guard.py"), "line", "open", "--chat", chat, "--wait-idle", "--wait-timeout", "7200"]
+    cmd = [sys.executable, os.path.join(HERE, "chat_guard.py"), "line", "open", "--chat", chat] + GATE["args"]
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3 * 3600)
     o = json.loads(r.stdout or "{}") if r.stdout.strip().startswith("{") else {"ok": False, "error": "chat_guard 沒有回應"}
     if not o.get("ok"):
         return None, o
-    cmd = [sys.executable, os.path.join(HERE, "chat_guard.py"), "line", "export", "--chat", chat, "--to", tmp,
-           "--wait-idle", "--wait-timeout", "7200"] + (["--load-history"] if load_hist else [])
+    cmd = [sys.executable, os.path.join(HERE, "chat_guard.py"), "line", "export", "--chat", chat, "--to", tmp]         + GATE["args"] + (["--load-history"] if load_hist else [])
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3 * 3600)
     o = json.loads(r.stdout or "{}") if r.stdout.strip().startswith("{") else {"ok": False, "error": "chat_guard 沒有回應"}
-    subprocess.run([sys.executable, os.path.join(HERE, "chat_guard.py"), "line", "close", "--wait-idle", "--wait-timeout", "600"],
+    subprocess.run([sys.executable, os.path.join(HERE, "chat_guard.py"), "line", "close"] + GATE["close"],
                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
     if not o.get("ok"):
         return None, o
@@ -372,6 +380,8 @@ def cmd_sync(a):
     ids = list(ts) if "--all" in a else [arg(a, "--target")]
     if not ids or ids == [None] or any(i not in ts for i in ids):
         out({"ok": False, "error": "需要 --target <id> 或 --all（gather.py targets 列出 id）"}, 2)
+    if "--now" in a:   # 只在使用者當下說「現在做」時用
+        GATE["args"] = GATE["close"] = ["--user-ok"]
     out({"ok": True, "results": [sync_one(i, ts[i], "--load-history" in a) for i in ids]})
 
 

@@ -45,7 +45,7 @@ PROFILES = {
         "has_unread": lambda packed: bool(re.search(r"\| \d+ unread \|", packed)),
         "unread_format_known": True,
         "messages": "messages",
-        "header_name": lambda chat: "open chat: " + chat,    # 目前開啟的對話標頭（只比對、不輸出）
+        "header_prefix": "open chat: ",        # 目前開啟的對話標頭「open chat: 名稱 (N)」（只比對、不輸出）
         "forbidden_names": {"message input", "Send", "Emoji"},
         "forbidden_roles_main": {"textfield"},          # 主視窗裡的任何文字框都不碰
         "menu_path": ["Chat", "Export chat"],
@@ -95,32 +95,72 @@ PROFILES = {
 }
 
 
+# ---------------------------------------------------------------- 名稱比對（只看名稱，不看人數）
+# 群組的顯示名稱結尾會帶人數：清單「名稱 (21)」、標頭「名稱, 21人」。人數會變，名稱不會。
+# 比對：顯示名稱去掉結尾「一組」人數標示後等於指名名稱（或完全相等）＝強符合；兩邊都去掉人數後相等＝弱符合
+# （使用者把帶人數的顯示名稱整串存進白名單），只在沒有強符合時用。人數不存、不拿來比對名稱。
+strip_count = policy.strip_count
+
+
+def name_level(display, wanted):
+    """2 = 強符合、1 = 弱符合、0 = 不符。"""
+    if not display or not wanted:
+        return 0
+    if display == wanted or strip_count(display) == wanted:
+        return 2
+    if strip_count(display) == strip_count(wanted):
+        return 1
+    return 0
+
+
+def _header_display(prof, snap):
+    """開著的對話標頭工具列第一顆的名稱（「名稱, N人」或「名稱 (N)」）；沒有標頭回 None。只比對、不輸出。"""
+    for node, _ in walk(snap["tree"]):
+        kids = [k for k in node.get("children") or [] if k.get("role") == "button"]
+        if node.get("role") != "listbox" and len(kids) >= 6 and kids[0].get("name"):
+            return kids[0]["name"]
+    return None
+
+
 def header_ok(prof, snap, chat):   # snap 必須是完整 snapshot（-i 會漏掉標籤類靜態文字）
     """目前開著的就是指名對話？（只比對、不輸出名稱）"""
-    if prof.get("header_name"):
-        return find_node(snap, lambda n: n.get("name") == prof["header_name"](chat))[0] is not None
+    if prof.get("header_prefix"):
+        pre = prof["header_prefix"]
+        return find_node(snap, lambda n: (n.get("name") or "").startswith(pre)
+                         and name_level(n["name"][len(pre):], chat) > 0)[0] is not None
     if prof.get("header_toolbar"):
-        pat = re.compile(re.escape(chat) + r"(, \d+人)?$")
         for node, _ in walk(snap["tree"]):
             kids = [k for k in node.get("children") or [] if k.get("role") == "button"]
-            if node.get("role") != "listbox" and len(kids) >= 6 and pat.match(kids[0].get("name") or ""):
+            if node.get("role") != "listbox" and len(kids) >= 6 and name_level(kids[0].get("name") or "", chat):
                 return True
         return False
     return True
 
 
+_MEMBERS_RE = re.compile(r"(?:, ?(\d+)人|\s+\((\d+)\)|\s*（(\d+)）)$")
+
+
 def header_members(prof, snap, chat):
-    """標頭「名稱, N人」的 N（一對一聊天沒有人數 → 2）；找不到標頭回 None。"""
+    """當下標頭上的人數（「名稱, N人」或「名稱 (N)」）；一對一聊天沒有人數 → 2；找不到標頭回 None。
+    「名稱本身以括號數字結尾」（某某(2024)）且標頭沒有另外的人數時，不會把 2024 當人數。"""
     if not prof.get("header_toolbar"):
         return None
-    pat = re.compile(re.escape(chat) + r"(?:, (\d+)人)?$")
     for node, _ in walk(snap["tree"]):
         kids = [k for k in node.get("children") or [] if k.get("role") == "button"]
         if node.get("role") != "listbox" and len(kids) >= 6:
-            m = pat.match(kids[0].get("name") or "")
-            if m:
-                return int(m.group(1)) if m.group(1) else 2
+            disp = kids[0].get("name") or ""
+            if not name_level(disp, chat):
+                continue
+            m = _MEMBERS_RE.search(disp)
+            if m and disp != chat:
+                return int(m.group(1) or m.group(2) or m.group(3))
+            return 2
     return None
+
+
+def file_key(s):
+    """預設檔名比對用：去掉檔名不能有、app 會替換掉的字元（/ \\ : * ? " < > |）與常見替代字元、空白。"""
+    return re.sub(r'[\\/:*?"<>|_\-\s／＼：＊？＂＜＞｜]', "", s or "").lower()
 
 
 EXPORT_CTX = {}
@@ -244,8 +284,24 @@ def list_items(prof, snap):
     return items
 
 
+class Ambiguous(Exception):
+    pass
+
+
 def match_chat(prof, snap, chat):
-    hits = [n for n in list_items(prof, snap) if prof["chat_name"](n.get("name", "")) == chat]
+    """回傳符合的清單項目。強符合優先，沒有才用弱符合。符合的那個去掉人數後若和別的對話同名 → Ambiguous（不猜）。"""
+    items = list_items(prof, snap)
+    lv = [(name_level(prof["chat_name"](n.get("name", "")), chat), n) for n in items]
+    best = max([l for l, _ in lv] or [0])
+    hits = [n for l, n in lv if best and l == best]
+    disp = {prof["chat_name"](n.get("name", "")) for n in hits}
+    if len(hits) > 1 and len(disp) > 1 and len({strip_count(d) for d in disp}) == 1:
+        raise Ambiguous("去掉人數標示後有 %d 個同名對話：不猜是哪一個（人數會變，不能拿來分辨；請使用者把其中一個改名）" % len(hits))
+    if len(hits) == 1:
+        base = strip_count(prof["chat_name"](hits[0].get("name", "")))
+        same = [n for n in items if strip_count(prof["chat_name"](n.get("name", ""))) == base]
+        if len(same) > 1:
+            raise Ambiguous("去掉人數標示後有 %d 個同名對話：不猜是哪一個（人數會變，不能拿來分辨；請使用者把其中一個改名）" % len(same))
     return hits
 
 
@@ -313,6 +369,8 @@ def idle_gate(prof, pol, a):
     if mode == "ask":
         if "--user-ok" not in a:
             raise Refused("這個 app 操作時可能跳到前景：先問使用者現在方便嗎，同意後加 --user-ok")
+    elif "--user-ok" in a:
+        pass   # 使用者當下同意現在做（在電腦前、同意視窗跳出來）：不等閒置；下面的輸入監看照樣開著
     else:
         need = float(pol.get("idle_min_s", 180))
         s = idle.idle_seconds()
@@ -388,11 +446,14 @@ def guarded(prof, action, node, parents, ctx, text=None):
 
 def cmd_locate(app, prof, chat):
     win = find_window(prof)
-    hits = match_chat(prof, snapshot(win), chat)
+    try:
+        hits = match_chat(prof, snapshot(win), chat)
+    except Ambiguous as e:
+        raise Refused(str(e))
     if len(hits) != 1:
         ledger(app, "locate", False, "matches=%d" % len(hits), chat)
         out({"ok": False, "found": False, "matches": len(hits),
-             "error": "名稱要完全相符且唯一（符合 %d 個）" % len(hits)}, 3)
+             "error": "名稱（不含人數標示）要相符且唯一（符合 %d 個）" % len(hits)}, 3)
     ledger(app, "locate", True, "", chat)
     out({"ok": True, "found": True, "matches": 1, "fingerprint": h(hits[0].get("name", ""))})
 
@@ -400,9 +461,12 @@ def cmd_locate(app, prof, chat):
 def cmd_open(app, prof, chat, expect, pol):
     win = find_window(prof)
     snap = snapshot(win)
-    hits = match_chat(prof, snap, chat)
+    try:
+        hits = match_chat(prof, snap, chat)
+    except Ambiguous as e:
+        raise Refused(str(e))
     if len(hits) != 1:
-        raise Refused("名稱要完全相符且唯一（符合 %d 個）" % len(hits))
+        raise Refused("名稱（不含人數標示）要相符且唯一（符合 %d 個）" % len(hits))
     node = hits[0]
     packed = node.get("name", "")
     white = policy.in_whitelist(pol, chat)
@@ -416,7 +480,7 @@ def cmd_open(app, prof, chat, expect, pol):
         if prof["has_unread"](packed):
             raise Refused("這個對話有未讀訊息，未讀保護開啟中，不開")
     _, parents = find_node(snap, lambda n: n is node)
-    guarded(prof, "click", node, parents, {"zone": "main", "allow": "list-target", "target_chat": chat})
+    guarded(prof, "click", node, parents, {"zone": "main", "allow": "list-target", "target_chat": prof["chat_name"](packed)})
     time.sleep(0.8)
     if not header_ok(prof, snapshot(win, interactive=False), chat):
         raise Refused("開啟後確認不到開著的是指名對話（標頭不符或沒有開成）：停手，不再點任何東西")
@@ -539,7 +603,7 @@ def cmd_export(app, prof, dest, chat=None, load_hist=False):
             default_name = (ad("get", fname["ref_id"], "--property", "value") or {}).get("value") or ""
         except RuntimeError:
             default_name = ""
-        if not chat or chat not in default_name:
+        if not chat or not file_key(strip_count(chat)) or file_key(strip_count(chat)) not in file_key(default_name):
             cancel_and_refuse("預設檔名不含指名對話名稱（或讀不到）：開著的可能不是目標對話，已按取消、沒有存檔")
     target = os.path.join(dest, "chat-export-%s.txt" % time.strftime("%Y%m%d-%H%M%S"))
     # 對話框目前所在的資料夾（網址列「Address: C:\...」）：對話框若不採用我們寫的路徑、照預設檔名存，就是存到這裡
@@ -667,7 +731,7 @@ def cmd_export(app, prof, dest, chat=None, load_hist=False):
     if prof.get("verify_export_first_line_contains_chat"):
         with open(target, encoding="utf-8-sig", errors="replace") as f:
             first = f.readline()
-        if chat not in first:
+        if strip_count(chat) not in first:
             reject("匯出檔第一行不含指名對話名稱（沒有讀其他內容）")
         verified["first_line"] = True
     # 身分驗證 2b：不同發言者數 ≤ 標頭人數（只數、不輸出任何名字或內容）
@@ -880,6 +944,11 @@ def main():
             idle_gate(prof, pol, a)
             HANDBACK["may_restore"] = True   # 只有過了閒置閘門的指令可以把縮小的視窗還原
         HANDBACK["enabled"] = pol.get("visibility") != "watch" and bool(prof.get("raises_foreground"))
+        if arg(a, "--chat"):
+            canon = policy.canonical_chat(pol, arg(a, "--chat"))
+            if canon is None:
+                raise Refused("白名單裡去掉人數標示後有兩筆以上對得上這個名稱：不猜，請使用者整理白名單")
+            a[a.index("--chat") + 1] = canon
         if sub == "locate":
             cmd_locate(app, prof, arg(a, "--chat") or "")
         elif sub == "open":

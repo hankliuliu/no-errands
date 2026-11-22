@@ -7,6 +7,8 @@
   B3-2 非白名單、未讀保護 on：無指紋 → 拒；locate 後狀態改變 → 拒；有未讀 → 拒；未變且無未讀 → 開
   B3-3 對輸入框 set-value、對送出/表情 click、對非目標項目 click → 全被擋，違規偵測器仍為空
   B3-4 名稱找不到、前綴、重複 → 拒
+  B3-6 群組名稱結尾的人數標示（-CountNames，名稱全是虛構的）：人數變了照樣找得到；名稱本身以括號數字結尾不被誤削；
+       名稱含「/」（預設檔名被換成「_」）；全形括號；帶人數整串存進白名單；去掉人數後同名 → 拒
   另：未授權的 app → 拒；沒有送出子指令
 每一步前後記錄前景視窗 handle 與游標位置（N4 不干擾量測），結果寫 JSON。
 
@@ -102,7 +104,7 @@ def main():
         before = fg()
         subprocess.run(["powershell", "-NoProfile", "-Command",
                         "Start-Process powershell -WindowStyle Hidden -ArgumentList "
-                        "'-NoProfile','-STA','-ExecutionPolicy','Bypass','-File','%s','-StateDir','%s','-NoActivate'"
+                        "'-NoProfile','-STA','-ExecutionPolicy','Bypass','-File','%s','-StateDir','%s','-NoActivate','-CountNames'"
                         % (FAKE, state)])
         for _ in range(40):
             time.sleep(0.3)
@@ -201,6 +203,38 @@ def main():
         check("B3-4 名稱重複 → 拒", o.get("ok") is False and o.get("matches") == 2, o)
         o = cg("open", "--chat", "Alpha Team")
         check("B3-4 名稱重複時白名單也不開", o.get("refused") is True, o)
+
+        # B3-6 人數標示
+        for n in ("Field Crew (21)", "Report(2024)", "11/30 Buoy Test", "Echo", "Kilo"):
+            pol("whitelist", "add", n)
+        exp6 = os.path.join(home, "export6")
+
+        def last_open():
+            ev = [json.loads(l) for l in open(os.path.join(state, "events.jsonl"), encoding="utf-8") if l.strip()]
+            return ([e.get("chat") for e in ev if e.get("kind") == "open"] or [None])[-1]
+
+        def open_export(chat):
+            o1 = cg("open", "--chat", chat)
+            o2 = cg("export", "--chat", chat, "--to", exp6) if o1.get("ok") else {}
+            who = last_open()
+            cg("close")
+            return o1, o2, who
+
+        o1, o2, who = open_export("Field Crew")
+        check("B3-6 純名稱找得到「Field Crew (21)」（白名單存的是帶人數的整串）", o1.get("ok") and o2.get("ok") and who == "Field Crew", (o1, o2, who))
+        trigger({"op": "members", "chat": "Field Crew", "count": 22})
+        o1, o2, who = open_export("Field Crew (21)")
+        check("B3-6 人數 21→22 後，用舊的帶人數名稱還是同一個群組", o1.get("ok") and o2.get("ok") and who == "Field Crew", (o1, o2, who))
+        o1, o2, who = open_export("Report(2024)")
+        check("B3-6 名稱以括號數字結尾：開到 Report(2024)、不是人數 2024 的 Report", o1.get("ok") and o2.get("ok") and who == "Report(2024)", (o1, o2, who))
+        o1, o2, who = open_export("11/30 Buoy Test")
+        check("B3-6 名稱含斜線：預設檔名被換成底線也通過身分檢查", o1.get("ok") and o2.get("ok")
+              and (o2.get("verified") or {}).get("default_filename") is True and who == "11/30 Buoy Test", (o1, o2, who))
+        o1, o2, who = open_export("Kilo")
+        check("B3-6 全形括號人數", o1.get("ok") and o2.get("ok") and who == "Kilo", (o1, o2, who))
+        o = cg("open", "--chat", "Echo")
+        check("B3-6 去掉人數後同名的兩個群組 → 拒、說明原因", o.get("refused") is True and "同名" in o.get("error", ""), o)
+        check("B3-6 違規偵測器為空", violations() == [], violations())
 
         o = cg("send", "--chat", "Alpha Team")
         check("沒有送出子指令", o.get("refused") is True, o)

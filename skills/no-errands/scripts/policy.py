@@ -25,7 +25,7 @@ CLI（agent 只在「使用者於對話中明確要求」時才可呼叫 set/gra
   policy.py domain remove <host[:port]> --reason "..."
 每次修改寫一筆 ledger（~/.no-errands/policy-ledger.jsonl；白名單名稱只記雜湊）。
 """
-import copy, hashlib, json, os, sys, time
+import copy, hashlib, json, os, re, sys, time
 
 def _resolve_home():
     """NO_ERRANDS_HOME 優先；否則若本檔位於 <home>/bin/ 且該 home 有 config.json / policy.json，
@@ -155,8 +155,30 @@ def is_granted(pol, app):
     return canonical_app(app) in {canonical_app(a) for a in pol.get("granted_apps", [])}
 
 
+_COUNT_RE = re.compile(r"(?:\s+\(\d+\)|\s*（\d+）|, ?\d+人)$")
+
+
+def strip_count(name):
+    """去掉群組顯示名稱結尾的「一組」人數標示：「名稱 (21)」「名稱（21）」「名稱 （21）」「名稱, 21人」→「名稱」。
+    只去一次：「某某(2024) (21)」→「某某(2024)」。人數會變，名稱不會——比對與目標 id 只看名稱。
+    半形括號前面「沒有空白」的不當人數（「某某(2024)」是名稱本身）：分不出來的時候寧可對不上（停手），不可對錯。"""
+    return _COUNT_RE.sub("", name or "", count=1)
+
+
+def canonical_chat(pol, chat_name):
+    """--chat 對應到白名單裡的哪一筆：完全相同優先；否則去掉人數標示後相同（使用者把帶人數的名稱整串貼進來，
+    或白名單存的是帶人數的舊值）。都對不上就原樣回傳。對上兩筆以上 → 回 None（不猜）。"""
+    wl = pol.get("chat", {}).get("whitelist", [])
+    if chat_name in wl:
+        return chat_name
+    hits = sorted({w for w in wl if strip_count(w) == strip_count(chat_name)})
+    if len(hits) == 1:
+        return hits[0]
+    return None if hits else chat_name
+
+
 def in_whitelist(pol, chat_name):
-    return chat_name in pol.get("chat", {}).get("whitelist", [])
+    return canonical_chat(pol, chat_name) in pol.get("chat", {}).get("whitelist", [])
 
 
 def name_hash(s):

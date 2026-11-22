@@ -95,5 +95,70 @@ check("清單中非目標項目 → 擋下", refused("click", "Friend B, ok, 202
 check("清單中目標項目 → 放行", not refused("click", "Group A, 4人, 5, someone sent a sticker, 2026年11月21日", allow="list-target", target="Group A"))
 check("選單按鈕「其他功能」（allow=menu-button）→ 放行", not refused("click", "其他功能", allow="menu-button"))
 check("選單按鈕在沒有 allow 時 → 擋下", refused("click", "其他功能"))
+
+# ---- 名稱只看群組名、忽略結尾人數標示（2026-11-22；名稱全是虛構的）
+import policy  # noqa: E402
+sc = policy.strip_count
+check("strip_count：半形括號、前有空白", sc("Field Crew (21)") == "Field Crew")
+check("strip_count：半形括號前沒有空白 → 當成名稱本身、不削（某某(2024)）", sc("Field Crew(21)") == "Field Crew(21)")
+check("strip_count：全形括號", sc("Kilo（8）") == "Kilo" and sc("Kilo （8）") == "Kilo")
+check("strip_count：標頭格式「, N人」", sc("Field Crew, 21人") == "Field Crew")
+check("strip_count：只去一次（名稱本身以括號數字結尾）", sc("Report(2024) (5)") == "Report(2024)")
+check("strip_count：沒有人數 → 原樣", sc("Field Crew") == "Field Crew" and sc("11/30 Buoy Test") == "11/30 Buoy Test")
+
+
+def snap2(names, open_header=None):
+    items = [btn(n + ", hi, 2026年11月21日", "@s:e%d" % (1 + i)) for i, n in enumerate(names)]
+    right = {"role": "group", "children": [btn(open_header or "x", "@s:e50")] +
+             [btn(n, "@s:e%d" % (51 + i)) for i, n in enumerate(["關閉提醒", "以個別視窗開啟", "搜尋聊天", "開始通話", "記事本", "其他功能"])]}
+    return {"tree": {"role": "window", "name": "LINE", "children": [
+        {"role": "group", "children": [{"role": "listbox", "children": items}]}, right]}}
+
+
+L = ["Field Crew (21)", "Report(2024) (5)", "Report (2024)", "11/30 Buoy Test (6)", "Kilo（8）", "Other (3)"]
+m = lambda names, w: [x["name"].split(", ")[0] for x in cg.match_chat(P, snap2(names), w)]
+check("清單「名稱 (21)」用純名稱找得到", m(L, "Field Crew") == ["Field Crew (21)"])
+check("人數變了（21→22）還是同一個", m(["Field Crew (22)"] + L[1:], "Field Crew") == ["Field Crew (22)"])
+check("全形括號人數", m(L, "Kilo") == ["Kilo（8）"])
+check("名稱以括號數字結尾不被誤削：Report(2024) 配到 Report(2024) (5)、不配 Report (2024)", m(L, "Report(2024)") == ["Report(2024) (5)"])
+check("反過來：Report 配到人數 2024 的 Report (2024)", m(L, "Report") == ["Report (2024)"])
+check("名稱含斜線", m(L, "11/30 Buoy Test") == ["11/30 Buoy Test (6)"])
+check("帶人數整串貼進來（舊人數）也對得上：Field Crew (21) → 清單上的 Field Crew (22)",
+      m(["Field Crew (22)"] + L[1:], "Field Crew (21)") == ["Field Crew (22)"])
+check("帶人數整串貼進來、人數沒變 → 對得上", m(L, "Field Crew (21)") == ["Field Crew (21)"])
+check("前綴不算：Field 找不到", m(L, "Field") == [])
+try:
+    cg.match_chat(P, snap2(["Echo (3)", "Echo (7)"] + L), "Echo"); amb = False
+except cg.Ambiguous:
+    amb = True
+check("去掉人數後同名的兩個群組 → 拒絕（Ambiguous），不猜", amb)
+try:
+    cg.match_chat(P, snap2(["Echo (3)", "Echo (7)"]), "Echo (3)"); amb2 = False
+except cg.Ambiguous:
+    amb2 = True
+check("就算帶人數整串指名，去掉人數後同名 → 一樣拒絕（人數會變，不能拿來分辨）", amb2)
+check("標頭「名稱, 22人」配純名稱", cg.header_ok(P, snap2(L, "Field Crew, 22人"), "Field Crew"))
+check("標頭「名稱 (22)」配純名稱", cg.header_ok(P, snap2(L, "Field Crew (22)"), "Field Crew"))
+check("標頭是別的群組 → 不符", not cg.header_ok(P, snap2(L, "Field Crew Ops, 22人"), "Field Crew"))
+check("標頭 Report (2024) 不配 Report(2024)", not cg.header_ok(P, snap2(L, "Report, 2024人"), "Report(2024)"))
+check("人數取當下標頭：22人 → 22", cg.header_members(P, snap2(L, "Field Crew, 22人"), "Field Crew") == 22)
+check("人數取當下標頭：(22) → 22", cg.header_members(P, snap2(L, "Field Crew (22)"), "Field Crew") == 22)
+check("全形 （8） → 8", cg.header_members(P, snap2(L, "Kilo（8）"), "Kilo") == 8)
+check("名稱以 (2024) 結尾、標頭沒另外人數 → 不把 2024 當人數（=2）",
+      cg.header_members(P, snap2(L, "Report(2024)"), "Report(2024)") == 2)
+check("名稱以 (2024) 結尾、標頭 Report(2024), 5人 → 5", cg.header_members(P, snap2(L, "Report(2024), 5人"), "Report(2024)") == 5)
+fk = cg.file_key
+check("預設檔名：斜線被換成底線也對得上", fk("11/30 Buoy Test") in fk("[LINE] 11_30 Buoy Test (6).txt"))
+check("預設檔名：斜線被刪掉也對得上", fk("11/30 Buoy Test") in fk("[LINE] 1130 Buoy Test.txt"))
+check("預設檔名：全形斜線也對得上", fk("11/30 Buoy Test") in fk("[LINE] 11／30 Buoy Test.txt"))
+check("預設檔名：別的群組 → 不符", fk("11/30 Buoy Test") not in fk("[LINE] 12_01 Buoy Test.txt"))
+pol = {"chat": {"whitelist": ["Field Crew", "Report(2024)", "Kilo（8）"]}}
+check("白名單：純名稱 → 本身", policy.canonical_chat(pol, "Field Crew") == "Field Crew")
+check("白名單：帶人數的 --chat → 對到純名稱那筆", policy.canonical_chat(pol, "Field Crew (22)") == "Field Crew")
+check("白名單：存的是帶人數的舊值、用純名稱指名 → 對到那筆", policy.canonical_chat(pol, "Kilo") == "Kilo（8）")
+check("白名單：Report(2024) 不被當成 Report", policy.canonical_chat(pol, "Report") == "Report"
+      and not policy.in_whitelist(pol, "Report"))
+check("白名單：去掉人數後兩筆都對得上 → None（不猜）",
+      policy.canonical_chat({"chat": {"whitelist": ["Echo (3)", "Echo (7)"]}}, "Echo") is None)
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
 sys.exit(0 if all(R) else 1)
