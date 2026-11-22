@@ -25,7 +25,8 @@ import nowin  # noqa: E402,F401
 
 BG, FG, DIM, ACCENT, LOOK = "#0b0d12", "#f4f4f4", "#7d8794", "#2f7de1", "#ffcc33"
 CAP_ALPHA = 0.62                                        # 字幕底板的不透明度（字本身完全不透明）
-PAD_ALPHA = 1 / 255.0                                   # 字幕的輸入墊片：看不見，但會接到點擊（alpha 0 會穿透）
+PAD_ALPHA = 3 / 255.0                                   # 字幕的輸入墊片：看不見，但會接到點擊（alpha 0 會穿透；
+                                                        # 不用 1/255：換算成整數時可能被捨入成 0 而整個穿透）
 FONT = "Microsoft JhengHei UI"
 OFF = -32000                                            # 移到螢幕外
 EXIT_HINT = "要離開這個畫面：按 Esc 或 Ctrl+Shift+F12，或雙擊背景"
@@ -586,6 +587,9 @@ class Stage:
                              SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING)
             self.placed[acct] = key
             self.want[acct] = (x, y, w, hh)
+            self.active_hwnd = h
+            if not probe:
+                self.restack()                               # 剛擺好的瀏覽器在最上面：立刻把我們的視窗排回它之上
             self.dpr = dpr_of(h)
 
     def check_fit(self, now):
@@ -657,8 +661,8 @@ class Stage:
         x, y, w, h = x - pad, y - pad, w + 2 * pad, h + 2 * pad
         for e, (ex, ey, ew, eh) in zip(self.edges, ((x, y, w, t), (x, y + h - t, w, t), (x, y, t, h), (x + w - t, y, t, h))):
             e.geometry("%dx%d+%d+%d" % (max(1, ew), max(1, eh), ex, ey))
-            e.deiconify()
-            e.attributes("-topmost", True)
+            if not e.winfo_viewable():
+                e.deiconify()                                # 上下順序只由 restack 決定（不在這裡拉到最上面）
 
     # ---------- 背板上的卡片
     def draw_card(self, now):
@@ -863,25 +867,70 @@ class Stage:
             self.dump_geom()
         self.root.after(200, self.tick)
 
+    def overlays(self):
+        """我們疊在瀏覽器之上的視窗，由下到上。"""
+        return [self.maskw, self.band] + self.edges + [self.capbg, self.capw, self.cappad, self.ctlw, self.hintw]
+
     def restack(self):
-        """實際的上下順序：背板 → 台上的瀏覽器 → 角色帶、字幕帶、外框（都在置頂層；工作列、通知被壓在下面）。"""
+        """實際的上下順序（都在置頂層；工作列、通知被壓在下面），由上到下：控制列…字幕（墊片在字之上）→ 外框 →
+        角色帶 → 遮罩 → 台上的瀏覽器 → 背板。由上往下一個一個「插在上一個的下方」：過程中瀏覽器從來不會在我們的
+        視窗之上（舊做法先把瀏覽器拉到最上面再把我們的視窗一個個抬上去，中間幾十毫秒瀏覽器蓋住墊片，那一刻的點擊
+        會落到頁面上——CI main-45057569083：頁面點擊數 0→2）。"""
         self._z_t = time.time()
+        if os.name != "nt":
+            try:
+                self.root.lift()
+                for w in self.overlays():
+                    if w.winfo_viewable():
+                        w.lift()
+            except Exception:
+                pass
+            return
         try:
-            self.root.attributes("-topmost", True)
-            self.root.lift()
+            chain = [int(w.frame(), 16) for w in reversed(self.overlays()) if w.winfo_viewable()]
             h = getattr(self, "active_hwnd", None)
-            if os.name == "nt" and h and not self.now.get("card") and u32.IsWindow(h):
-                u32.SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
-            for w in [self.maskw, self.band] + self.edges + [self.capbg, self.capw, self.cappad, self.ctlw, self.hintw]:
-                if w.winfo_viewable():
-                    w.attributes("-topmost", True)
-                    w.lift()
+            if h and not self.now.get("card") and u32.IsWindow(h):
+                chain.append(h)
+            chain.append(int(self.root.frame(), 16))
+            prev = HWND_TOPMOST
+            for hw in chain:
+                u32.SetWindowPos(hw, prev, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                prev = hw
         except Exception:
             pass
 
+    def z_order(self):
+        """測試／診斷：我們的視窗與台上瀏覽器實際的上下順序（上→下）。"""
+        if os.name != "nt":
+            return []
+        names = {}
+        for n, w in (("hint", self.hintw), ("controls", self.ctlw), ("pad", self.cappad), ("captext", self.capw),
+                     ("plate", self.capbg), ("band", self.band), ("mask", self.maskw), ("backdrop", self.root)):
+            try:
+                names[int(w.frame(), 16)] = n
+            except Exception:
+                pass
+        for e in self.edges:
+            try:
+                names[int(e.frame(), 16)] = "edge"
+            except Exception:
+                pass
+        h = getattr(self, "active_hwnd", None)
+        if h:
+            names[h] = "browser"
+        out, hw = [], u32.GetTopWindow(None)
+        while hw and len(out) < 40:
+            if hw in names and u32.IsWindowVisible(hw):
+                out.append(names[hw])
+            hw = u32.GetWindow(hw, 2)                         # GW_HWNDNEXT
+        return out
+
     def geom(self):
         box = lambda w: [w.winfo_x(), w.winfo_y(), w.winfo_width(), w.winfo_height()] if w.winfo_viewable() else None
-        return {"caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad),
+        return {"z_order": self.z_order(),
+                "cap_btn": [self.b_cap.winfo_rootx() + self.b_cap.winfo_width() // 2, self.b_cap.winfo_rooty() + self.b_cap.winfo_height() // 2]
+                if self.ctl_shown and self.b_cap.winfo_ismapped() else None,
+                "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad),
                 "caption_on": self.cap_on, "controls_rect": box(self.ctlw), "controls_want": list(getattr(self, "_ctl_xy", None) or []),
                 "controls_moves": getattr(self, "ctl_moves", 0), "controls_stuck": getattr(self, "_ctl_retry", 0) > 3,
                 "look_rect": list(self.look_rect) if getattr(self, "look_rect", None) else None,
