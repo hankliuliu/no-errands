@@ -362,6 +362,9 @@ def main():
         long_ = "這是一段很長的範例文字。" * 12
         ch2 = NB.progressive_chunks(long_)
         check("長文：段數不超過上限（自動加快），接起來仍等於原文", len(ch2) <= NB.PROG_MAX_CHUNKS and "".join(ch2) == long_, len(ch2))
+        ch3 = NB.progressive_chunks(long_, NB.PROG_LONG_MAX_CHUNKS)
+        check("超過 40 字的長欄位：最多 6 段、時間上限 2.5 秒，接起來仍等於原文",
+              len(ch3) <= 6 and "".join(ch3) == long_ and NB.PROG_LONG_BUDGET_S == 2.5 and NB.PROG_LONG_CHARS == 40, len(ch3))
 
         def calls_since(n0):
             lines = open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines()[n0:]

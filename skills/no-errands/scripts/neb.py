@@ -121,6 +121,9 @@ ID_RE = re.compile(r"^[A-Za-z][\w\-]{0,80}$")
 RUN_DIR_RE = re.compile(r"^\d{8}-\d{6}-(live|rehearse)$")      # --pace-file 只接受示範執行資料夾裡的 control.json
 PROG_BUDGET_S = 5.0                                        # 一個欄位的逐步輸入總時間上限（長文自動加快）
 PROG_MAX_CHUNKS = 14                                       # 段數上限（每段要讀回兩次，段太多會超過時間上限）
+PROG_LONG_CHARS = 40                                       # 超過這個字數的長欄位：上限 2.5 秒、最多 6 段（5c：長欄位各打 5 秒太久）
+PROG_LONG_BUDGET_S = 2.5
+PROG_LONG_MAX_CHUNKS = 6
 PROG_PAUSE_MAX_S = 900                                     # 逐步輸入中途暫停的上限（15 分鐘）：到了就停，原因「暫停過久」
 
 
@@ -230,7 +233,9 @@ def do_progressive(base_cmd, ref, text, inp, pace, sleep=time.sleep):
         if (foc.get("value") or "") != expect:
             return "欄位內容不是核准文字的開頭一段"
         return None
-    chunks = progressive_chunks(text)
+    long_ = len(text) > PROG_LONG_CHARS
+    chunks = progressive_chunks(text, PROG_LONG_MAX_CHUNKS if long_ else PROG_MAX_CHUNKS)
+    budget = PROG_LONG_BUDGET_S if long_ else PROG_BUDGET_S
     info = {"chunks": len(chunks), "paused_s": 0.0, "typed_chars": 0}
     if ab("focus", ref) != 0:
         info["why"] = "無法聚焦到該欄位"
@@ -274,7 +279,7 @@ def do_progressive(base_cmd, ref, text, inp, pace, sleep=time.sleep):
             info.update(why="插入文字失敗", typed_chars=len(done))
             return False, info
         done += c
-        left = PROG_BUDGET_S - (time.time() - t0 - info["paused_s"])
+        left = budget - (time.time() - t0 - info["paused_s"])
         remain = sum(delays[k + 1:]) or 1.0
         sleep(max(0.0, min(delays[k], delays[k] * left / remain if left > 0 else 0.0)))
     why = focus_is(text)
