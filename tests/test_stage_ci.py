@@ -7,8 +7,10 @@
   2 字幕文字就是 now.json 的這一拍；「下一步」按鈕在字幕帶右端
   3 now.json 寫 status=closing → 舞台自己收掉（不留視窗）
 另外：預備清單卡（checklist）時講者按「停止」→ 舞台收掉。
+真的 Chrome（A1／A2／A19）：頁面貼齊螢幕底邊、沒有空白帶、擺放實測差距 ≤3、字幕兩層同位置／圓角／半透明而字全白、
+拖動時兩層一起動、試擺在背板下面；每個情境擷一張測試機整個螢幕的圖（stage-shot-*.png，CI artifact）。
 """
-import json, os, shutil, subprocess, sys, tempfile, threading, time
+import json, os, re, shutil, subprocess, sys, tempfile, threading, time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SC = os.path.join(REPO, "skills", "no-errands", "scripts")
@@ -33,7 +35,7 @@ def kill_tree(p):
     subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True)
 
 
-def watchdog(limit=180):
+def watchdog(limit=300):
     """整體逾時：時間到就收掉所有舞台行程、報 FAIL、結束（CI job 不會卡住）。"""
     def fire():
         print("FAIL 整體逾時（%d 秒）：收掉舞台行程" % limit, flush=True)
@@ -68,9 +70,281 @@ def wait(fn, t=15):
     return None
 
 
+PAGE = """<!doctype html><meta charset="utf-8"><style>
+html,body{margin:0;height:100%;background:#ffffff;font:16px sans-serif}
+#a{position:fixed;top:0;left:0;right:0;height:40px;background:#202020}
+#g{position:fixed;top:40px;left:0;right:0;height:44px;background:#404040}
+#s{position:fixed;top:84px;left:0;width:269px;bottom:0;background:#cccccc}
+#f{position:fixed;left:0;right:0;bottom:0;height:40px;background:#00b050}
+#c{position:absolute;top:84px;left:269px;right:0;padding:20px}
+</style><div id=a></div><div id=g></div><div id=s></div><div id=c>測試頁面</div><div id=f></div>
+<script>let c=0;addEventListener('mousedown',()=>c++,true);addEventListener('click',()=>c++,true);
+addEventListener('dblclick',()=>c++,true);setInterval(()=>{document.title='c='+c},200);</script>"""
+
+
+def shot_png(path):
+    """CI 測試機的整個螢幕 → PNG（純 stdlib）。回傳 (W, H, rgb bytes)。
+    只在 GitHub Actions 上擷（GITHUB_ACTIONS=true）：專案紅線是不擷使用者的整個螢幕——就算有人在本機加
+    --i-am-ci 跑這支測試，這裡也不擷，回 None（依賴擷圖的像素檢查跟著跳過，會印 SKIP）。"""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        print("SKIP 擷圖 %s：不在 CI 測試機上（不擷使用者的螢幕）" % os.path.basename(path), flush=True)
+        return None
+    import ctypes, struct, zlib
+    from ctypes import wintypes
+    u, g = ctypes.windll.user32, ctypes.windll.gdi32
+    vp = ctypes.c_void_p
+    u.GetDC.restype = vp; u.GetDC.argtypes = [vp]
+    u.ReleaseDC.argtypes = [vp, vp]
+    g.CreateCompatibleDC.restype = vp; g.CreateCompatibleDC.argtypes = [vp]
+    g.CreateCompatibleBitmap.restype = vp; g.CreateCompatibleBitmap.argtypes = [vp, ctypes.c_int, ctypes.c_int]
+    g.SelectObject.restype = vp; g.SelectObject.argtypes = [vp, vp]
+    g.BitBlt.argtypes = [vp, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, vp, ctypes.c_int, ctypes.c_int, wintypes.DWORD]
+    g.GetDIBits.argtypes = [vp, vp, wintypes.UINT, wintypes.UINT, vp, vp, wintypes.UINT]
+    g.DeleteObject.argtypes = [vp]; g.DeleteDC.argtypes = [vp]
+    W, H = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+    hdc = u.GetDC(None)
+    mdc = g.CreateCompatibleDC(hdc)
+    bmp = g.CreateCompatibleBitmap(hdc, W, H)
+    g.SelectObject(mdc, bmp)
+    g.BitBlt(mdc, 0, 0, W, H, hdc, 0, 0, 0x00CC0020 | 0x40000000)       # SRCCOPY | CAPTUREBLT（含半透明視窗）
+
+    class BIH(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", ctypes.c_long), ("biHeight", ctypes.c_long),
+                    ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", ctypes.c_long), ("biYPelsPerMeter", ctypes.c_long),
+                    ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
+    bi = BIH(ctypes.sizeof(BIH), W, -H, 1, 32, 0, 0, 0, 0, 0, 0)
+    buf = ctypes.create_string_buffer(W * H * 4)
+    g.GetDIBits(mdc, bmp, 0, H, buf, ctypes.byref(bi), 0)
+    g.DeleteObject(bmp); g.DeleteDC(mdc); u.ReleaseDC(None, hdc)
+    raw = buf.raw
+    rgb = bytearray(W * H * 3)
+    rgb[0::3], rgb[1::3], rgb[2::3] = raw[2::4], raw[1::4], raw[0::4]
+    rows = b"".join(b"\x00" + bytes(rgb[y * W * 3:(y + 1) * W * 3]) for y in range(H))
+
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)) +
+                chunk(b"IDAT", zlib.compress(rows, 6)) + chunk(b"IEND", b""))
+    return W, H, rgb
+
+
+def px_at(img, x, y):
+    W, H, rgb = img
+    x, y = max(0, min(W - 1, int(x))), max(0, min(H - 1, int(y)))
+    i = (y * W + x) * 3
+    return tuple(rgb[i:i + 3])
+
+
+def find_chrome():
+    for base in (os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                 os.environ.get("LOCALAPPDATA", "")):
+        p = os.path.join(base, "Google", "Chrome", "Application", "chrome.exe")
+        if base and os.path.exists(p):
+            return p
+    return None
+
+
+def real_chrome_checks(stage_with):
+    """真的 Chrome＋真的舞台（測試機的螢幕）：A1 頁面貼齊螢幕底邊、沒有空白帶；A19 擺放實測差距 ≤3；
+    A4 殼在舞台外；A2 字幕兩層同位置、圓角、半透明而字全白、在頁面內、拖動時兩層一起動；遮罩畫在指定位置；
+    上場前試擺：瀏覽器在背板下面（不置頂）也量得到合格。每個情境都擷一張整個測試機螢幕的圖（CI artifact）。"""
+    import ctypes
+    import demo_stage as DS
+    u = ctypes.windll.user32
+    chrome = find_chrome()
+    check("測試機上有 Chrome", chrome, chrome)
+    if not chrome:
+        return
+    work = tempfile.mkdtemp(prefix="ne-fit-")
+    prof = os.path.join(work, "profile")
+    page = os.path.join(work, "page.html")
+    open(page, "w", encoding="utf-8").write(PAGE)
+    cp = subprocess.Popen([chrome, "--user-data-dir=" + prof, "--no-first-run", "--no-default-browser-check",
+                           "--disable-search-engine-choice-screen", "--disable-features=Translate",
+                           "--window-position=80,80", "--window-size=900,600", "file:///" + page.replace("\\", "/")],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    PROCS.append(cp)
+    h = wait(lambda: DS.top_window(DS.chrome_pids(prof)), 30)
+    check("測試用 Chrome 視窗出現", h)
+    if not h:
+        return
+    time.sleep(2)
+    W, H = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+    lay = L.layout(W, H)
+    crop = {"top": 84, "left": 269}
+    accts = {"a": {"role": "第一線人員", "color": "#2f7de1", "profile": prof}}
+    print("測試機螢幕 %d×%d、舞台 %s" % (W, H, lay["stage"]), flush=True)
+
+    def fit_ok(d, probe):
+        def f():
+            r = rd(os.path.join(d, "stage_fit.json"))
+            if r.get("probe") == probe and r.get("ok") is not None:
+                return r
+        r1 = wait(f, 25)
+        time.sleep(1.2)
+        return f() or r1
+
+    # 1 上場前試擺：片頭卡顯示中，瀏覽器照裁切擺好但在背板下面
+    now = {"card": "title", "status": "staging", "title": "測試", "card_data": {"subtitle": "", "mode": "自動播放"},
+           "fit_probe": "a", "crop": crop, "zoom": 1.0, "accounts": accts}
+    d, p = stage_with(now, None, {"NO_ERRANDS_HOME": work})
+    r = fit_ok(d, True)
+    check("A1 試擺（背板下面）：頁面貼齊螢幕底邊、舞台沒有空白帶", r and r.get("ok"), r)
+    ex = u.GetWindowLongW(h, -20)
+    check("試擺時瀏覽器不置頂（在背板下面，觀眾看不到）", not (ex & 0x8), hex(ex))
+    shot_png("stage-shot-1-probe.png")
+    json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
+    try:
+        p.wait(10)
+    except subprocess.TimeoutExpired:
+        kill_tree(p)
+    # 2 上台：頁面、字幕、遮罩
+    geom = os.path.join(work, "geom.json")
+    beat = "它只根據院內說明來寫，依據列在下面；核准的人不能確認寄出。"
+    now = {"card": None, "status": "running", "account": "a", "role": "第一線人員", "role_color": "#2f7de1", "section": "測試",
+           "step_index": 2, "steps_total": 13, "crop": crop, "zoom": 1.0, "beat": {"text": beat, "i": 1, "n": 2},
+           "mask": {"box": [289, 150, 300, 30], "color": "#ff00ff"}, "accounts": accts}
+    d, p = stage_with(now, None, {"NO_ERRANDS_HOME": work, "NE_STAGE_GEOM": geom})
+    r = fit_ok(d, False)
+    check("A1 上台：頁面底邊貼齊螢幕底邊（差 ≤3）、四邊沒有空白帶", r and r.get("fit", {}).get("ok"), r)
+    check("A19 視窗實測和要求的差距 ≤3 像素", r and r.get("placement_error") is not None and r["placement_error"] <= 3, r)
+    cr = r and r.get("content")
+    k = (r and r.get("window") and DS.dpr_of(h)) or 1.0
+    check("A4 殼與頁面頂端 84px、左側 269px 都在舞台外（頁面左上角＝舞台左上角往外推裁切量）",
+          cr and abs(cr[1] - (lay["stage"][1] - 84 * k)) <= 3 and abs(cr[0] - (lay["stage"][0] - 269 * k)) <= 3, cr)
+    g = wait(lambda: rd(geom).get("caption_plate") and rd(geom), 10) or {}
+    img = shot_png("stage-shot-2-onstage.png")
+    img and check("A1 畫面：螢幕最底下一列是頁面的頁尾（綠色），不是黑帶",
+          all(px_at(img, x, H - 2)[1] > 150 and px_at(img, x, H - 2)[0] < 60 for x in (W * 0.4, W * 0.6, W * 0.9)),
+          [px_at(img, x, H - 2) for x in (W * 0.4, W * 0.6, W * 0.9)])
+    pl, tw = g.get("caption_plate"), g.get("caption_textwin")
+    check("A2 字幕兩層（底板、字）在同一個位置", pl and pl == tw, (pl, tw))
+    check("A2 字幕底板有圓角（設了視窗區域）", g.get("caption_rgn"), g.get("caption_rgn"))
+    check("A2 字幕塊完全落在頁面範圍內", pl and cr and L.inside(pl, cr), (pl, cr))
+    if pl and img:
+        x0, y0, bw, bh = pl
+        edge = px_at(img, x0 + 4, y0 + bh // 2)                 # 底板的內距（沒有字）：白色頁面透過 62% 黑
+        check("A2 底板半透明：看得到底下的頁面（白底透過來是灰，不是全黑）", all(50 <= c <= 150 for c in edge), edge)
+        corner = px_at(img, x0, y0)
+        check("A2 圓角：底板的角落露出頁面（白）", min(corner) > 200, corner)
+        mx = max(max(px_at(img, x, y)) for x in range(x0, x0 + bw, 2) for y in range(y0, y0 + bh, 2))
+        check("A2 字完全不透明（白字最亮處 ≥240）", mx >= 240, mx)
+    mr = g.get("mask_rect")
+    check("遮罩畫在舞台上指定的位置", mr and L.inside(mr, lay["stage"]), mr)
+    if mr and img:
+        c = px_at(img, mr[0] + mr[2] // 2, mr[1] + mr[3] // 2)
+        check("遮罩的顏色是指定的頁面底色", abs(c[0] - 255) < 20 and c[1] < 40 and abs(c[2] - 255) < 20, c)
+    # 3 滑鼠一動控制列出現：字幕不動（控制列讓位）
+    if pl:
+        def move_abs(x_, y_):
+            u.mouse_event(0x8001, int(x_ * 65535 / (W - 1)), int(y_ * 65535 / (H - 1)), 0, 0)
+        move_abs(W // 2, H // 3); time.sleep(0.15); move_abs(W // 2 + 40, H // 3 + 30); time.sleep(0.8)
+        g3 = rd(geom)
+        check("A2 滑鼠移動讓控制列出現時，字幕位置前後不變", g3.get("controls_visible") and g3.get("caption_plate") == pl,
+              (pl, g3.get("caption_plate"), g3.get("controls_visible")))
+        cr3 = g3.get("controls_rect")
+        check("控制列出現時不蓋住字幕", cr3 and not L.overlaps(cr3, pl), (cr3, pl))
+        # 4 滑鼠停在字幕上時換句子：字幕不跳（以中心與底邊為錨點）
+        move_abs(pl[0] + pl[2] // 2, pl[1] + pl[3] // 2); time.sleep(0.6)
+        n2 = dict(now, beat={"text": "第二句比較短。", "i": 2, "n": 2})
+        json.dump(n2, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        time.sleep(1.0)
+        g4 = rd(geom)
+        p4 = g4.get("caption_plate")
+        check("A2 滑鼠停在字幕上換句子：字幕不跳（中心與底邊不變）",
+              p4 and g4.get("caption_text") == "第二句比較短。" and abs((p4[0] + p4[2] / 2) - (pl[0] + pl[2] / 2)) <= 2
+              and abs((p4[1] + p4[3]) - (pl[1] + pl[3])) <= 2, (pl, p4, g4.get("caption_text")))
+        json.dump(now, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        time.sleep(1.0)
+        pl = rd(geom).get("caption_plate") or pl
+    # 5 字幕上的操作：從三種位置（內距、字的中間、字與字之間）各拖一次；按兩下回預設；× 關字幕；都不穿到頁面
+    import ctypes as _ct
+    from ctypes import wintypes as _wt
+
+    def page_clicks():
+        b = _ct.create_unicode_buffer(300)
+        u.GetWindowTextW(h, b, 300)
+        m_ = re.search(r"\bc=(\d+)", b.value)
+        return int(m_.group(1)) if m_ else None
+
+    def move(x_, y_):
+        # 真的滑鼠移動輸入（MOVE|ABSOLUTE），和人拖動一樣
+        u.mouse_event(0x8001, int(x_ * 65535 / (W - 1)), int(y_ * 65535 / (H - 1)), 0, 0)
+
+    u.WindowFromPoint.argtypes = [_wt.POINT]
+    u.WindowFromPoint.restype = _wt.HWND
+    u.GetAncestor.argtypes = [_wt.HWND, _wt.UINT]
+    u.GetAncestor.restype = _wt.HWND
+
+    def who(x_, y_):
+        """按下處實際是哪個視窗（診斷用：點擊會送到誰）。"""
+        root_ = u.GetAncestor(u.WindowFromPoint(_wt.POINT(int(x_), int(y_))), 2)
+        if not root_:
+            return "?"
+        for k_, n_ in (("caption_pad", "墊片"), ("caption_textwin", "字"), ("caption_plate", "底板")):
+            r_ = rd(geom).get(k_)
+            if r_ and list(DS._rect(root_)) == r_:
+                return n_
+        cb = _ct.create_unicode_buffer(64); u.GetClassNameW(root_, cb, 64)
+        return cb.value
+
+    def drag_from(fx, fy, label, dx=-200, dy=-150):
+        g0 = rd(geom).get("caption_plate")
+        sx_, sy_ = g0[0] + fx * g0[2], g0[1] + fy * g0[3]
+        move(sx_, sy_); time.sleep(0.4)
+        hit = who(sx_, sy_)
+        u.mouse_event(0x0002, 0, 0, 0, 0); time.sleep(0.15)
+        for s_ in range(1, 21):
+            move(sx_ + dx * s_ / 20, sy_ + dy * s_ / 20); time.sleep(0.04)
+        time.sleep(0.2)
+        u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(1.0)
+        g1 = rd(geom)
+        p1, t1, d1 = g1.get("caption_plate"), g1.get("caption_textwin"), g1.get("caption_pad")
+        check("A2 從%s拖動：字幕移動約 %d×%d，三層（底板、字、墊片）同位置（按下處是：%s）" % (label, -dx, -dy, hit),
+              p1 and p1 == t1 == d1 and abs((g0[0] - p1[0]) + dx) <= 8 and abs((g0[1] - p1[1]) + dy) <= 8,
+              (g0, p1, t1, d1, "cap_user=%s" % g1.get("cap_user")))
+        return p1
+    c0 = page_clicks()
+    if pl:
+        drag_from(6.0 / pl[2], 0.5, "內距")
+        drag_from(0.5, 0.5, "字的中間", dx=150, dy=60)
+        drag_from(0.27, 0.62, "字與字之間／筆畫附近", dx=-80, dy=90)
+        shot_png("stage-shot-3-dragged.png")
+        check("A2 拖過之後位置存檔（下次沿用）", rd(os.path.join(work, "stage-caption.json")).get("pos"),
+              rd(os.path.join(work, "stage-caption.json")))
+        # 按兩下：回到預設位置（即使游標停在字幕上也立刻移回）
+        g0 = rd(geom).get("caption_plate")
+        move(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2); time.sleep(0.3)
+        for _ in range(2):
+            u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.08)
+        time.sleep(1.0)
+        g1 = rd(geom)
+        check("A2 在字幕上按兩下 → 回到預設位置（下方置中）", g1.get("cap_user") is None and g1.get("caption_plate")
+              and abs((g1["caption_plate"][0] + g1["caption_plate"][2] / 2) - W / 2) <= 2, (g0, g1.get("caption_plate")))
+        # ×：滑鼠移到字幕上（× 出現），點右上角 → 字幕收起
+        g0 = rd(geom).get("caption_plate")
+        move(g0[0] + g0[2] - 10, g0[1] + 8); time.sleep(0.5)
+        u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.8)
+        g1 = rd(geom)
+        check("A2 點字幕右上角的 × → 字幕收起", g1.get("caption_on") is False and not g1.get("caption_plate"), g1.get("caption_plate"))
+        time.sleep(0.5)
+        c1 = page_clicks()
+        check("字幕上的拖動、按兩下、× 都沒有穿到底下的頁面（頁面收到的點擊數不變）", c0 is not None and c1 == c0, (c0, c1))
+    json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
+    try:
+        p.wait(10)
+    except subprocess.TimeoutExpired:
+        kill_tree(p)
+    kill_tree(cp)
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def main():
-    if os.name != "nt" or "--i-am-ci" not in sys.argv:
-        print("SKIP 舞台視窗測試：只在 Windows CI 跑（要 --i-am-ci）")
+    if os.name != "nt" or "--i-am-ci" not in sys.argv or os.environ.get("GITHUB_ACTIONS") != "true":
+        # 全螢幕視窗、真的滑鼠輸入、擷圖：只在 GitHub Actions 的測試機上（不動使用者的螢幕、滑鼠鍵盤）
+        print("SKIP 舞台視窗測試：只在 Windows CI 跑（要 --i-am-ci，且 GITHUB_ACTIONS=true）")
         return 0
     wd = watchdog()
     two_lines = "它只根據院內說明來寫，依據列在下面；核准的人不能確認寄出，所以每一封回覆至少經過兩個人。"
@@ -84,13 +358,22 @@ def main():
         env = dict(os.environ, NE_STAGE_SCREEN="%dx%d" % (W, H), NE_STAGE_GEOM=geom, NE_STAGE_NO_HOTKEYS="1", NO_ERRANDS_HOME=d)
         p = spawn(d, env)
         g = wait(lambda: rd(geom).get("caption_box") and rd(geom).get("next") and rd(geom))
+        time.sleep(1.0)                                    # 控制列依字幕位置讓位：等數值穩定再讀
+        g = rd(geom) or g
+        m1 = g.get("controls_moves")
+        time.sleep(1.2)
+        g2_ = rd(geom) or g
+        check("%d×%d：控制列擺好之後不再重擺（重擺次數穩定、沒有卡住）" % (W, H),
+              m1 is not None and g2_.get("controls_moves") == m1 and not g2_.get("controls_stuck"),
+              (m1, g2_.get("controls_moves"), g2_.get("controls_stuck"), g2_.get("controls_rect"), g2_.get("controls_want")))
         lines = L.caption_lines(two_lines, W, H)
         check("%d×%d：字幕估算兩行以內（%d 行）" % (W, H, lines), lines <= 2, lines)
         check("%d×%d：字幕塊實際排出來最多兩行、不超過最大寬度（舞台寬 62%%）" % (W, H),
               g and g["caption_req"][1] <= 2 * g["cap_line_h"] + 2 * g["cap_pad"] + 12 and g["caption_req"][0] <= g["cap_max_w"] + 2, g)
         check("%d×%d：字幕就是這一拍的句子" % (W, H), g and g["caption_text"] == two_lines, g and g.get("caption_text"))
-        check("%d×%d：講者模式輪到他按 → 控制列出現，「下一步」在右下角" % (W, H),
-              g and g["controls_visible"] and g["next"][0] > W * 0.6 and g["next"][1] > H * 0.8, g and g.get("next"))
+        check("%d×%d：講者模式輪到他按 → 控制列出現在右側，「下一步」在右半邊；和字幕重疊時控制列讓到字幕上方" % (W, H),
+              g and g["controls_visible"] and g["next"][0] > W * 0.6 and g.get("controls_rect") and g.get("caption_plate")
+              and not L.overlaps(g["controls_rect"], g["caption_plate"]), g and (g.get("next"), g.get("controls_rect"), g.get("caption_plate"), "want=%s" % g.get("controls_want")))
         json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
         try:
             p.wait(10)
@@ -141,6 +424,8 @@ def main():
             ku.keybd_event(vk, 0, up, 0); time.sleep(0.05)
         check("Ctrl+Shift+F12 → 離開（卡片：%s）" % (card or "示範中"), closes_within(p, 10))
 
+    # ---- 真的瀏覽器（A1／A2／A19）：頁面貼齊螢幕底邊、舞台沒有空白帶、字幕兩層一起動、圓角、試擺在背板下面
+    real_chrome_checks(stage_with)
     # 預備清單沒過、講者按停止 → 收掉
     d = tempfile.mkdtemp(prefix="ne-stage-")
     json.dump({"card": "checklist", "card_data": {"heading": "還沒準備好", "items": [{"name": "連線到示範系統", "state": "fail",

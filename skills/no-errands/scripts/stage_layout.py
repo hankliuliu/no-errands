@@ -120,9 +120,10 @@ def css_to_screen(box, stage, crop, zoom, dpr):
     return int(x0), int(y0), int(x1 - x0), int(y1 - y0)
 
 
-def caption_pos(box_wh, lay, look=None, ctl=None, user=None, margin=12):
+def caption_pos(box_wh, lay, look=None, user=None, margin=12):
     """字幕塊的左上角。user＝(rx, ry) 舞台比例（使用者拖過的位置；拖過就不自動讓開）；
-    否則預設下方置中，與「看這裡」外框重疊（含邊距）→ 改到上方；與控制列左右重疊 → 放在控制列上方。"""
+    否則預設下方置中，與「看這裡」外框重疊（含邊距）→ 改到上方。
+    控制列不會讓字幕移動（5c：滑鼠一動字幕就跳，要拖的人在追一個會動的目標）——重疊時由控制列讓位（controls_pos）。"""
     bw, bh = box_wh
     sx, sy, sw, sh = lay["stage"]
     if user:
@@ -134,11 +135,20 @@ def caption_pos(box_wh, lay, look=None, ctl=None, user=None, margin=12):
         box = (x - margin, y - margin, bw + 2 * margin, bh + 2 * margin)
         if look and overlaps(box, look):
             y = sy + margin                               # 讓開外框：放到上方（角色帶下面）
-        elif ctl and overlaps((x, y, bw, bh), ctl):
-            y = ctl[1] - bh - margin                      # 和控制列重疊：放在控制列上方
     x = min(max(x, sx), sx + sw - bw)                     # 拖不出舞台
     y = min(max(y, sy), sy + sh - bh)
     return int(x), int(y)
+
+
+def controls_pos(lay, cap=None, margin=12):
+    """控制列（含上方一行提示）的位置：預設右下角；和字幕塊重疊（含邊距）時往上移到字幕上方——字幕留在原地。"""
+    x, y, w, h = lay["controls"]
+    hint_h = lay["ctl_font"] * 2
+    if cap:
+        grown = (cap[0] - margin, cap[1] - margin, cap[2] + 2 * margin, cap[3] + 2 * margin)
+        if overlaps((x, y - hint_h, w, h + hint_h), grown):
+            y = max(lay["stage"][1] + hint_h, cap[1] - margin - h)
+    return x, y, w, h
 
 
 def caption_ratio(pos, lay):
@@ -164,3 +174,62 @@ def overlaps(a, b):
     ax, ay, aw, ah = a
     bx, by, bw, bh = b
     return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
+def inside(a, b, tol=0):
+    """矩形 a 完全落在 b 內（容許 tol 像素）。"""
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return ax >= bx - tol and ay >= by - tol and ax + aw <= bx + bw + tol and ay + ah <= by + bh + tol
+
+
+def fit_report(screen, stage, content, tol=3):
+    """台上瀏覽器頁面的實測範圍（實體像素）對舞台：頁面底邊要貼齊螢幕底邊；舞台的四邊都不能露出背板（空白帶）。
+    頁面超出舞台（頂端被角色帶蓋住、左邊伸到螢幕外）是刻意的裁切，不算空白。"""
+    W, H = screen
+    sx, sy, sw, sh = stage
+    if not content:
+        return {"ok": False, "why": ["量不到頁面範圍"], "gaps": None, "bottom_diff": None}
+    cx, cy, cw, ch = content
+    gaps = {"上": cy - sy, "左": cx - sx, "右": (sx + sw) - (cx + cw), "下": (sy + sh) - (cy + ch)}
+    why = []
+    bottom_diff = (cy + ch) - H
+    if abs(bottom_diff) > tol:
+        why.append("頁面底邊和螢幕底邊差 %d 像素" % bottom_diff)
+    for k, v in gaps.items():
+        if v > tol:
+            why.append("舞台%s緣露出 %d 像素的空白帶" % (k, v))
+    return {"ok": not why, "why": why, "gaps": gaps, "bottom_diff": bottom_diff}
+
+
+def placement_error(want, got):
+    """要求的視窗矩形和實測矩形的最大差距（像素）。"""
+    if not want or not got:
+        return None
+    return max(abs(a - b) for a, b in zip(want, got))
+
+
+def align_plan(lst, straddler, target, gap=4):
+    """訊息區頂端不留半行（CSS px）。lst：訊息區可視範圍；straddler：跨在頂端、被切到的那一則（None＝已對齊）；
+    target：這一拍要看的東西（或最後一則）。回 (做法, 值)：
+      ("ok", 0)        沒有被切到的訊息
+      ("scroll", px)   往上捲 px，被切的那則從開頭顯示，而且 target 仍完整在訊息區內
+      ("mask", box)    捲了會把 target 擠出去：用頁面底色蓋住被切那則露出的殘段（target 在那則裡面時只蓋到 target 上方）
+      ("none", 原因)   做不到（target 自己被切到頂端）"""
+    if not straddler:
+        return ("ok", 0)
+    lx, ly, lw, lh = lst
+    top, bottom = ly, ly + lh
+    sy, sh = straddler[1], straddler[3]
+    c = top - sy
+    if target is None:
+        return ("scroll", int(math.ceil(c)))
+    ty, th = target[1], target[3]
+    if ty + th + c <= bottom + 1:
+        return ("scroll", int(math.ceil(c)))
+    within = ty >= sy - 1 and ty + th <= sy + sh + 1
+    if not within:
+        return ("mask", [lx, top, lw, round(sy + sh - top, 1)])
+    if ty - top >= 2 * gap:
+        return ("mask", [lx, top, lw, round(ty - gap - top, 1)])
+    return ("none", "這一拍要看的東西本身跨在訊息區頂端")
