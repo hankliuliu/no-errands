@@ -229,6 +229,42 @@ check("白名單：Report(2024) 不被當成 Report", policy.canonical_chat(pol,
       and not policy.in_whitelist(pol, "Report"))
 check("白名單：去掉人數後兩筆都對得上 → None（不猜）",
       policy.canonical_chat({"chat": {"whitelist": ["Echo (3)", "Echo (7)"]}}, "Echo") is None)
+# 輸入監看：只忽略落在「我們自己的動作執行期間」的那筆輸入（假時鐘，三平台）
+import idle as _idle  # noqa: E402
+
+
+class _Clock:
+    t = 1000.0
+    last = 900.0   # 最後一筆輸入的時間點
+
+    @classmethod
+    def time(cls):
+        return cls.t
+
+
+_orig = (_idle.time, _idle.idle_seconds)
+_idle.time = _Clock
+_idle.idle_seconds = lambda: _Clock.t - _Clock.last
+try:
+    w_ = _idle.IdleWatch()                        # 開始時已閒置 100 秒
+    _Clock.t = 1001.0; k_ = w_.own_begin()        # 我們的點擊開始
+    _Clock.t = 1001.9; _Clock.last = 1001.9       # 點擊中途，系統記到一筆輸入（我們自己的合成輸入）
+    _Clock.t = 1002.5
+    own_open_ok = not w_.interrupted(slack=0.3)   # 點擊還在跑：不算使用者
+    _Clock.t = 1004.0; w_.own_end(k_)             # 點擊結束（多算 0.3 秒）
+    _Clock.t = 1010.0
+    own_done_ok = not w_.interrupted(slack=0.3)   # 之後沒人碰：還是不算
+    _Clock.last = 1011.0; _Clock.t = 1011.5       # 使用者真的動了（在我們的動作以外）
+    user_ok = w_.interrupted(slack=0.3)
+    w2 = _idle.IdleWatch()
+    _Clock.last = _Clock.t + 0.5; _Clock.t += 1.0
+    plain_ok = w2.interrupted(slack=0.3)          # 沒有任何我們的動作：照舊一動就算
+finally:
+    _idle.time, _idle.idle_seconds = _orig
+check("輸入監看：我們的點擊執行中送出的系統輸入不算使用者回來", own_open_ok)
+check("輸入監看：點擊結束後沒人碰，仍不算", own_done_ok)
+check("輸入監看：我們的動作以外的輸入照常算使用者回來", user_ok)
+check("輸入監看：沒有我們的動作時，照舊一動就算（沒有放寬）", plain_ok)
 check("記事本目標資料夾：名稱帶不帶人數都對到 gather 那個目標", _tid_ok)
 check("記事本目標資料夾：gather 沒有這個目標 → 和 gather 同一個算法", _tid_fb)
 import inspect as _ins  # noqa: E402

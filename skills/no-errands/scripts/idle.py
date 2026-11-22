@@ -56,19 +56,42 @@ def wait_idle(min_s=180, timeout=3600, poll=5):
         time.sleep(min(poll, max(1, min_s - s)))
 
 
+OWN_PAD_S = 0.3   # 我們自己的動作結束後，再多算這麼久（系統記錄輸入時間的誤差）
+
+
 class IdleWatch:
-    """操作期間監看：使用者一有輸入（閒置秒數比經過時間短）就算被打斷。"""
+    """操作期間監看：使用者一有輸入（閒置秒數比經過時間短）就算被打斷。
+    例外只有一種：最新那筆輸入的時間點，落在「我們自己的動作正在執行」的時段裡。實測（2026-11-23，真的 LINE）：
+    agent-desktop 的語意點擊在點 Qt 的清單項目時，會送出一筆系統層級的合成輸入（游標沒動、Alt 沒按，但最後輸入
+    時間被更新），監看就把自己的點擊當成使用者回來了。這段時間以外的輸入照常算使用者；監看沒有放寬，也沒拉長容忍。
+    代價照實說：使用者剛好在我們那一個動作執行的那幾秒內動了一下、之後就沒再動，這一下會被忽略。"""
 
     def __init__(self):
         self.t0 = time.time()
         self.idle0 = idle_seconds()
+        self.own = []   # [[開始, 結束或 None（還在跑）], ...]
+
+    def own_begin(self):
+        self.own.append([time.time(), None])
+        return len(self.own) - 1
+
+    def own_end(self, i):
+        if i is not None and 0 <= i < len(self.own):
+            self.own[i][1] = time.time() + OWN_PAD_S
+
+    def _is_own(self, ts):
+        now = time.time()
+        return any(a - 0.05 <= ts <= (b if b is not None else now + OWN_PAD_S) for a, b in self.own)
 
     def interrupted(self, slack=1.5):
-        """沒人碰的話，閒置秒數應該 = 開始時的閒置秒數 + 經過時間；明顯比較小就是使用者動過。"""
+        """沒人碰的話，閒置秒數應該 = 開始時的閒置秒數 + 經過時間；明顯比較小就是有人動過——
+        除非最新那筆輸入就發生在我們自己的動作執行期間。"""
         s = idle_seconds()
         if s is None or self.idle0 is None:
             return False
-        return s + slack < self.idle0 + (time.time() - self.t0)
+        if not (s + slack < self.idle0 + (time.time() - self.t0)):
+            return False
+        return not self._is_own(time.time() - s)
 
 
 def main():
