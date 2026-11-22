@@ -235,17 +235,22 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
     clicked = False
     while time.time() - t_ < 1.3:
         rr = DS._rect(ph)
-        samples.append((rr[0] + R, rr[1] + R))
+        samples.append((rr[0] + R, rr[1] + R, time.time()))
         if not clicked and time.time() - t_ > 0.3 and pl:
             move_abs(pl[0] + 8, pl[1] + pl[3] // 2); u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0)
             clicked = True
         time.sleep(0.012)
-    jumps = [abs(samples[i + 1][0] - samples[i][0]) + abs(samples[i + 1][1] - samples[i][1]) for i in range(len(samples) - 1)]
     e2 = L.css_point(tgt2, lay["stage"], crop, float(now.get("zoom") or 1.0), DS.dpr_of(h))
-    big = [j for j in jumps if j > 40]
-    # 真瞬移＝一步跨過整段距離（這裡約 400 px）；測試機忙時偶爾掉一格會讓單步變兩倍——允許最多 2 步 ≤90 px
-    check("A21 示範游標的移動是連續的（相鄰取樣位移 ≤40 像素，偶爾掉格最多 2 步 ≤90；沒有瞬移）",
-          jumps and len(big) <= 2 and max(jumps) <= 90, (max(jumps or [0]), len(big), len(samples)))
+    # 依經過的時間算速度（5c）：取樣間隔變長時允許的位移跟著放大；檢查的是速度有沒有突然暴衝（瞬移）
+    D = ((e2[0] - e1[0]) ** 2 + (e2[1] - e1[1]) ** 2) ** 0.5
+    vmax = 2.5 * D / 0.8 + 60                      # 加減速的最高速度約平均的 1.5 倍＋弧線；60 px/s 是量測雜訊的餘裕
+    speeds = []
+    for i in range(len(samples) - 1):
+        dt = max(0.004, samples[i + 1][2] - samples[i][2])
+        dd = ((samples[i + 1][0] - samples[i][0]) ** 2 + (samples[i + 1][1] - samples[i][1]) ** 2) ** 0.5
+        speeds.append(dd / dt)
+    check("A21 示範游標的移動是連續的（依時間算的速度不超過整段平均速度的 2.5 倍；沒有瞬移）",
+          speeds and max(speeds) <= vmax, (round(max(speeds or [0])), round(vmax), len(samples)))
     check("A27 移動途中使用者點了字幕：示範游標照樣走到目標", abs(samples[-1][0] - e2[0]) <= 2 and abs(samples[-1][1] - e2[1]) <= 2,
           (samples[-1], e2))
     ackp = os.path.join(d, "stage_ack.json")
