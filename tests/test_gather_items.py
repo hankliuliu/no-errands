@@ -8,7 +8,7 @@
   4 Mattermost 下載（假的 GET）：收到、404→已過期、500→下載失敗、太大→超過大小上限；fetch 點名的就算依設定不收也補
   5 CLI：import 合成匯出 → status 有已收／未收（各原因）、files/未收清單.md、--dest 也放一份；再 import 一次不重複
 """
-import json, os, shutil, subprocess, sys, tempfile
+import json, os, re, shutil, subprocess, sys, tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SC = os.path.join(REPO, "skills", "no-errands", "scripts")
@@ -41,7 +41,7 @@ by = {it["message_id"]: it for it in items}
 check("2 只列附件（貼圖與文字不列）：5 筆", len(items) == 5, len(items))
 check("2 照片、影片、語音：依設定不收", all(by[k]["reason"] == "依設定不收" for k in ("m00", "m01", "m02")))
 check("2 壓縮檔：依設定不收、說明寫附件黑名單分類", by["m04"]["reason"] == "依設定不收" and "壓縮檔" in by["m04"]["note"], by["m04"])
-check("2 LINE 文件檔：工具做不到（照實記，不假裝收到）", by["m03"]["status"] == "missing" and by["m03"]["reason"] == "工具做不到")
+check("2 LINE 文件檔：尚未收集（檔案分頁另存還在做；不是「工具做不到」，也不假裝收到）", by["m03"]["status"] == "missing" and by["m03"]["reason"] == "尚未收集")
 check("2 每筆都有日期時間、傳送者、位置、穩定編號", all(it["date"] and it["time"] and it["sender"] and it["location"] == "message"
                                           and it["id"] == "m:" + it["message_id"] for it in items))
 t2 = dict(t, photos=True)
@@ -55,10 +55,21 @@ check("3 重複同步不重複記，只加新的那筆", added == 5 and added2 =
 check("3 已收的不會因重新同步變回未收", any(it["status"] == "received" for it in again))
 s = gi.summary(again)
 check("3 summary：已收 1／未收 5、各原因筆數", s["received"] == 1 and s["missing"] == 5 and s["missing_by_reason"].get("依設定不收") == 4
-      and s["missing_by_reason"].get("工具做不到") == 1, s)
-md = gi.render_missing(again, "L")
-check("3 未收清單：最上面各原因筆數、依原因分段、表格有編號", "已收 1／未收 5" in md and "## 依設定不收（4）" in md
-      and "## 工具做不到（1）" in md and "`m:m03`" in md, md[:400])
+      and s["missing_by_reason"].get("尚未收集") == 1, s)
+ctx_msgs = [dict(M("早安大家", 20), id="t1", date="2026-11-01", time="09:59", kind="text")] +     [dict(m, id=m["id"], kind="text") for m in msgs + [M("圖片", 7)]] + [dict(M("這是工地現場", 21), id="t2", date="2026-11-03", time="23:00", kind="text")]
+md = gi.render_missing(again, "測試群", ctx_msgs, "abc123")
+check("3 未收清單：標題是聊天室名稱、寫涵蓋範圍、開頭是白話（對 agent 怎麼說）", md.startswith("# 未收清單：測試群") and "涵蓋 2026-11-01" in md
+      and "對 agent 說" in md and "<id>" not in md.split("---")[0], md[:300])
+check("3 未收清單：檔案段在最前、照片影片在後；給人看的是「還沒收（檔案收集尚未完成）」", md.index("## 檔案") < md.index("## 照片與影片")
+      and "還沒收（檔案收集尚未完成）" in md and "工具做不到" not in md, md[:600])
+check("3 未收清單：短流水號、檔尾給 agent 用的指令填好 id", re.search(r"| #d+ |", md) and "--target abc123" in md.split("---")[-1])
+check("3 未收清單：照片影片附前後文", "早安大家" in md or "這是工地現場" in md, md[-600:])
+check("3 沒有未收的東西：只寫一句", "沒有未收的東西。" in gi.render_missing([], "空群", [], "x") and "對 agent" not in gi.render_missing([], "空群", [], "x"))
+burst = [{"id": "m:b%d" % k, "message_id": "b%d" % k, "date": "2026-11-17", "time": "14:%02d" % (45 + k // 3), "sender": "Ann", "kind": "photo",
+          "status": "missing", "reason": "依設定不收", "note": "x", "location": "message"} for k in range(7)]
+bm = gi.render_missing(gi.number(burst), "B", [], "t")
+check("3 同一個人幾分鐘內連續的 7 張照片 → 合成一列（照片 ×7）", "照片 ×7" in bm and bm.count("| Ann |") == 1 and "#1–#7" in bm, bm)
+check("3 fetch 接受流水號", gi.select_fn(item="#3")(dict(burst[2])) and not gi.select_fn(item="#3")(dict(burst[1])))
 
 # 4 Mattermost 下載（假 GET）
 rows = [{"id": "p1", "date": "2026-11-02", "time": "09:00", "sender": "bob", "files": [
@@ -118,7 +129,7 @@ try:
     st, _ = g("status")
     row = next(r for r in st["targets"] if r["target"] == tid)
     check("5 status：已收 0／未收 4（各原因）、記事本數與公告數欄位在", row["items"]["missing"] == 4
-          and row["items"]["missing_by_reason"] == {"依設定不收": 3, "工具做不到": 1} and row["notes"] == 0 and row["announcements"] == 0, row)
+          and row["items"]["missing_by_reason"] == {"依設定不收": 3, "尚未收集": 1} and row["notes"] == 0 and row["announcements"] == 0, row)
     d = os.path.join(home, "gather", "line", tid, "files")
     check("5 本機與 --dest 都有 未收清單.md", os.path.exists(os.path.join(d, "未收清單.md")) and os.path.exists(os.path.join(dest, "files", "未收清單.md")))
     o, rc = g("config", "--target", tid, "--photos", "on")

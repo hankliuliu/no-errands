@@ -12,7 +12,10 @@
 """
 import hashlib, json, os, re, time
 
-REASONS = ("依設定不收", "已過期", "下載失敗", "超過大小上限", "工具做不到")
+REASONS = ("依設定不收", "已過期", "下載失敗", "超過大小上限", "尚未收集", "工具做不到")
+# 給人看的說法（「尚未收集」＝這一類的收集還沒做完，是暫時的；「工具做不到」留給真的做不到的情況）
+REASON_LABEL = {"尚未收集": "還沒收（檔案收集尚未完成）"}
+ATTEMPT_REASONS = ("已過期", "下載失敗", "超過大小上限")   # 真的試過才會有的原因：重新同步不覆蓋
 KIND_LABEL = {"photo": "照片", "video": "影片", "file": "檔案", "audio": "語音", "note-attachment": "記事本內的附件"}
 LOC_LABEL = {"message": "訊息", "note": "記事本", "files-tab": "檔案分頁"}
 # context-gather 的附件黑名單（sync.py blacklist_category）：照樣進未收清單，原因「依設定不收」並寫分類
@@ -71,7 +74,7 @@ def default_status(t, kind, name, service):
         return "missing", "依設定不收", "附件黑名單：%s" % cat
     if service == "line":
         # LINE 的檔案要從聊天室的檔案分頁逐一另存（畫面操作）；還沒走那一步之前照實記「工具做不到」
-        return "missing", "工具做不到", "LINE 的檔案要從檔案分頁另存，這一步尚未完成"
+        return "missing", "尚未收集", "LINE 的檔案要從聊天室的檔案分頁另存，這一步還在做"
     return "pending", None, None
 
 
@@ -97,15 +100,26 @@ def merge_items(old, new):
     """新看到的併進索引：同 id 不重複；已收的不會因為重新同步變回未收。回 (合併後, 新增數)。"""
     by = {it["id"]: it for it in old}
     added = 0
-    for it in new:
+    for it in sorted(new, key=lambda x: (x.get("date") or "", x.get("time") or "")):
         if it["id"] in by:
             cur = by[it["id"]]
             for k in ("name", "size", "sender", "date", "time"):   # 補上之前拿不到的欄位
                 if not cur.get(k) and it.get(k):
                     cur[k] = it[k]
+            if cur["status"] == "missing" and cur.get("reason") not in ATTEMPT_REASONS and it["status"] in ("missing", "pending"):
+                cur.update(status=it["status"], reason=it["reason"], note=it["note"])   # 設定或說法改了：跟著目前的判斷
             continue
         by[it["id"]] = it; added += 1
-    return list(by.values()), added
+    return number(list(by.values())), added
+
+
+def number(items):
+    """短流水號（#1、#2…）：只發一次，之後不變；新項目接在目前最大號之後。"""
+    nxt = max([it.get("no") or 0 for it in items] + [0]) + 1
+    for it in sorted(items, key=lambda x: (x.get("date") or "", x.get("time") or "", x["id"])):
+        if not it.get("no"):
+            it["no"] = nxt; nxt += 1
+    return items
 
 
 def from_line_messages(t, msgs):
@@ -183,28 +197,117 @@ def summary(items):
             "download_failed": by["下載失敗"]}
 
 
-def render_missing(items, label):
-    miss = sorted((it for it in items if it["status"] == "missing"), key=lambda x: (x.get("date") or "", x.get("time") or ""))
+def _lead(text, n=40):
+    t = " ".join((text or "").split())
+    return (t[:n] + "…") if len(t) > n else t
+
+
+def _context(msgs, mid):
+    """這則訊息前後最接近的文字訊息開頭（各約 40 字）——讓人看得出那批照片在講什麼。只寫在本機清單裡。"""
+    if not msgs or not mid:
+        return "", ""
+    idx = next((k for k, m in enumerate(msgs) if m.get("id") == mid), None)
+    if idx is None:
+        return "", ""
+    is_text = lambda m: m.get("kind", "text") == "text" and m.get("text") and classify_line(m) is None and m["text"].strip() != "貼圖"
+    before = next((msgs[k] for k in range(idx - 1, -1, -1) if is_text(msgs[k])), None)
+    after = next((msgs[k] for k in range(idx + 1, len(msgs)) if is_text(msgs[k])), None)
+    fmt = lambda m: "%s %s：%s" % (m["sender"], m["time"], _lead(m["text"])) if m else ""
+    return fmt(before), fmt(after)
+
+
+def _mins(it):
+    try:
+        h, m = (it.get("time") or "0:0").split(":")
+        return int(h) * 60 + int(m)
+    except ValueError:
+        return 0
+
+
+def _bursts(items, gap=5):
+    """同一個人、同一天、幾分鐘內連續傳的照片／影片合成一批。"""
+    out = []
+    for it in sorted(items, key=lambda x: (x.get("date") or "", x.get("time") or "", x.get("no") or 0)):
+        last = out[-1] if out else None
+        if last and last[-1]["sender"] == it["sender"] and last[-1]["date"] == it["date"] and _mins(it) - _mins(last[-1]) <= gap:
+            last.append(it)
+        else:
+            out.append([it])
+    return out
+
+
+def _cols(rows, header):
+    """拿掉整欄都空的欄位。rows: list of dict；header: [(key, 標題)]。"""
+    keep = [(k, h) for k, h in header if any(str(r.get(k) or "").strip() for r in rows)]
+    lines = ["| " + " | ".join(h for _, h in keep) + " |", "|" + "---|" * len(keep)]
+    for r in rows:
+        lines.append("| " + " | ".join(str(r.get(k) or "").replace("|", "／").replace("\n", " ") for k, _ in keep) + " |")
+    return lines
+
+
+def render_missing(items, title, msgs=None, tid=None):
+    """給人看的未收清單：用來判斷要不要去補。有檔名的檔案最前、照片影片合併成批並附前後文、空欄位拿掉、短流水號。"""
+    miss = [it for it in items if it["status"] == "missing"]
+    dates = sorted(m["date"] for m in (msgs or []) if m.get("date"))
+    rng = ("涵蓋 %s ～ %s。" % (dates[0], dates[-1])) if dates else ""
+    L = ["# 未收清單：%s" % title, "", "%s產生於 %s。" % (rng, time.strftime("%Y-%m-%d %H:%M")), ""]
+    if not miss:
+        return "\n".join(L + ["沒有未收的東西。", ""])
     s = summary(items)
-    lines = ["# 未收清單：%s" % label, "",
-             "看到了、但沒有收下的東西。要補哪一筆：`gather.py fetch --target <id> --item <編號>`；"
-             "整類補：`--kind photo|video|file`、日期範圍：`--from YYYY-MM-DD --to YYYY-MM-DD`。", "",
-             "已收 %d／未收 %d" % (s["received"], s["missing"]), ""]
-    for r in REASONS:
-        n = s["missing_by_reason"].get(r, 0)
-        if n:
-            lines.append("- %s：%d%s" % (r, n, "  ⚠" if r == "下載失敗" else ""))
-    for r in REASONS:
-        group = [it for it in miss if it["reason"] == r]
-        if not group:
-            continue
-        lines += ["", "## %s（%d）" % (r, len(group)), "", "| 日期時間 | 傳送者 | 種類 | 檔名 | 大小 | 位置 | 說明 | 編號 |", "|---|---|---|---|---|---|---|---|"]
-        for it in group:
-            lines.append("| %s %s | %s | %s | %s | %s | %s | %s | `%s` |" % (
-                it.get("date") or "", it.get("time") or "", it.get("sender") or "", KIND_LABEL.get(it["kind"], it["kind"]),
-                (it.get("name") or "").replace("|", "／"), _size(it.get("size")), LOC_LABEL.get(it.get("location"), it.get("location") or ""),
-                (it.get("note") or "").replace("|", "／"), it["id"]))
-    return "\n".join(lines) + "\n"
+    L += ["這裡列出聊天室裡出現過、但還沒收下來的照片、影片和檔案（已收 %d、未收 %d）。" % (s["received"], s["missing"]),
+          "想補的話，直接對 agent 說，例如：「補收〈%s〉%s 的照片」或「把〈%s〉清單裡的 #%d 補回來」。" % (
+              title, (miss[-1].get("date") or "")[5:], title, min(it.get("no") or 0 for it in miss)), ""]
+    files = [it for it in miss if it["kind"] == "file"]
+    media = [it for it in miss if it["kind"] in ("photo", "video")]
+    others = [it for it in miss if it not in files and it not in media]
+    label = lambda it: REASON_LABEL.get(it["reason"], it["reason"])
+    if files:
+        L += ["## 檔案（%d）" % len(files), ""]
+        notes = {it.get("note") for it in files}
+        if len(notes) == 1 and next(iter(notes)):
+            L += [next(iter(notes)), ""]
+        rows = [{"no": "#%d" % it["no"], "when": "%s %s" % ((it.get("date") or "")[5:], it.get("time") or ""), "who": it.get("sender"),
+                 "name": it.get("name"), "size": _size(it.get("size")), "why": label(it),
+                 "note": it.get("note") if len(notes) > 1 else ""} for it in sorted(files, key=lambda x: x.get("no") or 0)]
+        L += _cols(rows, [("no", "#"), ("when", "時間"), ("who", "傳送者"), ("name", "檔名"), ("size", "大小"), ("why", "狀態"), ("note", "說明")]) + [""]
+    for reason in ("下載失敗", "已過期", "超過大小上限"):
+        grp = [it for it in others + media if it["reason"] == reason]
+        if grp:
+            L += ["## %s（%d）" % (reason, len(grp)), ""]
+            rows = [{"no": "#%d" % it["no"], "when": "%s %s" % ((it.get("date") or "")[5:], it.get("time") or ""), "who": it.get("sender"),
+                     "kind": KIND_LABEL.get(it["kind"], it["kind"]), "note": it.get("note")} for it in grp]
+            L += _cols(rows, [("no", "#"), ("when", "時間"), ("who", "傳送者"), ("kind", "種類"), ("note", "說明")]) + [""]
+    rest_media = [it for it in media if it["reason"] not in ("下載失敗", "已過期", "超過大小上限")]
+    if rest_media:
+        L += ["## 照片與影片（%d）" % len(rest_media), ""]
+        notes = {label(it) for it in rest_media}
+        L += ["%s。同一個人幾分鐘內連續傳的合成一列，附上前後最接近的文字訊息，方便判斷這批在講什麼。" % "、".join(sorted(notes)), ""]
+        rows = []
+        for b in _bursts(rest_media):
+            kinds = {}
+            for it in b:
+                kinds[KIND_LABEL[it["kind"]]] = kinds.get(KIND_LABEL[it["kind"]], 0) + 1
+            t0, t1 = b[0].get("time") or "", b[-1].get("time") or ""
+            pre, post = _context(msgs, b[0].get("message_id") or b[0].get("post_id"))
+            if len(b) > 1:
+                _, post = _context(msgs, b[-1].get("message_id") or b[-1].get("post_id"))
+            nos = sorted(it["no"] for it in b)
+            rows.append({"no": "#%d" % nos[0] if len(nos) == 1 else "#%d–#%d" % (nos[0], nos[-1]) if nos[-1] - nos[0] == len(nos) - 1
+                         else " ".join("#%d" % n for n in nos),
+                         "when": "%s %s" % ((b[0].get("date") or "")[5:], t0 if t0 == t1 else "%s–%s" % (t0, t1)),
+                         "who": b[0].get("sender"), "what": "、".join("%s ×%d" % kv for kv in kinds.items()),
+                         "pre": pre, "post": post})
+        L += _cols(rows, [("no", "#"), ("when", "時間"), ("who", "傳送者"), ("what", "內容"), ("pre", "前一則"), ("post", "後一則")]) + [""]
+    rest = [it for it in others if it["reason"] not in ("下載失敗", "已過期", "超過大小上限")]
+    if rest:
+        L += ["## 其他（%d）" % len(rest), ""]
+        rows = [{"no": "#%d" % it["no"], "when": "%s %s" % ((it.get("date") or "")[5:], it.get("time") or ""), "who": it.get("sender"),
+                 "kind": KIND_LABEL.get(it["kind"], it["kind"]), "why": label(it)} for it in rest]
+        L += _cols(rows, [("no", "#"), ("when", "時間"), ("who", "傳送者"), ("kind", "種類"), ("why", "狀態")]) + [""]
+    L += ["---", "", "給 agent 用：`gather.py fetch --target %s --item <#號>`；整類 `--kind photo|video|file|audio`；"
+          "日期 `--from YYYY-MM-DD --to YYYY-MM-DD`；照片影片之後都要收：`gather.py config --target %s --photos on --videos on`。"
+          % (tid or "<id>", tid or "<id>"), ""]
+    return "\n".join(L)
 
 
 def _size(n):
@@ -213,9 +316,10 @@ def _size(n):
     return "%.1f MB" % (n / 1048576) if n >= 1048576 else "%.0f KB" % (n / 1024) if n >= 1024 else "%d B" % n
 
 
-def write_outputs(tdir, t, items):
+def write_outputs(tdir, t, items, title=None, msgs=None, tid=None):
+    number(items)
     save_items(tdir, items)
-    md = render_missing(items, t.get("label") or t.get("service"))
+    md = render_missing(items, title or t.get("label") or t.get("chat") or t.get("service"), msgs, tid)
     open(os.path.join(items_dir(tdir), "未收清單.md"), "w", encoding="utf-8").write(md)
     if t.get("dest"):
         d = os.path.join(t["dest"], "files")
@@ -235,7 +339,7 @@ def select_fn(kind=None, date_from=None, date_to=None, item=None):
     def sel(it):
         if it["status"] == "received":
             return False
-        if item and it["id"] != item and not it["id"].endswith(":" + item):
+        if item and it["id"] != item and not it["id"].endswith(":" + item) and str(it.get("no")) != str(item).lstrip("#"):
             return False
         if kind and it["kind"] != kind:
             return False

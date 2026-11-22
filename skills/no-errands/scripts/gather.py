@@ -445,7 +445,7 @@ def update_items(tid, t, d, msgs, offline=False):
         if any(it["status"] == "pending" for it in items):
             dl = gi.download_mm(d, items, _mm_fetcher())
         gi.save_announcements(d, _mm_extras(t))
-    gi.write_outputs(d, t, items)
+    gi.write_outputs(d, t, items, target_title(t, tid), msgs, tid)
     return dict(gi.summary(items), new_items=added, **({"downloaded": dl} if dl else {}))
 
 
@@ -467,7 +467,7 @@ def sync_one(tid, t, load_hist=False):
             st.setdefault("gaps", []).append(dict(mi["gap"], found=time.strftime("%Y-%m-%dT%H:%M:%S")))
         res = {"mode": mi["mode"], "added": mi["added"]}
     else:
-        since_ms = st.get("cursor_ms")
+        since_ms = st.get("cursor_ms") if st.get("version", 1) >= STATE_VERSION else None   # 舊版狀態：回補一次
         all_rows = _mm_posts(t, since_ms)
         rows = since_filter(all_rows, t["since"])   # 先套起始時間再計數（第一次會抓回起始時間之前的頁）
         by_id = {m["id"]: m for m in stored}
@@ -483,6 +483,9 @@ def sync_one(tid, t, load_hist=False):
             st["cursor_ms"] = max(max(r["update_at"], r["create_at"]) for r in all_rows)
         res = {"mode": "api", "added": added, "updated": updated}
     save_msgs(d, merged)
+    if t["service"] == "mattermost" and st.get("version", 1) < STATE_VERSION:
+        res["backfilled"] = True
+    st["version"] = STATE_VERSION
     res["items"] = update_items(tid, t, d, merged)
     st["last_sync"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     st.setdefault("syncs", []).append(dict(res, at=st["last_sync"], total=len(merged)))
@@ -506,6 +509,7 @@ def cmd_sync(a):
 
 
 ALL_SINCE = "2000-01-01 00:00"   # 「拿得到的全部」
+STATE_VERSION = 2   # 2：附件中繼資料（Sprint E）。比這舊的目標，下一次同步自動回補一次
 
 
 def coverage(t, st, earliest):
@@ -546,7 +550,7 @@ def write_overview():
         gaps = st.get("gaps") or []
         L.append("- 缺口：%s" % ("無" if not gaps else "%d 處（中間有訊息沒接上，見 gather.py status）" % len(gaps)))
         L.append("- 記事本 %d、公告 %d" % (gi.count_notes(d), len(ann.get("announcements") or []) + len(ann.get("pinned") or [])))
-        reasons = "、".join("%s %d" % (k, v) for k, v in s["missing_by_reason"].items())
+        reasons = "、".join("%s %d" % (gi.REASON_LABEL.get(k, k), v) for k, v in s["missing_by_reason"].items())
         rel = "%s/%s/files/未收清單.md" % (t["service"], tid)
         L.append("- 附件：已收 %d／未收 %d%s%s" % (s["received"], s["missing"], ("（%s）" % reasons) if reasons else "",
                                                (" → [未收清單](%s)" % rel) if items else ""))
@@ -665,7 +669,7 @@ def cmd_fetch(a):
     if t["service"] == "mattermost":
         expired = sum(1 for it in chosen if it["reason"] == "已過期")
         res = gi.download_mm(d, items, _mm_fetcher(), select=lambda it: sel(it) and it["reason"] != "已過期", force=True)
-        gi.write_outputs(d, t, items)
+        gi.write_outputs(d, t, items, target_title(t, tid), load_msgs(d), tid)
         write_overview()
         ledger(cmd="fetch", target=tid, matched=len(chosen), **res)
         out({"ok": True, "target": tid, "matched": len(chosen), "still_expired": expired, **res, "items": gi.summary(items)})
