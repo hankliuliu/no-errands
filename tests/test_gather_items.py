@@ -75,6 +75,8 @@ burst = [{"id": "m:b%d" % k, "message_id": "b%d" % k, "date": "2026-11-17", "tim
           "status": "missing", "reason": "依設定不收", "note": "x", "location": "message"} for k in range(7)]
 bm = gi.render_missing(gi.number(burst), "B", [], "t")
 check("3 同一個人幾分鐘內連續的 7 張照片 → 合成一列（照片 ×7）", "照片 ×7" in bm and bm.count("| Ann |") == 1 and "#1–#7" in bm, bm)
+check("3 附件一行依種類寫", gi.missing_by_kind(again) == "照片與影片 2（依設定不收）、檔案 2（還不能收 1、依設定不收 1）、語音 1（依設定不收）",
+      gi.missing_by_kind(again))
 check("3 fetch 接受流水號", gi.select_fn(item="#3")(dict(burst[2])) and not gi.select_fn(item="#3")(dict(burst[1])))
 
 # 4 Mattermost 下載（假 GET）
@@ -155,7 +157,7 @@ try:
     tl = {"service": "line", "since": "2026-11-01 12:00"}
     check("6 LINE：匯出本身有早於起始時間的訊息 → 不警告", G.coverage(tl, {"export_earliest": "2026-10-20 09:00"}, "2026-11-01 12:30") == (None, None))
     w, n = G.coverage(tl, {"export_earliest": "2026-11-01 12:30"}, "2026-11-01 12:30")
-    check("6 LINE：證明不了完整 → 警告", w and not n, (w, n))
+    check("6 LINE：證明不了完整 → 警告（不確定的說法、不用 import）", w and not n and "無法確認" in w and "import" not in w, (w, n))
     w, n = G.coverage(dict(tl, since="2000-01-01 00:00"), {}, "2026-11-03 16:49")
     check("6 LINE：起始時間是「全部」→ 只是說明、不是警告", not w and n and "2026-11-03 16:49" in n, (w, n))
     check("6 Mattermost：不出現 LINE 的範圍警告", G.coverage({"service": "mattermost", "since": "2026-11-22 00:00"}, {}, "2026-11-22 00:13") == (None, None))

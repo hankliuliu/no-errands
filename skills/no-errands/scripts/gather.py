@@ -405,6 +405,21 @@ def _mm_conn():
     return mm_common, base, tok
 
 
+def _mm_channel_title(mmc, base, tok, ch):
+    """頻道給人看的名稱：私訊（D）寫「與〈對方〉的私訊」，兩邊同一人寫「給自己的私訊」；其他用顯示名稱。"""
+    if ch.get("type") == "D":
+        try:
+            me = mmc.get(base, tok, "/users/me").get("id")
+            ids = [x for x in (ch.get("name") or "").split("__") if x]
+            other = next((x for x in ids if x != me), None)
+            if not other:
+                return "給自己的私訊"
+            return "與 %s 的私訊" % mmc._user_label(mmc.get(base, tok, "/users/%s" % other))
+        except Exception:
+            return "Mattermost 私訊"
+    return ch.get("display_name") or ch.get("name") or ""
+
+
 def _mm_extras(t):
     """頻道標題／用途與釘選貼文（GET）。拿不到就照實回錯誤種類，不影響訊息同步。"""
     mmc, base, tok = _mm_conn()
@@ -412,7 +427,7 @@ def _mm_extras(t):
     try:
         ch = mmc.get(base, tok, "/channels/%s" % t["chat"])
         ann["header"], ann["purpose"] = ch.get("header") or "", ch.get("purpose") or ""
-        ann["display_name"] = ch.get("display_name") or ch.get("name") or ""
+        ann["display_name"] = _mm_channel_title(mmc, base, tok, ch)
     except Exception as e:
         ann["header_error"] = str(e)[:80]
     try:
@@ -524,9 +539,9 @@ def coverage(t, st, earliest):
     if ee and ee < t["since"]:
         return None, None
     if t["since"] <= ALL_SINCE:
-        return None, "LINE 桌面版最早拿得到 %s；更早的要用手機匯出聊天記錄再 gather.py import" % earliest
-    return ("起始時間 %s 早於目前拿得到的最早訊息 %s：中間的還沒收到（桌面版可能拿不到；可用手機匯出 import 補齊）"
-            % (t["since"], earliest)), None
+        return None, "LINE 桌面版最早拿得到 %s；更早的要在手機匯出一次聊天記錄" % earliest
+    return ("無法確認 %s～%s 之間有沒有訊息（桌面版只拿得到登入後同步的歷史）；要確認請在手機匯出一次聊天記錄。"
+            % (t["since"], earliest[11:] if earliest[:10] == t["since"][:10] else earliest)), None
 
 
 def target_title(t, tid):
@@ -565,9 +580,9 @@ def write_overview():
             L.append("- 記事本、公告：%s" % ("記事本 %d" % nn if nn else "還沒收（收集尚未完成）"))
         else:
             L.append("- 公告：頻道標題%s、釘選 %d 則" % ("有" if ann.get("header") else "無", len(ann.get("pinned") or [])))
-        reasons = "、".join("%s %d" % (gi.REASON_LABEL.get(k, k), v) for k, v in s["missing_by_reason"].items())
+        bykind = gi.missing_by_kind(items)
         rel = "%s/%s/files/未收清單.md" % (t["service"], tid)
-        L.append("- 附件：已收 %d／未收 %d%s%s" % (s["received"], s["missing"], ("（%s）" % reasons) if reasons else "",
+        L.append("- 附件：已收 %d／未收 %d%s%s" % (s["received"], s["missing"], ("：%s" % bykind) if bykind else "",
                                                (" → [未收清單](%s)" % rel) if items else ""))
         if s["download_failed"]:
             L.append("- ⚠ 有 %d 個附件下載失敗，請 agent 重試補收" % s["download_failed"])

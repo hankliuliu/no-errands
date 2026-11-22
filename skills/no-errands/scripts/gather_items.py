@@ -189,6 +189,24 @@ def download_mm(tdir, items, fetch_bytes, select=None, force=False):
     return res
 
 
+def missing_by_kind(items):
+    """「未收 4：照片與影片 3（依設定不收）、檔案 1（還不能收）」——給人看的附件一行。"""
+    short = {"依設定不收": "依設定不收", "尚未收集": "還不能收", "下載失敗": "下載失敗", "已過期": "已過期",
+             "超過大小上限": "太大", "工具做不到": "做不到"}
+    groups = (("照片與影片", ("photo", "video")), ("檔案", ("file",)), ("語音", ("audio",)), ("記事本附件", ("note-attachment",)))
+    parts = []
+    for label, kinds in groups:
+        g = [it for it in items if it["status"] == "missing" and it["kind"] in kinds]
+        if not g:
+            continue
+        rs = {}
+        for it in g:
+            rs[short.get(it["reason"], it["reason"])] = rs.get(short.get(it["reason"], it["reason"]), 0) + 1
+        why = "、".join(k if len(rs) == 1 else "%s %d" % (k, v) for k, v in rs.items())
+        parts.append("%s %d（%s）" % (label, len(g), why))
+    return "、".join(parts)
+
+
 def summary(items):
     rec = sum(1 for it in items if it["status"] == "received")
     miss = [it for it in items if it["status"] == "missing"]
