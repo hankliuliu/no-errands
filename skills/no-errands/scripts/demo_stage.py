@@ -671,9 +671,16 @@ class Stage:
             if self.placed.get(acct) == key:
                 continue
             wr, cr = _rect(h), content_rect(h)
-            if not cr:
+            shells = self.__dict__.setdefault("shells", {})
+            if cr and cr[2] > 100 and cr[3] > 100:
+                shell = (cr[0] - wr[0], cr[1] - wr[1], (wr[0] + wr[2]) - (cr[0] + cr[2]), (wr[1] + wr[3]) - (cr[1] + cr[3]))
+                shells[acct] = shell
+            elif acct in shells:
+                # 從螢幕外（-32000＝系統當成最小化的位置）回到台上時可能量不到頁面範圍：用上次量到的殼尺寸照樣擺回來，
+                # 不能因為量不到就一直不擺（瀏覽器回不到台上、游標也一直判定不在台上）
+                shell = shells[acct]
+            else:
                 continue
-            shell = (cr[0] - wr[0], cr[1] - wr[1], (wr[0] + wr[2]) - (cr[0] + cr[2]), (wr[1] + wr[3]) - (cr[1] + cr[3]))
             x, y, w, hh = L.browser_rect(self.lay["stage"], shell, crop, float(now.get("zoom") or 1.5), dpr_of(h))
             u32.SetWindowPos(h, HWND_NOTOPMOST if probe else HWND_TOPMOST, x, y, w, hh,
                              SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING)
