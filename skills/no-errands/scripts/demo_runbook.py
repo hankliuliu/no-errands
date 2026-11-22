@@ -642,7 +642,7 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
                 info["used"] = used
                 cmd = [d, "@" + ref] + ([subst(act["text"], vars_)] if d == "fill" else [])
                 # 舞台：逐步輸入（守門自己切段、每段前後讀回；暫停時停在原地、繼續時接著打）
-                prog = d == "fill" and getattr(br, "look", None) is not None and getattr(ctl, "dir", None)                     and (rb.get("stage") or {}).get("typing", "progressive") == "progressive"
+                prog = d == "fill" and getattr(br, "look", None) is not None and getattr(ctl, "dir", None)                     and effects_of(rb)["typing"]
                 if prog:
                     cmd += ["--progressive", "--pace-file", os.path.join(ctl.dir, "control.json")]
                 rc, o, e = br.neb(acct, *cmd, approval=approval, step=st["id"], timeout=7200 if prog else 90)
@@ -765,6 +765,20 @@ def stage_on(rb):
     return bool(rb.get("stage"))
 
 
+EFFECTS = ("pointer", "smooth_scroll", "typing", "shield", "faint_look")
+
+
+def effects_of(rb):
+    """F-3 的效果開關（劇本 stage.effects；預設全開）。任一項在真頁面上不穩就單獨關掉、退回前一種做法：
+    pointer＝示範游標與按下效果（關：外框框住目標、停 0.8 秒再動作）；smooth_scroll＝平順捲動（關：瞬間捲到）；
+    typing＝逐步輸入（關：一次填入、停一下再送出）；shield＝隔離層（關：沒有隔離層）；faint_look＝淡外框（關：原本的粗框、不淡出）。"""
+    e = dict.fromkeys(EFFECTS, True)
+    e.update({k: bool(v) for k, v in (((rb.get("stage") or {}).get("effects")) or {}).items() if k in EFFECTS})
+    if (rb.get("stage") or {}).get("typing") == "instant":
+        e["typing"] = False
+    return e
+
+
 def crop_of(rb, st):
     """這一步要藏到舞台外的頁面部分（CSS px）：步驟的 crop > 劇本 stage.views[步驟 view] > 不裁。"""
     if st.get("crop") is not None:
@@ -788,8 +802,10 @@ class Look:
     能往上捲就捲（被切的那則從開頭顯示、目標仍完整）；捲了會把目標擠出去就請舞台用頁面底色蓋住殘段。
     全部只用唯讀的 get box／get count 和 scroll。"""
 
-    def __init__(self, br, ctl, align=None):
+    def __init__(self, br, ctl, align=None, effects=None):
         self.br, self.ctl, self.acct, self.sel = br, ctl, None, None
+        self.fx = dict.fromkeys(EFFECTS, True)
+        self.fx.update(effects or {})
         self.align_cfg, self.align_on, self.box, self.anchor, self._align_t = align, False, None, None, 0.0
         self.color = (align or {}).get("color")
         self.ptr, self.ptr_seq, self.press_seq, self.look_seq = None, 0, 0, 0
@@ -816,6 +832,8 @@ class Look:
     def point(self, x, y):
         """示範游標移到頁面上的 CSS 點；回移動秒數（依距離 0.3–0.9 秒；第一次 0.6 秒）。"""
         import math
+        if not self.fx["pointer"]:
+            return 0.0
         if self.ptr is None:
             dur = 0.6
         else:
@@ -828,6 +846,8 @@ class Look:
     def press(self, timeout=0.6):
         """按下的效果：發布後等舞台回報「已畫出來」（stage_ack.json）才回來，之後才送出真正的點擊——
         觀眾先看到按下、頁面才有反應（A22）。沒有舞台（--no-player）時最多等 timeout 秒。回暫停秒數。"""
+        if not self.fx["pointer"]:
+            return 0.0
         self.press_seq += 1
         self.ctl.publish(press=self.press_seq)
         ack = os.path.join(getattr(self.ctl, "dir", "") or ".", "stage_ack.json")
@@ -848,7 +868,7 @@ class Look:
         if not box:
             return None
         cfg = self.align_cfg or {}
-        lst = self._box(cfg["list"]) if cfg.get("list") and cfg.get("scroller") else None
+        lst = self._box(cfg["list"]) if cfg.get("list") and cfg.get("scroller") and self.fx["smooth_scroll"] else None
         if lst and lst[0] - 2 <= box[0] <= lst[0] + lst[2] and box[1] < lst[1] + lst[3] + 4000:
             top, bot = lst[1] + 8, lst[1] + lst[3] - 8
             delta = 0.0
@@ -871,6 +891,9 @@ class Look:
 
     def act(self, acct, sel, press):
         """動作的拍子：捲到目標 → 示範游標移過去（不畫外框，游標就是標示）→ 停 0.2 秒 → 點擊的話加按下效果。"""
+        if not self.fx["pointer"]:                           # 效果關掉：前一種做法——外框框住目標、停一下再動作
+            self.set(acct, sel, scroll=True)
+            return self.wait(0.8)
         self.acct, self.sel, self.box = acct, None, None
         self.ctl.publish(look=None)
         box = self.into_view(sel)
@@ -1313,7 +1336,8 @@ def execute(rb, mode, a):
     replay = (replay if os.path.isabs(replay) else os.path.join(rb["_dir"], replay)) if replay else None
     staged = mode == "live" and stage_on(rb)
     if staged:
-        br.look = Look(br, ctl, align=(rb.get("stage") or {}).get("align"))
+        br.look = Look(br, ctl, align=(rb.get("stage") or {}).get("align"), effects=effects_of(rb))
+        ctl.publish(effects=effects_of(rb))
         br.live = True
         ctl.publish(accounts=stage_accounts(rb, br), title=rb.get("title", ""), zoom=1.0, card=None)
     ctl.publish(steps_total=hi - lo, status="running", mode=mode, title=rb.get("title", ""),
