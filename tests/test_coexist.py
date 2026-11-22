@@ -203,6 +203,9 @@ def main():
         o, rc = setup("--user", "--sync", *cx)
         check("5 --sync 遇到沒標記的同名 skill → 回報拒絕、不動它", rc != 0 and not o.get("ok") and o.get("refused")
               and tree(os.path.join(cd, "skills", "errand-audit")) == snap_ea, o)
+    except Exception:   # 中途例外也要留下 FAIL 與原因（CI 只看 stdout，例外印在 stderr 會看不到）
+        import traceback
+        check("沒有未預期的例外", False, " | ".join(traceback.format_exc().strip().splitlines()[-4:]))
     finally:
         shutil.rmtree(td, ignore_errors=True)
     print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))

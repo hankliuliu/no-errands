@@ -188,9 +188,20 @@ def _recover_skill_swap(d, name):
         if _is_link(p) or not os.path.isfile(os.path.join(p, OWN_MARK)):
             continue   # 不是我們留下的，不碰
         if fn.startswith("." + name + ".old-") and not os.path.lexists(d):
-            os.replace(p, d)
+            _rename(p, d)
         else:
             shutil.rmtree(p)
+
+
+def _rename(src, dst, tries=40):
+    """資料夾改名；Windows 上剛複製好的檔案常被防毒或索引暫時開著 → 拒絕存取，重試最多約 10 秒。"""
+    for i in range(tries):
+        try:
+            return os.replace(src, dst)
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.25)
 
 
 def install_skill(skill_dst, name="no-errands"):
@@ -217,12 +228,12 @@ def install_skill(skill_dst, name="no-errands"):
         raise
     had_old = os.path.isdir(d)
     if had_old:
-        os.replace(d, old)
+        _rename(d, old)
     try:
-        os.replace(new, d)
+        _rename(new, d)
     except Exception:
         if had_old:
-            os.replace(old, d)
+            _rename(old, d)
         shutil.rmtree(new, ignore_errors=True)
         raise
     if had_old:
