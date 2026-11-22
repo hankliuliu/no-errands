@@ -8,7 +8,7 @@
   3 now.json 寫 status=closing → 舞台自己收掉（不留視窗）
 另外：預備清單卡（checklist）時講者按「停止」→ 舞台收掉。
 """
-import json, os, shutil, subprocess, sys, tempfile, time
+import json, os, shutil, subprocess, sys, tempfile, threading, time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SC = os.path.join(REPO, "skills", "no-errands", "scripts")
@@ -16,6 +16,35 @@ sys.path.insert(0, SC)
 import stage_layout as L  # noqa: E402
 
 R = []
+PROCS = []
+LOGDIR = tempfile.mkdtemp(prefix="ne-stage-logs-")
+
+
+def spawn(d, env):
+    """舞台行程：輸出寫檔（不接到 CI 的管線，免得 tee 等一個沒結束的子行程），最多活 40 秒。"""
+    lf = open(os.path.join(LOGDIR, "stage-%d.log" % len(PROCS)), "w")
+    p = subprocess.Popen([sys.executable, os.path.join(SC, "demo_stage.py"), d], env=dict(env, NE_STAGE_MAX_S="40"),
+                         stdin=subprocess.DEVNULL, stdout=lf, stderr=lf)
+    PROCS.append(p)
+    return p
+
+
+def kill_tree(p):
+    subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True)
+
+
+def watchdog(limit=180):
+    """整體逾時：時間到就收掉所有舞台行程、報 FAIL、結束（CI job 不會卡住）。"""
+    def fire():
+        print("FAIL 整體逾時（%d 秒）：收掉舞台行程" % limit, flush=True)
+        for p in PROCS:
+            kill_tree(p)
+        print("FAILED (timeout)", flush=True)
+        os._exit(1)
+    t = threading.Timer(limit, fire)
+    t.daemon = True
+    t.start()
+    return t
 
 
 def check(n, c, d=""):
@@ -43,6 +72,7 @@ def main():
     if os.name != "nt" or "--i-am-ci" not in sys.argv:
         print("SKIP 舞台視窗測試：只在 Windows CI 跑（要 --i-am-ci）")
         return 0
+    wd = watchdog()
     two_lines = "它只根據院內說明來寫，依據列在下面；核准的人不能確認寄出，所以每一封回覆至少經過兩個人。"
     for W, H in L.RESOLUTIONS:
         d = tempfile.mkdtemp(prefix="ne-stage-")
@@ -51,7 +81,7 @@ def main():
                    "step_index": 8, "steps_total": 13, "beat": {"text": two_lines, "i": 2, "n": 3}, "accounts": {}},
                   open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
         env = dict(os.environ, NE_STAGE_SCREEN="%dx%d" % (W, H), NE_STAGE_GEOM=geom, NE_STAGE_NO_HOTKEYS="1")
-        p = subprocess.Popen([sys.executable, os.path.join(SC, "demo_stage.py"), d], env=env)
+        p = spawn(d, env)
         g = wait(lambda: rd(geom).get("caption_text") and rd(geom))
         lines = L.caption_lines(two_lines, W, H)
         check("%d×%d：字幕估算兩行以內（%d 行）" % (W, H), lines <= 2, lines)
@@ -65,7 +95,7 @@ def main():
             p.wait(10)
             closed = True
         except subprocess.TimeoutExpired:
-            p.kill(); closed = False
+            kill_tree(p); closed = False
         check("%d×%d：status=closing → 舞台自己收掉" % (W, H), closed)
         shutil.rmtree(d, ignore_errors=True)
     # 預備清單沒過、講者按停止 → 收掉
@@ -73,15 +103,24 @@ def main():
     json.dump({"card": "checklist", "card_data": {"heading": "還沒準備好", "items": [{"name": "連線到示範系統", "state": "fail",
                                                                               "say": "連不到示範系統：確認網路後再雙擊一次。"}]}},
               open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
-    p = subprocess.Popen([sys.executable, os.path.join(SC, "demo_stage.py"), d], env=dict(os.environ, NE_STAGE_NO_HOTKEYS="1"))
+    p = spawn(d, dict(os.environ, NE_STAGE_NO_HOTKEYS="1"))
     time.sleep(3)
     json.dump({"state": "stopped", "advance": "auto", "next_seq": 0}, open(os.path.join(d, "control.json"), "w"))
     try:
         p.wait(10)
         closed = True
     except subprocess.TimeoutExpired:
-        p.kill(); closed = False
+        kill_tree(p); closed = False
     check("預備清單沒過：講者按「停止」→ 舞台收掉", closed)
+    wd.cancel()
+    for p in PROCS:
+        if p.poll() is None:
+            kill_tree(p)
+    for fn in sorted(os.listdir(LOGDIR)):              # 舞台的錯誤輸出（如果有）印出來，CI 上才看得到
+        txt = open(os.path.join(LOGDIR, fn), encoding="utf-8", errors="replace").read().strip()
+        if txt:
+            print("--- %s ---" % fn)
+            print(txt[-1500:])
     shutil.rmtree(d, ignore_errors=True)
     print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
     return 0 if all(R) else 1

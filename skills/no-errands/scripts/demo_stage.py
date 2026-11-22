@@ -212,6 +212,8 @@ class Stage:
         self.menu.add_command(label="停止示範", command=self.stop)
         self.hotkeys()
         r.after(300, self.take_front)                    # 上場時舞台取得前景（背板蓋住一切；勿擾也靠這個）
+        if os.environ.get("NE_STAGE_MAX_S"):             # 測試：最多活這麼久（CI 不會因為一個沒關的視窗卡住整個 job）
+            r.after(int(float(os.environ["NE_STAGE_MAX_S"]) * 1000), self.root.destroy)
         self.tick()
 
     def take_front(self):
