@@ -25,7 +25,7 @@ LOGDIR = tempfile.mkdtemp(prefix="ne-stage-logs-")
 def spawn(d, env):
     """舞台行程：輸出寫檔（不接到 CI 的管線，免得 tee 等一個沒結束的子行程），最多活 40 秒。"""
     lf = open(os.path.join(LOGDIR, "stage-%d.log" % len(PROCS)), "w")
-    p = subprocess.Popen([sys.executable, os.path.join(SC, "demo_stage.py"), d], env=dict(env, NE_STAGE_MAX_S="40"),
+    p = subprocess.Popen([sys.executable, os.path.join(SC, "demo_stage.py"), d], env=dict({"NE_STAGE_MAX_S": "40"}, **env),
                          stdin=subprocess.DEVNULL, stdout=lf, stderr=lf)
     PROCS.append(p)
     return p
@@ -206,7 +206,9 @@ def real_chrome_checks(stage_with):
     now = {"card": None, "status": "running", "account": "a", "role": "第一線人員", "role_color": "#2f7de1", "section": "測試",
            "step_index": 2, "steps_total": 13, "crop": crop, "zoom": 1.0, "beat": {"text": beat, "i": 1, "n": 2},
            "mask": {"box": [289, 150, 300, 30], "color": "#ff00ff"}, "accounts": accts}
-    d, p = stage_with(now, None, {"NO_ERRANDS_HOME": work, "NE_STAGE_GEOM": geom})
+    # 這個情境有兩組 20 輪的測試：舞台要活得比預設的 40 秒久（CI 45060724781／45062678450 都在第 5 輪失敗——
+    # 是舞台到了 40 秒自己關掉，不是墊片漏點擊）
+    d, p = stage_with(now, None, {"NO_ERRANDS_HOME": work, "NE_STAGE_GEOM": geom, "NE_STAGE_MAX_S": "600"})
     r = fit_ok(d, False)
     check("A1 上台：頁面底邊貼齊螢幕底邊（差 ≤3）、四邊沒有空白帶", r and r.get("fit", {}).get("ok"), r)
     check("A19 視窗實測和要求的差距 ≤3 像素", r and r.get("placement_error") is not None and r["placement_error"] <= 3, r)
@@ -300,7 +302,7 @@ def real_chrome_checks(stage_with):
                 pid_ = _wt.DWORD(); u.GetWindowThreadProcessId(hw_, _ct.byref(pid_))
                 out_.append("%s%s" % (cb_.value, "(舞台)" if pid_.value == p.pid else ""))
             hw_ = u.GetWindow(hw_, 2)
-        return {"at_point": out_, "stage_z": rd(geom).get("z_order")}
+        return {"at_point": out_, "stage_alive": p.poll() is None, "stage_z": rd(geom).get("z_order")}
 
     def stress_rounds(n):
         """同一次執行重複 n 輪：三種位置的拖動、按兩下回預設、× 收起再用控制列的「字幕」打開；每一步都檢查，
