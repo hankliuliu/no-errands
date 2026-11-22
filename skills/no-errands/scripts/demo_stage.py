@@ -68,8 +68,8 @@ def write_control(run_dir, **kw):
 if os.name == "nt":
     u32 = ctypes.windll.user32
     EnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW = 0x0010, 0x0004, 0x0040
-    HWND_TOP = 0
+    SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SWP_NOMOVE, SWP_NOSIZE = 0x0010, 0x0004, 0x0040, 0x0002, 0x0001
+    HWND_TOP, HWND_TOPMOST, HWND_NOTOPMOST = 0, -1, -2
 
 
 def _cls(h):
@@ -82,6 +82,14 @@ def _rect(h):
     r = wintypes.RECT()
     u32.GetWindowRect(h, ctypes.byref(r))
     return r.left, r.top, r.right - r.left, r.bottom - r.top
+
+
+def profile_of_cmdline(cl):
+    """Chrome 命令列裡的 --user-data-dir。參數可能整個包在引號裡（agent-browser 這樣啟動），也可能沒有引號。"""
+    if "--user-data-dir=" not in (cl or ""):
+        return None
+    v = cl.split("--user-data-dir=", 1)[1]
+    return v[1:].split('"', 1)[0] if v.startswith('"') else v.split('"', 1)[0].split(" --", 1)[0].strip()
 
 
 def chrome_pids(profile):
@@ -98,11 +106,10 @@ def chrome_pids(profile):
     pids = set()
     for line in out.splitlines():
         pid, _, cl = line.partition("\t")
-        if "--type=" in cl or "--user-data-dir=" not in cl:
+        if "--type=" in cl:
             continue
-        v = cl.split("--user-data-dir=", 1)[1]
-        v = v[1:].split('"', 1)[0] if v.startswith('"') else v.split(" --", 1)[0].strip()
-        if os.path.normcase(os.path.abspath(v)) == want and pid.strip().isdigit():
+        v = profile_of_cmdline(cl)
+        if v and os.path.normcase(os.path.abspath(v)) == want and pid.strip().isdigit():
             pids.add(int(pid))
     return pids
 
@@ -162,9 +169,11 @@ class Stage:
             W, H = (int(v) for v in os.environ["NE_STAGE_SCREEN"].split("x"))
         self.W, self.H = W, H
         self.lay = lay = L.layout(W, H)
-        # 背板（不置頂：瀏覽器擺在它上面）
+        # 背板：置頂（不靠搶前景——從捷徑帶起來的行程搶不到前景，第一次排練別的程式和工作列蓋在背板上）。
+        # 上下順序每秒重排一次：背板 → 台上的瀏覽器 → 角色帶、字幕帶、外框。
         r.overrideredirect(True)
         r.geometry("%dx%d+0+0" % (W, H))
+        r.attributes("-topmost", True)
         r.configure(bg=BG)
         self.card = tk.Canvas(r, bg=BG, highlightthickness=0, width=W, height=H)
         self.card.pack(fill="both", expand=True)
@@ -306,9 +315,10 @@ class Stage:
                 continue
             if acct != active:
                 if self.placed.get(acct) != "off":
-                    u32.SetWindowPos(h, 1, OFF, OFF, 0, 0, SWP_NOACTIVATE | 0x0001)   # HWND_BOTTOM、保留大小
+                    u32.SetWindowPos(h, HWND_NOTOPMOST, OFF, OFF, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE)   # 下台：移到螢幕外
                     self.placed[acct] = "off"
                 continue
+            self.active_hwnd = h
             crop = now.get("crop") or {}
             key = json.dumps([crop, now.get("zoom"), self.W, self.H])
             if self.placed.get(acct) == key:
@@ -318,7 +328,7 @@ class Stage:
                 continue
             shell = (cr[0] - wr[0], cr[1] - wr[1], (wr[0] + wr[2]) - (cr[0] + cr[2]), (wr[1] + wr[3]) - (cr[1] + cr[3]))
             x, y, w, hh = L.browser_rect(self.lay["stage"], shell, crop, float(now.get("zoom") or 1.5), dpr_of(h))
-            u32.SetWindowPos(h, HWND_TOP, x, y, w, hh, SWP_NOACTIVATE | SWP_SHOWWINDOW)
+            u32.SetWindowPos(h, HWND_TOPMOST, x, y, w, hh, SWP_NOACTIVATE | SWP_SHOWWINDOW)
             self.placed[acct] = key
             self.dpr = dpr_of(h)
 
@@ -443,11 +453,27 @@ class Stage:
         except Exception:
             pass
         self.draw_look(now)
-        for w in (self.band, self.capw):
-            w.attributes("-topmost", True)
+        if time.time() - getattr(self, "_z_t", 0) >= 1.0:
+            self.restack()
         if os.environ.get("NE_STAGE_GEOM"):
             self.dump_geom()
         self.root.after(200, self.tick)
+
+    def restack(self):
+        """實際的上下順序：背板 → 台上的瀏覽器 → 角色帶、字幕帶、外框（都在置頂層；工作列、通知被壓在下面）。"""
+        self._z_t = time.time()
+        try:
+            self.root.attributes("-topmost", True)
+            self.root.lift()
+            h = getattr(self, "active_hwnd", None)
+            if os.name == "nt" and h and not self.now.get("card") and u32.IsWindow(h):
+                u32.SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+            for w in [self.band, self.capw] + self.edges:
+                if w.winfo_viewable():
+                    w.attributes("-topmost", True)
+                    w.lift()
+        except Exception:
+            pass
 
     def dump_geom(self):
         self.root.update_idletasks()
