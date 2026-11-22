@@ -17,9 +17,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import policy  # noqa: E402
 import nowin  # noqa: E402,F401
 
-STATUS = {"running": "執行中", "waiting_system": "等待系統回應 {w} 秒（伺服器的模型仍在處理，暫停不了）",
-          "paused": "已暫停", "waiting_next": "等你按「下一步」", "failed": "這一步沒有完成——看備案",
+STATUS = {"running": "執行中", "waiting_system": "等待{label}：已等 {w} 秒{exp}",
+          "paused": "已暫停", "waiting_next": "等你按「下一步」",
+          "failed": "這一步沒有完成——可以按「備案畫面」，或按「下一步」跳過",
+          "staging": "準備畫面中…", "ready": "準備好了——按「下一步」開始",
           "done": "示範結束", "stopped": "已停止"}
+
+
+def status_text(st, now):
+    exp = now.get("expect_s")
+    return STATUS.get(st, st).format(w=now.get("waited_s", 0), label=now.get("wait_label") or "系統回應",
+                                      exp=("（通常約 %d 秒）" % exp) if exp else "")
+
+
+def is_slow(now):
+    """等待超過這一步的上限（依排練數據設定）：字幕換成講者可以念的話，備案按鈕亮起來。"""
+    return now.get("status") == "waiting_system" and bool(now.get("slow_s")) and \
+        float(now.get("waited_s") or 0) >= float(now["slow_s"])
 
 
 def read_json(p, default=None):
@@ -99,8 +113,8 @@ class Player:
         self.b_stop = mk("⏹ 停止", self.stop)
         self.b_home = mk("⌂ 歸位", self.home)
         self.b_planb = mk("備案畫面", self.planb)
-        for b in (self.b_pause, self.b_next, self.b_mode, self.b_stop, self.b_home):
-            b.pack(side="left", padx=3)
+        for b in (self.b_pause, self.b_next, self.b_mode, self.b_planb, self.b_stop, self.b_home):
+            b.pack(side="left", padx=3)                   # 備案畫面任何一步都按得到
         # 拖動：按住空白處（不是按鈕）整塊移動
         for w in (r, body, mid, self.left, self.cap, self.stat, self.bar, btns):
             w.bind("<ButtonPress-1>", self.drag_start)
@@ -113,20 +127,27 @@ class Player:
         r.update_idletasks()
         self.no_activate()
         self.tick()
-        if os.environ.get("NE_PLAYER_GEOM"):              # 測試用：寫出按鈕與字幕的螢幕座標
-            r.after(800, self.dump_geom)
+        # 驗收用：寫出按鈕與字幕的螢幕座標。環境變數 NE_PLAYER_GEOM，或執行資料夾裡有 geom.on
+        # （從檔案總管雙擊啟動時帶不了環境變數）→ 寫到 <執行資料夾>/player-geom.json
+        self.geom_path = os.environ.get("NE_PLAYER_GEOM")
+        r.after(800, self.dump_geom)
 
     def dump_geom(self):
+        if not self.geom_path and os.path.exists(os.path.join(self.run_dir, "geom.on")):
+            self.geom_path = os.path.join(self.run_dir, "player-geom.json")
+        if not self.geom_path:
+            self.root.after(1000, self.dump_geom)
+            return
         g = {}
         for name, w in (("pause", self.b_pause), ("next", self.b_next), ("stop", self.b_stop), ("home", self.b_home),
-                        ("caption", self.cap)):
+                        ("planb", self.b_planb), ("caption", self.cap)):
             g[name] = [w.winfo_rootx() + w.winfo_width() // 2, w.winfo_rooty() + w.winfo_height() // 2]
         g["window"] = [self.root.winfo_rootx(), self.root.winfo_rooty(), self.root.winfo_width(), self.root.winfo_height()]
         g["caption_text"] = self.cap.cget("text")
-        tmp = os.environ["NE_PLAYER_GEOM"] + ".tmp"          # 先寫暫存再替換：讀的一方不會讀到一半
+        tmp = self.geom_path + ".tmp"                      # 先寫暫存再替換：讀的一方不會讀到一半
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(g, f, ensure_ascii=False)
-        os.replace(tmp, os.environ["NE_PLAYER_GEOM"])
+        os.replace(tmp, self.geom_path)
         self.root.after(500, self.dump_geom)
 
     # ---------- 視窗位置
@@ -220,15 +241,17 @@ class Player:
 
     def stop(self):
         st = self.now.get("status")
-        if st in ("done", "stopped", "failed"):
+        if st in ("done", "stopped"):
             self.root.destroy()
             return
         write_control(self.run_dir, state="stopped")
 
     def planb(self):
-        p = self.now.get("planb")
-        if p and os.path.exists(p):
-            open_file(p)
+        """這一步上一次成功排練的畫面；沒有就開整份回放頁。"""
+        for p in (self.now.get("planb"), self.now.get("replay")):
+            if p and os.path.exists(p):
+                open_file(p)
+                return
 
     # ---------- 畫面更新
     def tick(self):
@@ -249,18 +272,18 @@ class Player:
             if time.time() - self.cap_t0 >= float(caps[self.cap_i % len(caps)].get("s", 6)) and self.cap_i < len(caps) - 1:
                 self.cap_i += 1
                 self.cap_t0 = time.time()
-        self.cap.configure(text=caps[min(self.cap_i, len(caps) - 1)].get("text", ""))
+        slow = is_slow(now)
+        self.cap.configure(text=now.get("slow_say") if slow and now.get("slow_say") else
+                           caps[min(self.cap_i, len(caps) - 1)].get("text", ""))
         i, n = now.get("step_index") or 0, now.get("steps_total") or 0
         self.left.configure(text="%s/%s\n%s" % (i, n, now.get("role") or ""))
-        self.stat.configure(text=STATUS.get("paused" if paused and st not in ("done", "stopped") else st, st)
-                            .format(w=now.get("waited_s", 0)))
+        self.stat.configure(text=status_text("paused" if paused and st not in ("done", "stopped") else st, now))
         self.b_pause.configure(text="▶ 繼續" if paused else "⏸ 暫停")
         self.b_mode.configure(text="逐步" if ctl.get("advance") == "step" else "自動")
-        self.b_next.configure(bg=self.acc if st == "waiting_next" else "#2a2d35")
-        if st in ("done", "stopped", "failed"):
+        self.b_next.configure(bg=self.acc if st in ("waiting_next", "ready") else "#2a2d35")
+        self.b_planb.configure(bg="#b8860b" if (st == "failed" or slow) else "#2a2d35")
+        if st in ("done", "stopped"):
             self.b_stop.configure(text="✕ 關閉")
-        if st == "failed" and now.get("planb") and not self.b_planb.winfo_ismapped():
-            self.b_planb.pack(side="left", padx=3)
         w = self.bar.winfo_width()
         self.bar.delete("all")
         if n:
