@@ -267,7 +267,7 @@ def main():
         check("B3-8 probe 收尾：開出來的記事本視窗已關掉", o.get("closed_windows", 0) >= 1 and o.get("windows_left_open") == 0
               and events("notes-close") - c0 == 1, o)
         # 記事本開著時 LINE 剛好跳出別的有標題視窗（像來電）：兩個新視窗 → 都不關（關掉來電可能等於拒接），照實回報
-        trigger({"op": "callin", "ms": 300})
+        trigger({"op": "callonnotes"})
         o = cg("probe", "--chat", "Kilo", "--view", "notes")
         check("B3-8 probe 期間跳出不相干的視窗：不關、照實回報 windows_left_open", o.get("ok") and o.get("windows_left_open", 0) >= 1
               and events("call-closed") == 0 and events("call-shown") == 1, o)
@@ -278,10 +278,11 @@ def main():
                 ctypes.windll.user32.PostMessageW(hw, 0x0010, 0, 0)
         time.sleep(1.0)
         cg("close")
+        n1 = events("notes-open")
         cg("open", "--chat", "Delta Friends", "--expect", cg("locate", "--chat", "Delta Friends").get("fingerprint") or "x")
         o = cg("probe", "--chat", "Delta Friends", "--view", "notes")
         check("B3-8 probe 不在白名單 → 拒絕、記事本沒被點開", o.get("refused") is True and "白名單" in o.get("error", "")
-              and events("notes-open") - n0 == 1, o)
+              and events("notes-open") == n1, (o, events("notes-open"), n1))
         cg("close")
         check("B3-8 違規偵測器為空", violations() == [], violations())
 
