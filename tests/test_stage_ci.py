@@ -81,7 +81,12 @@ html,body{margin:0;height:100%;background:#ffffff;font:16px sans-serif}
 
 
 def shot_png(path):
-    """CI 測試機的整個螢幕 → PNG（純 stdlib；這是測試機，不是使用者的螢幕）。回傳 (W, H, rgb bytes)。"""
+    """CI 測試機的整個螢幕 → PNG（純 stdlib）。回傳 (W, H, rgb bytes)。
+    只在 GitHub Actions 上擷（GITHUB_ACTIONS=true）：專案紅線是不擷使用者的整個螢幕——就算有人在本機加
+    --i-am-ci 跑這支測試，這裡也不擷，回 None（依賴擷圖的像素檢查跟著跳過，會印 SKIP）。"""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        print("SKIP 擷圖 %s：不在 CI 測試機上（不擷使用者的螢幕）" % os.path.basename(path), flush=True)
+        return None
     import ctypes, struct, zlib
     from ctypes import wintypes
     u, g = ctypes.windll.user32, ctypes.windll.gdi32
@@ -209,14 +214,14 @@ def real_chrome_checks(stage_with):
           cr and abs(cr[1] - (lay["stage"][1] - 84 * k)) <= 3 and abs(cr[0] - (lay["stage"][0] - 269 * k)) <= 3, cr)
     g = wait(lambda: rd(geom).get("caption_plate") and rd(geom), 10) or {}
     img = shot_png("stage-shot-2-onstage.png")
-    check("A1 畫面：螢幕最底下一列是頁面的頁尾（綠色），不是黑帶",
+    img and check("A1 畫面：螢幕最底下一列是頁面的頁尾（綠色），不是黑帶",
           all(px_at(img, x, H - 2)[1] > 150 and px_at(img, x, H - 2)[0] < 60 for x in (W * 0.4, W * 0.6, W * 0.9)),
           [px_at(img, x, H - 2) for x in (W * 0.4, W * 0.6, W * 0.9)])
     pl, tw = g.get("caption_plate"), g.get("caption_textwin")
     check("A2 字幕兩層（底板、字）在同一個位置", pl and pl == tw, (pl, tw))
     check("A2 字幕底板有圓角（設了視窗區域）", g.get("caption_rgn"), g.get("caption_rgn"))
     check("A2 字幕塊完全落在頁面範圍內", pl and cr and L.inside(pl, cr), (pl, cr))
-    if pl:
+    if pl and img:
         x0, y0, bw, bh = pl
         edge = px_at(img, x0 + 4, y0 + bh // 2)                 # 底板的內距（沒有字）：白色頁面透過 62% 黑
         check("A2 底板半透明：看得到底下的頁面（白底透過來是灰，不是全黑）", all(50 <= c <= 150 for c in edge), edge)
@@ -226,7 +231,7 @@ def real_chrome_checks(stage_with):
         check("A2 字完全不透明（白字最亮處 ≥240）", mx >= 240, mx)
     mr = g.get("mask_rect")
     check("遮罩畫在舞台上指定的位置", mr and L.inside(mr, lay["stage"]), mr)
-    if mr:
+    if mr and img:
         c = px_at(img, mr[0] + mr[2] // 2, mr[1] + mr[3] // 2)
         check("遮罩的顏色是指定的頁面底色", abs(c[0] - 255) < 20 and c[1] < 40 and abs(c[2] - 255) < 20, c)
     # 3 拖動：兩層一起動
