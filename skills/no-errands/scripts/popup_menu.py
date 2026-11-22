@@ -356,7 +356,10 @@ def wheel(hwnd, sx, sy, notches):
     wr = wt.RECT(); u32.GetWindowRect(hwnd, ctypes.byref(wr))
     if not (wr.left <= sx < wr.right and wr.top <= sy < wr.bottom):
         raise CoordMismatch("滾輪座標不在視窗裡（%s 不在 %s）" % ([sx, sy], [wr.left, wr.top, wr.right, wr.bottom]))
-    wparam = ((120 * notches) & 0xFFFF) << 16
+    delta = int(round(120 * notches))   # 可以小於一格（高解析度滾輪；Qt 依比例捲）
+    if delta == 0 or abs(delta) > 30 * 120:
+        raise CoordMismatch("滾輪量不合理（%s 格）" % notches)
+    wparam = (delta & 0xFFFF) << 16
     lparam = ((sy & 0xFFFF) << 16) | (sx & 0xFFFF)
     # 明確包成 WPARAM／LPARAM：往下捲時 wparam 高位是負數的補數（> 2^31），交給 ctypes 預設的 int 轉換會溢位
     return bool(u32.PostMessageW(wt.HWND(hwnd), 0x020A, wt.WPARAM(wparam), wt.LPARAM(lparam)))

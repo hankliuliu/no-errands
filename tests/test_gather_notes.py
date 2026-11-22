@@ -70,7 +70,7 @@ try:
     s1 = [N("Ann", "11/22 09:00", "第一則：明天的會議改到下午兩點，請大家準時"),
           N("Bob", "11/21 18:30", "第二則記事", truncated=True),
           N("Ann", "11/20 12:00", "", images=2),
-          {"cut_bottom": True, "author": "Cat", "text": "第三則的上半", "truncated": False, "images": 0}]
+          {"cut_bottom": True, "author": "Cat", "text": "第三則的全文", "truncated": False, "images": 0}]
     r = gn.add(tdir, "20261123-100000/01", s1, 4)   # 被下緣切到的那則開頭看得到，也算
     check("2 add 通過：3 則完整＋1 則被下緣切到（開頭可見，算進 visible）、則數對、圖刪掉", r["ok"] and r["notes"] == 3 and r["cut"] == 1 and r["count_ok"]
           and not os.path.exists(os.path.join(rdir, "01.png")), r)
@@ -124,6 +124,24 @@ try:
     gus = next(n for n in gn.load_notes(tdir) if n["author"] == "Gus")
     check("3c 相鄰兩張同一則全文不一致 → 待人看、兩個版本都留", f["overlap_mismatch"] == 1 and gus["needs_review"] and gus.get("alt_text"), f)
 
+    # 3d 被切在兩張之間的同一則：合成一則（作者與開頭取前一張、日期取後一張、重疊只留一次）；中段碎片標被切開
+    rdir6 = make_run(tdir, "20261123-140000", 3, stop="bottom")
+    gn.add(tdir, "20261123-140000/01", [N("Hal", "11/23 06:00", "完整的一則"),
+                                         {"author": "Ivy", "text": "附很多照片的一則，開頭在這裡", "truncated": False, "images": 3, "cut_bottom": True}], 2)
+    gn.add(tdir, "20261123-140000/02", [{"posted_at": "11/22 21:00", "text": "開頭在這裡", "truncated": False, "images": 6, "cut_top": True},
+                                         {"author": "Jo", "text": "中段被切開又沒有下一段", "truncated": False, "images": 0, "cut_bottom": True}], 1)
+    gn.add(tdir, "20261123-140000/03", [N("Kay", "11/22 20:00", "第三張的完整一則")], 1)
+    f = gn.finish(tdir)
+    ns = gn.load_notes(tdir)
+    ivy = next((n for n in ns if n["author"] == "Ivy"), None)
+    check("3d 被切開的同一則合成一則：作者取前一張、日期取後一張、重疊只留一次、附圖取多的那張",
+          ivy and ivy["text"] == "附很多照片的一則，開頭在這裡" and ivy["posted_at"] == "2026-11-22 21:00" and ivy["images"] == 6
+          and "兩張拼起來" in ivy["source"] and f["split_merged"] == 1, (ivy, f))
+    jo = next((n for n in ns if n["author"] == "Jo"), None)
+    check("3d 中段拼不起來的碎片：照實留下、標被切開未完整（不默默丟掉）", jo and jo["truncated"] and jo.get("split_incomplete")
+          and f["split_incomplete"] == 1, (jo, f))
+    check("3d 未收清單把拼不起來的那則寫成「被切開、未完整」", "被切開、未完整" in "\n".join(gn.missing_section(tdir)))
+
     # 5 過期
     old = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - 25 * 3600))
     rdir5 = make_run(tdir, "20261122-090000", 2, created=old)
@@ -133,10 +151,10 @@ try:
     # 6 給人看的
     line = gn.overview_line(tdir)
     check("6 總覽那一行：AI 轉寫、內文未完整、待人看、過期那段、留言不收",
-          all(x in line for x in ("由 AI 看圖轉寫；原文以 LINE 為準", "內文未完整 1 則", "待人看", "未收", "留言不收")), line)
+          all(x in line for x in ("由 AI 看圖轉寫；原文以 LINE 為準", "內文未完整 2 則", "待人看", "未收", "留言不收")), line)
     sec = "\n".join(gn.missing_section(tdir))
     check("6 未收清單記事本一節：來源說明、留言不收、內文未完整、附圖照片規則、待人看",
-          all(x in sec for x in ("AI 看圖轉寫", "留言不收", "### 內文未完整（1）", "記事本內的附圖", "照片預設不收", "### 待人看")), sec[:400])
+          all(x in sec for x in ("AI 看圖轉寫", "留言不收", "### 內文未完整（2）", "記事本內的附圖", "照片預設不收", "### 待人看")), sec[:400])
 finally:
     shutil.rmtree(td, ignore_errors=True)
 

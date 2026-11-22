@@ -254,6 +254,64 @@ def add(tdir, shot, items, visible, known_notes=None):
                      "notes pending 看下一張" if left else "這一輪轉完了：notes finish")}
 
 
+SOURCE_SPLIT = SOURCE + "；這一則被切在兩張圖之間，由兩張拼起來"
+
+
+def _join_overlap(a, b):
+    """前一張看到的內文 a、後一張看到的內文 b：相鄰兩張重疊的那段只留一次（找 a 的結尾＝b 的開頭的最長重疊）。"""
+    a, b = (a or "").rstrip(), (b or "").lstrip()
+    if not a or not b:
+        return a or b
+    for k in range(min(len(a), len(b)), 0, -1):
+        if a.endswith(b[:k]):
+            return a + b[k:]
+    return a + "\n" + b
+
+
+def _merge_splits(per, rep):
+    """同一輪相鄰兩張：前一張最後一則 cut_bottom、後一張第一則 cut_top → 同一則記事被切開，合成一則
+    （作者與開頭取前一張、日期取後一張）。合不起來的中段碎片照實留成「被切開、未完整」，不默默丟掉。
+    第一張開頭的 cut_top（上一輪的延續）與最後一張結尾的 cut_bottom（下一輪接續會再拍到）不算。"""
+    for i in range(len(per)):
+        s, rows = per[i]
+        if i + 1 < len(per) and rows and rows[-1].get("cut_bottom"):
+            s2, rows2 = per[i + 1]
+            if rows2 and rows2[0].get("cut_top"):
+                a, b = rows[-1], rows2[0]
+                cap = datetime.datetime.strptime(s2["ts"], "%Y-%m-%dT%H:%M:%S")
+                raw = b.get("posted_at_raw") or a.get("posted_at_raw") or ""
+                when, guessed = norm_time(raw, cap) if raw else (None, False)
+                m = {"author": a.get("author") or b.get("author") or "", "posted_at": when, "posted_at_raw": raw,
+                     "posted_at_guessed": guessed, "text": _join_overlap(a.get("text"), b.get("text")),
+                     "truncated": bool(a.get("truncated") or b.get("truncated")),
+                     "images": max(a.get("images") or 0, b.get("images") or 0),
+                     "stickers": max(a.get("stickers") or 0, b.get("stickers") or 0), "split": True}
+                m["key"] = note_key(m["author"], when or raw, m["text"], m["images"])
+                rows.pop()
+                rows2[0] = m
+                rep["split_merged"] += 1
+    for i, (s, rows) in enumerate(per):
+        for j, r in enumerate(rows):
+            if "key" in r:
+                continue
+            first_top = i == 0 and j == 0 and r.get("cut_top")
+            last_bottom = i == len(per) - 1 and j == len(rows) - 1 and r.get("cut_bottom")
+            if first_top or last_bottom:
+                continue
+            # 相鄰那張已經有這一則的完整版本（重疊拍到了）：碎片已被涵蓋，不另記
+            frag = norm_text(r.get("text"))
+            near = [x for k in (i - 1, i + 1) if 0 <= k < len(per) for x in per[k][1] if "key" in x]
+            if frag and any(norm_text(x.get("text")).find(frag) >= 0 and (not r.get("author") or norm_text(x.get("author")) == norm_text(r.get("author")))
+                            for x in near):
+                rep["split_covered"] = rep.get("split_covered", 0) + 1
+                continue
+            # 中段合不起來的碎片：照實留下看得到的部分，標「被切開、未完整」
+            r.update({"truncated": True, "split_incomplete": True})
+            r["key"] = note_key(r.get("author") or "", r.get("posted_at") or r.get("posted_at_raw") or "", r.get("text") or "",
+                                r.get("images") or 0)
+            rep["split_incomplete"] += 1
+
+
 def finish(tdir, title=None):
     """把轉完的 run 併進 notes.jsonl：去重、重疊一致性、穩定編號；還沒轉的張（整張已收過之後的）標成重複、刪掉。
     回數字。run 的資料夾整個刪掉（裡面只剩轉寫暫存）。"""
@@ -261,7 +319,7 @@ def finish(tdir, title=None):
     notes = load_notes(tdir)
     st = load_state(tdir)
     rep = {"runs": 0, "shots_done": 0, "shots_dup": 0, "new_notes": 0, "overlap_pairs": 0, "overlap_mismatch": 0,
-           "count_mismatch_shots": 0, "edge_cut_dropped": 0}
+           "count_mismatch_shots": 0, "edge_cut_dropped": 0, "split_merged": 0, "split_incomplete": 0}
     for rdir, man in runs(tdir):
         shots = man.get("shots", [])
         if any(s.get("status") == "pending" for s in shots) and not any(s.get("status") == "done" for s in shots):
@@ -278,6 +336,7 @@ def finish(tdir, title=None):
             elif s.get("status") == "pending":
                 s["status"] = "dup"   # 前面已經整張都是收過的：不轉
                 rep["shots_dup"] += 1
+        _merge_splits(per, rep)
         flagged = set()
         for (sa, ra), (sb, rb) in zip(per, per[1:]):   # 相鄰兩張重疊：同一個鍵的全文要一致
             ka = {r["key"]: r for r in ra if "key" in r}
@@ -293,7 +352,7 @@ def finish(tdir, title=None):
             for r in rows:
                 if "key" not in r:
                     continue
-                cand = dict(r, run=man["run"], shot=s["n"], source=SOURCE, needs_review=r["key"] in flagged or not s.get("count_ok", True),
+                cand = dict(r, run=man["run"], shot=s["n"], source=SOURCE_SPLIT if r.get("split") else SOURCE, needs_review=r["key"] in flagged or not s.get("count_ok", True),
                             first_seen=time.strftime("%Y-%m-%d"))
                 for k in ("cut_top", "cut_bottom"):
                     cand.pop(k, None)
@@ -312,7 +371,8 @@ def finish(tdir, title=None):
         st["last_run"] = {"run": man["run"], "stop": man.get("stop"), "shots": len(shots), "date": man["created"][:10]}
         if man.get("stop") in ("cap", "timeout", "user_input"):
             st["older_not_captured"] = True
-            st["resume_skip_notches"] = max(0, int(man.get("notches_total") or 0) - 1)
+            # 接續時先捲到「最後一張之前一步」的位置，讓新一輪的第一張和上一輪最後一張重疊
+            st["resume_skip_notches"] = round(max(0.0, float(man.get("notches_total") or 0) - float(man.get("last_step") or 1)), 3)
             if dated:
                 st["oldest_captured"] = min(dated)[:10]
         elif man.get("stop") == "bottom":
@@ -394,6 +454,7 @@ def missing_section(tdir, notes=None):
     if st.get("expired_shots"):
         L += ["- 有一段記事本擷取後沒轉完（%d 張圖過期清掉），那一段未收。" % st["expired_shots"], ""]
     trunc = [n for n in notes if n.get("truncated")]
+    why = lambda n: "被切開、未完整" if n.get("split_incomplete") else "內文未完整"
     review = [n for n in notes if n.get("needs_review")]
     imgs = [n for n in notes if n.get("images")]
     # 顯示用原文（只把換行與連續空白收成一格，不做全形半形轉換）；編號寫成「記事 N」，和附件的 #N 分開
@@ -401,8 +462,8 @@ def missing_section(tdir, notes=None):
     row = lambda n, extra: "| 記事 %d | %s | %s | %s | %s |" % (n["no"], (n.get("posted_at") or n.get("posted_at_raw") or "")[:16],
                                                              n.get("author") or "", (show(n.get("text"))[:30] or "（無文字）"), extra)
     if trunc:
-        L += ["### 內文未完整（%d）" % len(trunc), "", "畫面上只顯示前段（要按「顯示更多」才看得到全文，工具不按）。", "",
-              "| 編號 | 時間 | 作者 | 開頭 | 說明 |", "|---|---|---|---|---|"] + [row(n, "內文未完整") for n in trunc] + [""]
+        L += ["### 內文未完整（%d）" % len(trunc), "", "畫面上只顯示前段（要按「顯示更多」才看得到全文，工具不按）；或這一則被切在兩張圖之間、拼不起來。", "",
+              "| 編號 | 時間 | 作者 | 開頭 | 說明 |", "|---|---|---|---|---|"] + [row(n, why(n)) for n in trunc] + [""]
     if imgs:
         L += ["### 記事本內的附圖（%d 則，共 %d 張）" % (len(imgs), sum(n["images"] for n in imgs)), "",
               "照片預設不收（和聊天室的照片同一個規則）。", "",
