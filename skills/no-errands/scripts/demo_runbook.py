@@ -20,6 +20,7 @@
   demo_runbook.py standby   <runbook.json> [--approval <id>]   # 上場前：把會失敗的事全部做完，引擎與播放器停在第一步前
         通道（劇本 tunnel）→ 檢查指令（失敗且有 fix 就修一次再查；資料不是 demo-base → 還原）→ 帳號登入 →
         核准與次數（長期核准下自動續）→ 備案檔 → 瀏覽器乾淨狀態 → 依當下螢幕排好視窗 → 停在「按下一步開始」。
+        登入失效不會自動重新登入（要密碼）：只報出來，上場前請 agent 跑 login。
         任何一項不過就當場報出來、不啟動。劇本資料夾的「上場前準備.cmd」就是這個指令（不經 agent）。
 
 劇本裡的 preflight／reset／tunnel 是會在本機執行的指令：validate 會全部列出；只跑自己寫的或看過的劇本。
@@ -1098,7 +1099,9 @@ def preflight(rb, a, fix=False, say=None):
                     who = None
             want = (rb["accounts"][acct] or {}).get("username", acct)
             ok = logged and (who == want if me else True)
-            add("登入有效且身分正確：" + acct, ok, ("登入的是 %s" % who) if me else "（劇本沒設 whoami_path，只檢查不在登入頁）")
+            add("登入有效且身分正確：" + acct, ok,
+                "沒有登入（登入已失效）：上場前請 agent 重新登入這個帳號（demo_runbook.py login），standby 不會自動登入"
+                if not logged else ("登入的是 %s" % who) if me else "（劇本沒設 whoami_path，只檢查不在登入頁）")
     finally:
         br.close_all()
     aid = arg(a, "--approval")
@@ -1321,7 +1324,11 @@ def login(rb, a):
     dent = policy.sensitive_domain_entry(pol, host, port) or {}
     if acct not in (dent.get("agent_login") or []):
         out({"ok": False, "error": "使用者沒有在政策檔同意 agent 代為登入這個帳號（policy.py domain add … --agent-login …）"}, 3)
-    pw = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    # 和 preflight 一樣不經殼層（從 cmd／檔案總管啟動時引號與管線不會被拆錯）；本機不能有管線
+    rc_, pw, err_ = run_cmd(cmd, 60)
+    pw = pw.strip() if rc_ == 0 else ""
+    if rc_ == 2 and "管線" in err_:
+        out({"ok": False, "error": err_}, 2)
     if not pw:
         out({"ok": False, "error": "取不到密碼（secret-cmd 沒有輸出）"}, 1)
     br = Browser(rb, headed=False, log=None)
