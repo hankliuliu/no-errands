@@ -18,10 +18,16 @@ CLI（agent 只在「使用者於對話中明確要求」時才可呼叫 set/gra
   policy.py set unread_protection on|off --reason "..."
   policy.py set visibility background|watch --reason "..."
   policy.py set demo.persist on|off --reason "..."        # off＝示範一次性：不留紀錄、不改劇本
-  policy.py set demo.learn propose|off --reason "..."
+  policy.py set demo.learn propose|auto|off --reason "..."   # auto＝提出的調整自動套用並記進劇本歷史（凍結的劇本除外）
+  policy.py set outbox.port <埠> --reason "..."            # 發件匣頁面的埠（只改這台的設定）
   policy.py domain add <host[:port]> <app> --reason "..."  # 登記敏感網域（例：經通道的示範主機）
       [--demo-accounts a,b] [--agent-login a]   # 示範用途：只有這些帳號能跑核准過的劇本；agent-login＝使用者同意 agent 代為登入
   policy.py set demo.reset_consent <還原指令的 sha256> --reason "<使用者原話>"   # 指令改了就要重新同意
+  policy.py domain set <host[:port]> runbook_approval page|standing --reason "<使用者原話>"
+      page（預設）：每份劇本清單都進發件匣頁面等使用者核准。
+      standing（長期核准）：只要使用者曾在頁面上親自核准過同一台主機、帳號不超出那次範圍的劇本，
+      發件匣伺服器就自動記一筆核准（註明依長期核准、連到那筆頁面核准）。只適用登記為示範用途的主機；
+      內建的敏感 app（LINE、信箱、真實 Mattermost…）永遠不適用。
   policy.py domain remove <host[:port]> --reason "..."
   policy.py token-allow add|remove <專案資料夾> --reason "<使用者原話>"   # 這個專案裡的 agent 可以讀 Mattermost token 檔
       （預設誰都不行；guard-rules 的 token 組由 hook 依這份白名單判斷）
@@ -59,10 +65,12 @@ DEFAULTS = {
     "idle_min_s": 180,
     "outbox": {"port": 8765},
     # 示範劇本（demo_runbook.py）：persist=off → 一次性（不留紀錄、不改劇本）；learn=off → 不提出劇本修改
+    # learn=auto → 提出的調整自動套用（凍結的劇本除外）
     "demo": {"persist": "on", "learn": "propose"},
     # 使用者登記的敏感網域（例如經 SSH 通道的示範主機 localhost:8065）：neb 把它當敏感網站——
     # 未授權 → 拒；已授權 → 只讀，輸入與點擊都要有核准過的示範劇本。
-    # 每筆 {"host": "localhost:8065" 或 "example.org", "app": "<正規 app 名>"}
+    # 每筆 {"host": "localhost:8065" 或 "example.org", "app": "<正規 app 名>"}；示範用途另有
+    # demo/demo_accounts/agent_login，以及 runbook_approval: page（預設）| standing
     "sensitive_domains": [],
 }
 
@@ -253,6 +261,16 @@ def sensitive_domain_app(pol, netloc_or_url):
     return canonical_app(ent.get("app", ent.get("host"))) if ent else None
 
 
+def runbook_approval_mode(ent):
+    """登記項目的劇本核准方式："standing" 只在示範用途、使用者設成 standing、而且不是內建敏感 app 時成立；
+    其他一律 "page"（給其他人的安全預設）。"""
+    if not ent or not ent.get("demo") or ent.get("runbook_approval") != "standing":
+        return "page"
+    if canonical_app(ent.get("app", "")) in SENSITIVE_APPS | CHAT_APPS:
+        return "page"
+    return "standing"
+
+
 def summary(pol):
     apps = "、".join(pol.get("granted_apps") or []) or "（無）"
     up = pol.get("chat", {}).get("unread_protection", "on")
@@ -323,14 +341,17 @@ def main(argv=None):
         pol["visibility"] = a[2]; detail = {"visibility": a[2]}
     elif cmd == "set" and len(a) == 3 and a[1] == "demo.persist" and a[2] in ("on", "off"):
         pol.setdefault("demo", {})["persist"] = a[2]; detail = {"demo.persist": a[2]}
-    elif cmd == "set" and len(a) == 3 and a[1] == "demo.learn" and a[2] in ("propose", "off"):
+    elif cmd == "set" and len(a) == 3 and a[1] == "demo.learn" and a[2] in ("propose", "auto", "off"):
         pol.setdefault("demo", {})["learn"] = a[2]; detail = {"demo.learn": a[2]}
     elif cmd == "domain" and len(a) == 4 and a[1] == "add":
         ents = [e for e in pol.get("sensitive_domains") or [] if str(e.get("host", "")).lower() != a[2].lower()]
+        old = [e for e in pol.get("sensitive_domains") or [] if str(e.get("host", "")).lower() == a[2].lower()]
         ent = {"host": a[2].lower(), "app": canonical_app(a[3])}
         if demo_accts is not None:          # 示範用途：只有這些帳號能執行核准過的劇本
             ent.update(demo=True, demo_accounts=demo_accts,
                        agent_login=[x for x in (agent_login or []) if x in demo_accts])
+            if old and old[0].get("runbook_approval"):      # 重新登記（例如改帳號）不默默改掉核准方式
+                ent["runbook_approval"] = old[0]["runbook_approval"]
         ents.append(ent)
         pol["sensitive_domains"] = ents
         detail = {"domain_add": a[2].lower(), "app": canonical_app(a[3]), "demo_accounts": ent.get("demo_accounts"),
@@ -339,6 +360,20 @@ def main(argv=None):
         pol.setdefault("demo", {})["reset_consent"] = {"commands_sha256": a[2], "reason": reason,
                                                        "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
         detail = {"demo.reset_consent": a[2][:16]}
+    elif cmd == "domain" and len(a) == 5 and a[1] == "set" and a[3] == "runbook_approval"             and a[4] in ("page", "standing"):
+        ents = pol.get("sensitive_domains") or []
+        hit = [e for e in ents if str(e.get("host", "")).lower() == a[2].lower()]
+        if not hit:
+            _out({"ok": False, "error": "沒有登記這個主機；先 policy.py domain add"}, 2)
+        if a[4] == "standing":
+            if not hit[0].get("demo"):
+                _out({"ok": False, "error": "長期核准只適用登記為示範用途的主機（domain add … --demo-accounts …）"}, 3)
+            if canonical_app(hit[0].get("app", "")) in SENSITIVE_APPS | CHAT_APPS:
+                _out({"ok": False, "error": "內建的敏感 app（通訊、郵件、金融）永遠不適用長期核准"}, 3)
+        hit[0]["runbook_approval"] = a[4]
+        detail = {"domain": a[2].lower(), "runbook_approval": a[4]}
+    elif cmd == "set" and len(a) == 3 and a[1] == "outbox.port" and a[2].isdigit() and 1024 <= int(a[2]) <= 65535:
+        pol.setdefault("outbox", {})["port"] = int(a[2]); detail = {"outbox.port": int(a[2])}
     elif cmd == "domain" and len(a) == 3 and a[1] == "remove":
         pol["sensitive_domains"] = [e for e in pol.get("sensitive_domains") or []
                                     if str(e.get("host", "")).lower() != a[2].lower()]

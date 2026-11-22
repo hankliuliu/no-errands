@@ -9,7 +9,8 @@
   demo_runbook.py rehearse  <runbook.json> --approval <id> [--from <步驟id>] [--to <步驟id>] [--continue]
   demo_runbook.py live      <runbook.json> --approval <id> [--resume <run 資料夾>]
         live：看得到（--headed）、只走劇本；遇到 advance=cue 的步驟就停下、存檔並結束，講者示意後用 --resume 接著跑。
-  demo_runbook.py learn     <runbook.json> [--runs N]          # 由最近 N 次紀錄提出劇本修改（差異清單），不自動套用
+  demo_runbook.py learn     <runbook.json> [--runs N]          # 由最近 N 次紀錄提出劇本修改（差異清單）
+        政策 demo.learn=propose（預設）只提出；auto 自動套用並記進劇本歷史（凍結的劇本除外）；off 不提出。
   demo_runbook.py apply     <runbook.json> <proposal.json> --reason "<使用者同意的原話>"
   demo_runbook.py freeze|unfreeze <runbook.json> --reason "..."
   demo_runbook.py login     <runbook.json> --account <帳號> --secret-cmd "<印出密碼的指令>"
@@ -18,6 +19,10 @@
   demo_runbook.py reset     <runbook.json>                     # 執行還原指令：政策檔要有使用者對「這組指令雜湊」的同意
 
 劇本裡的 preflight／reset 是會在本機執行的 shell 指令：validate 會全部列出；只跑自己寫的或看過的劇本。
+
+長期核准（政策 domain set <主機> runbook_approval standing）：核准次數用完、到期或送出內容改了時，
+preflight／rehearse／live 會自動起草同一份清單，由發件匣伺服器依長期核准決定（不是 agent 去按）；
+伺服器不放行（例如使用者撤銷過）就照舊停在頁面等使用者。
 
 所有對目標網站的操作都經過 neb；送出類動作帶 --runbook-approval/--step，neb 只放行與核准清單逐字相符的輸入。
 政策 demo.persist=off → 一次性：紀錄寫在暫存資料夾、結束即刪，不更新 Plan B、不提出修改。
@@ -714,6 +719,67 @@ def run_step(br, rb, st, vars_, approval, shots_dir, ctl=None):
     return rec
 
 
+def request_approval(rb):
+    """把送出清單起草到發件匣；回 outbox 的 JSON（長期核准下可能直接是 state=approved）。"""
+    doc = sends_doc(rb)
+    p = os.path.join(rb["_dir"], "sends.json")
+    json.dump(doc, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    r = subprocess.run([sys.executable, OUTBOX, "draft", "--service", "runbook", "--to", doc["target"],
+                        "--body-file", p, "--why", rb.get("approval_why", "示範劇本：整份一次核准")],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME))
+    try:
+        o = json.loads(r.stdout)
+    except Exception:
+        o = {"ok": False, "error": (r.stdout or r.stderr)[-300:]}
+    o["_rc"] = r.returncode
+    return o
+
+
+def standing_mode(rb):
+    pol = policy.load()
+    host, port = policy.url_host_port(rb["target"]["base_url"])
+    return policy.runbook_approval_mode(policy.sensitive_domain_entry(pol, host, port))
+
+
+def remaining_runs(rec):
+    """{步驟: 還剩幾次}（每一步取用得最多的那個動作）。"""
+    import neb
+    ap = rec["approval"]
+    usage = neb.runbook_usage(rec["id"])
+    return {s["step"]: int(ap.get("max_runs") or 1) - max((usage.get(str(s["step"])) or {0: 0}).values())
+            for s in json.loads(rec["body"])["sends"]}
+
+
+def renew_standing(rb, why):
+    """長期核准下續一筆：起草同一份清單，由伺服器決定。回 (新 id 或 None, 說明)。"""
+    if standing_mode(rb) != "standing":
+        return None, why
+    o = request_approval(rb)
+    if o.get("state") == "approved":
+        return o["id"], "依長期核准續一筆 %s（原因：%s；依據 %s）" % (o["id"], why, o.get("basis"))
+    if o.get("id"):
+        return None, "%s；已起草 %s，但伺服器沒有自動核准（%s），在發件匣頁面等使用者" % (
+            why, o["id"], o.get("standing_skip") or o.get("error") or "原因不明")
+    return None, "%s；續約起草失敗：%s" % (why, o.get("error"))
+
+
+def usable_approval(rb, aid):
+    """核准有效、內容相符、每步還有次數 → (aid, rec, None)；否則在長期核准下嘗試續約。"""
+    ok, rec = check_approval(rb, aid) if aid else (False, "沒有指定核准（--approval）")
+    if ok:
+        rem = remaining_runs(rec)
+        if rem and min(rem.values()) < 1:
+            ok, rec = False, "核准 %s 的可執行次數用完了（%s 剩 0 次）" % (aid, min(rem, key=rem.get))
+    if ok:
+        return aid, rec, None
+    new, note = renew_standing(rb, rec)
+    if not new:
+        return None, None, note
+    ok2, rec2 = check_approval(rb, new)
+    return (new, rec2, note) if ok2 else (None, None, rec2)
+
+
 def check_approval(rb, aid):
     """核准存在、有效，且目前劇本的送出內容與核准版本完全相同。"""
     import outbox
@@ -758,7 +824,12 @@ def execute(rb, mode, a):
     pol = policy.load()
     persist = (pol.get("demo") or {}).get("persist", "on") == "on"
     aid = arg(a, "--approval")
-    ok, why = check_approval(rb, aid)
+    if arg(a, "--resume") or "--foreground" in a:
+        ok, why = check_approval(rb, aid)          # 接續／背景子行程：沿用父行程決定的核准
+        renewed = None
+    else:
+        aid, _rec, renewed = usable_approval(rb, aid)
+        ok, why = aid is not None, renewed
     if not ok:
         out({"ok": False, "error": why, "next": "請使用者在發件匣核准劇本（demo_runbook.py request-approval）"}, 3)
     advance = "step" if "--step-mode" in a else "auto"
@@ -777,7 +848,8 @@ def execute(rb, mode, a):
         if "--no-player" not in a:          # 播放器的 tk 視窗照常顯示；主控台不顯示
             pl = nowin.popen_background([sys.executable, os.path.join(HERE, "demo_player.py"), run_dir],
                                          stdout=log, stderr=log, **kw)
-        out({"ok": True, "mode": "live", "run_dir": run_dir, "engine_pid": eng.pid,
+        out({"ok": True, "mode": "live", "run_dir": run_dir, "engine_pid": eng.pid, "approval": aid,
+             "renewed": renewed,
              "player_pid": pl.pid if pl else None,
              "control": "demo_runbook.py control %s pause|resume|next|stop|auto|step" % run_dir,
              "status": "demo_runbook.py status %s" % run_dir,
@@ -929,14 +1001,19 @@ def preflight(rb, a):
         br.close_all()
     aid = arg(a, "--approval")
     if aid:
-        ok, rec = check_approval(rb, aid)
+        new, rec, note = usable_approval(rb, aid)
+        if new and new != aid:
+            add("依長期核准續約（不消耗送出次數）", True, note)
+        ok = new is not None
+        if not ok:      # 不能續約：照舊報原核准的狀態（次數用完的話下一項會顯示剩 0 次）
+            ok, rec = check_approval(rb, aid)
+        aid = new or aid
         add("劇本核准有效且內容相符", ok, "" if ok else rec)
+        if not new and note and standing_mode(rb) == "standing":
+            add("依長期核准續約", False, note)
         if ok:
-            import neb
             ap = rec["approval"]
-            usage = neb.runbook_usage(aid)
-            rem = {s["step"]: int(ap.get("max_runs") or 1) - max((usage.get(str(s["step"])) or {0: 0}).values())
-                   for s in json.loads(rec["body"])["sends"]}
+            rem = remaining_runs(rec)
             low = min(rem.values()) if rem else 0
             add("每個送出步驟還剩至少 1 次（上限 %s）" % ap.get("max_runs"), low >= 1,
                 "最少的是 %s：剩 %d 次" % (min(rem, key=rem.get), low) if rem else "")
@@ -948,7 +1025,7 @@ def preflight(rb, a):
                 except ValueError:
                     add("預定示範時間格式", False, "要 YYYY-MM-DD HH:MM")
     allok = all(r["ok"] for r in res)
-    out({"ok": allok, "checks": res}, 0 if allok else 1)
+    out({"ok": allok, "checks": res, "approval": aid}, 0 if allok else 1)
 
 
 # ---------------------------------------------------------------- learn / apply
@@ -963,7 +1040,7 @@ def iter_targets(rb):
 def learn(rb, a):
     pol = policy.load()
     dm = pol.get("demo") or {}
-    if dm.get("persist", "on") != "on" or dm.get("learn", "propose") != "propose":
+    if dm.get("persist", "on") != "on" or dm.get("learn", "propose") not in ("propose", "auto"):
         out({"ok": True, "proposal": None, "note": "政策 demo.persist/learn 關閉：不提出修改"})
     root = runs_dir(rb)
     runs = sorted(d for d in os.listdir(root) if os.path.exists(os.path.join(root, d, "run.json"))) if os.path.isdir(root) else []
@@ -1069,9 +1146,17 @@ def learn(rb, a):
     json.dump(prop, open(pp, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     diff = ["%s: %s → %s（%s）" % (c["path"], json.dumps(c["old"], ensure_ascii=False),
                                    json.dumps(c["new"], ensure_ascii=False), c["why"]) for c in changes]
-    out({"ok": True, "proposal": pp, "n_changes": len(changes), "diff": diff, "known_issues": len(known),
-         "frozen": prop["frozen"],
-         "next": "把差異清單給使用者看；他同意後才執行 demo_runbook.py apply <runbook> <proposal> --reason \"…\""})
+    res = {"ok": True, "proposal": pp, "n_changes": len(changes), "diff": diff, "known_issues": len(known),
+           "frozen": prop["frozen"]}
+    if dm.get("learn") == "auto" and changes and not prop["frozen"]:
+        n, reap = apply_changes(rb, prop, os.path.basename(pp), "政策 demo.learn=auto（自動套用）", auto=True)
+        res.update(applied=n, needs_reapproval=reap,
+                   next="已依政策自動套用並記進劇本歷史" + ("；送出內容改了，下次執行會依長期核准續約（不是長期核准就要使用者核准）" if reap else ""))
+    elif dm.get("learn") == "auto" and prop["frozen"]:
+        res.update(applied=0, next="劇本凍結中：不自動套用（解凍後再 learn）")
+    else:
+        res["next"] = "把差異清單給使用者看；他同意後才執行 demo_runbook.py apply <runbook> <proposal> --reason \"…\""
+    out(res)
 
 
 def set_path(obj, path, val):
@@ -1098,6 +1183,11 @@ def apply(rb, a):
     prop = json.load(open(a[2], encoding="utf-8"))
     if prop["runbook_sha256"] != rb_sha(rb):
         out({"ok": False, "error": "提案是針對舊版劇本產生的；重新 learn"}, 3)
+    n, reap = apply_changes(rb, prop, os.path.basename(a[2]), reason)
+    out({"ok": True, "applied": n, "needs_reapproval": reap})
+
+
+def apply_changes(rb, prop, name, reason, auto=False):
     before = sends_sha(sends_of(rb))
     for c in prop["changes"]:
         set_path(rb, c["path"], c["new"])
@@ -1105,11 +1195,13 @@ def apply(rb, a):
     for k in prop.get("known_issues") or []:
         if k not in ki:
             ki.append(k)
-    rb.setdefault("history", []).append({"ts": now_s(), "applied": os.path.basename(a[2]),
-                                         "n_changes": len(prop["changes"]), "reason": reason})
+    h = {"ts": now_s(), "applied": name, "n_changes": len(prop["changes"]), "reason": reason}
+    if auto:
+        h["auto"] = True
+        h["changes"] = [{"path": c["path"], "old": c["old"], "new": c["new"]} for c in prop["changes"]]
+    rb.setdefault("history", []).append(h)
     save_rb(rb)
-    after = sends_sha(sends_of(rb))
-    out({"ok": True, "applied": len(prop["changes"]), "needs_reapproval": before != after})
+    return len(prop["changes"]), before != sends_sha(sends_of(rb))
 
 
 # ---------------------------------------------------------------- 其他子指令
@@ -1198,15 +1290,9 @@ def main():
         json.dump(doc, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         out({"ok": True, "file": p, "n": len(doc["sends"]), "sends_sha256": sends_sha(doc["sends"])[:16]})
     if sub == "request-approval":
-        doc = sends_doc(rb)
-        p = os.path.join(rb["_dir"], "sends.json")
-        json.dump(doc, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-        r = subprocess.run([sys.executable, OUTBOX, "draft", "--service", "runbook", "--to", doc["target"],
-                            "--body-file", p, "--why", rb.get("approval_why", "示範劇本：整份一次核准")],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME))
-        sys.stdout.write(r.stdout)
-        sys.exit(r.returncode)
+        o = request_approval(rb)
+        rc = o.pop("_rc", 1)
+        out(o, rc)
     if sub == "preflight":
         preflight(rb, a)
     if sub in ("rehearse", "live"):

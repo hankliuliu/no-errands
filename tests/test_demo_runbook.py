@@ -641,6 +641,25 @@ def main():
         rc, o, txt = rbj("rehearse", rbp, "--approval", aid)
         check("套用後同一份核准仍有效（送出內容沒變）", rc == 0, txt)
 
+        # ---------- learn=auto：提出的調整自動套用並記進劇本歷史；凍結的劇本不動
+        rb = json.load(open(rbp, encoding="utf-8"))
+        rb["steps"][0]["actions"][3]["budget_s"] = 1            # 一定會被 learn 放寬
+        json.dump(rb, open(rbp, "w", encoding="utf-8"), ensure_ascii=False)
+        rc, o, _ = run(POL, "set", "demo.learn", "auto", "--reason", "test：使用者說劇本一律核准")
+        check("policy 接受 demo.learn=auto", rc == 0, o)
+        rbj("freeze", rbp, "--reason", "test")
+        rc, o, txt = rbj("learn", rbp, "--runs", "50")
+        check("learn=auto＋凍結 → 只提出、不套用", rc == 0 and o.get("applied") == 0
+              and json.load(open(rbp, encoding="utf-8"))["steps"][0]["actions"][3]["budget_s"] == 1, txt)
+        rbj("unfreeze", rbp, "--reason", "test")
+        rc, o, txt = rbj("learn", rbp, "--runs", "50")
+        rbn = json.load(open(rbp, encoding="utf-8"))
+        check("learn=auto → 自動套用、劇本歷史記一筆 auto（含每項舊值→新值）",
+              rc == 0 and o.get("applied", 0) >= 1 and rbn["steps"][0]["actions"][3]["budget_s"] > 1
+              and rbn["history"][-1].get("auto") and rbn["history"][-1].get("changes"), txt)
+        run(POL, "set", "demo.learn", "propose", "--reason", "test")
+        json.dump(RUNBOOK, open(rbp, "w", encoding="utf-8"), ensure_ascii=False)
+
         # ---------- 劇本送出內容改了 → 要重新核准
         rb = json.load(open(rbp, encoding="utf-8"))
         rb["steps"][0]["actions"][1]["text"] = "/case whoami"
