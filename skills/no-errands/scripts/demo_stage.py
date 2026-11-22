@@ -372,7 +372,7 @@ class Stage:
         self.ptrc.pack()
         k = 1.25 * s
         pts = [(0, 0), (0, 17), (4.2, 13.2), (7, 19.6), (9.6, 18.6), (6.8, 12.2), (12.2, 12.2)]
-        self.ptrc.create_polygon(*[(R + x * k, R + y * k) for x, y in pts], fill="#ffffff", outline="#000000",
+        self.ptrc.create_polygon(*[(R + x * k, R + y * k) for x, y in pts], fill="#ffffff", outline="#111111",
                                  width=max(1, round(1.4 * s)), joinstyle="miter")
         self.ripple = self.ptrc.create_oval(R, R, R, R, outline=ACCENT, width=max(2, round(3 * s)), state="hidden")
         self.ptrw.withdraw()
