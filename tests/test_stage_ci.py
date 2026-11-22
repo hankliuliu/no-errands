@@ -84,7 +84,7 @@ def main():
         p = spawn(d, env)
         g = wait(lambda: rd(geom).get("caption_text") and rd(geom))
         lines = L.caption_lines(two_lines, W, H)
-        check("%d×%d：字幕估算兩行以內（%d 行）" % (W, H), lines <= 2, lines)
+        check("%d×%d：字幕估算兩行以內（%d 行）" % (W, H, lines), lines <= 2, lines)
         check("%d×%d：字幕實際排出來的高度放得進字幕帶（不截斷）" % (W, H),
               g and g["caption_req_h"] <= g["caption_h"], g)
         check("%d×%d：字幕就是這一拍的句子" % (W, H), g and g["caption_text"] == two_lines, g and g.get("caption_text"))
@@ -126,5 +126,19 @@ def main():
     return 0 if all(R) else 1
 
 
+def run():
+    """例外時也收掉所有舞台行程（看門狗之外再一層）：崩掉的測試不能留下接著 CI 管線的視窗。"""
+    try:
+        return main()
+    except BaseException as e:
+        print("FAIL 測試例外：%r" % (e,), flush=True)
+        print("FAILED (exception)", flush=True)
+        return 1
+    finally:
+        for p in PROCS:
+            if p.poll() is None:
+                kill_tree(p)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())
