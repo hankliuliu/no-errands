@@ -540,7 +540,7 @@ def main():
 
             # ---------- 台上失敗：不結束；停在該步（備案說明）、按「下一步」跳過；等待超過上限換成講者台詞
             fb = json.loads(json.dumps(RUNBOOK))
-            fb["steps"][0]["actions"] = fb["steps"][0]["actions"][:3] + [
+            fb["steps"][0]["actions"] = fb["steps"][0]["actions"] + [     # 保留抓案件編號（第二步要用），最後加一個一定逾時的等待
                 {"do": "wait_text", "text": "永遠不會出現", "budget_s": 9, "expect_s": 2, "slow_s": 4, "label": "AI 起草",
                  "slow_say": "這次比較慢，我們先看上次的結果"}]
             fb["steps"][0]["on_fail"] = "備案：打開上次的畫面"
@@ -558,7 +558,11 @@ def main():
             n = wait_for(rdf, lambda n: n.get("step_id") == "s2" and n.get("status") == "waiting_next", 30)
             check("按「下一步」跳過失敗的步驟、接著跑下一步", n.get("step_id") == "s2", n)
             rbj("control", rdf, "next")
-            wait_for(rdf, lambda n: n.get("status") == "done", 40)
+            t0 = time.time()                     # 像講者：停在「下一步」或某步失敗就按下一步，直到跑完
+            while time.time() - t0 < 60 and now_of(rdf).get("status") != "done":
+                if now_of(rdf).get("status") in ("waiting_next", "failed"):
+                    time.sleep(0.5); rbj("control", rdf, "next")
+                time.sleep(0.5)
             time.sleep(1)
             rjf = json.load(open(os.path.join(rdf, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rdf, "run.json")) else {}
             check("紀錄寫下跳過的步驟", rjf.get("skipped_after_fail") == ["s1"] and len(rjf.get("steps", [])) == 3, rjf.get("skipped_after_fail"))
@@ -580,7 +584,7 @@ def main():
                       open(os.path.join(rbdir, "profiles", "demo_a", "Default", "Preferences"), "w"))
             sbp2 = os.path.join(sdir, "runbook.json"); json.dump(sb, open(sbp2, "w", encoding="utf-8"), ensure_ascii=False)
             c0 = len(open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines())
-            p_ = subprocess.run([sys.executable, RB, "standby", sbp2, "--approval", aid], capture_output=True, text=True,
+            p_ = subprocess.run([sys.executable, RB, "standby", sbp2, "--approval", aid, "--no-player"], capture_output=True, text=True,
                                 encoding="utf-8", env=env, timeout=240)
             so = json.loads(p_.stdout[p_.stdout.find("{"):] or "{}")
             rds = so.get("run_dir") or ""
@@ -592,7 +596,7 @@ def main():
             check("standby：profile 改成正常關閉（不跳還原分頁）、擋通知，其他設定不動",
                   pr["profile"]["exit_type"] == "Normal" and pr["profile"]["default_content_setting_values"]["notifications"] == 2
                   and pr.get("keep") == 1, pr)
-            p2 = subprocess.run([sys.executable, RB, "standby", sbp2, "--approval", aid], capture_output=True, text=True,
+            p2 = subprocess.run([sys.executable, RB, "standby", sbp2, "--approval", aid, "--no-player"], capture_output=True, text=True,
                                 encoding="utf-8", env=env, timeout=240)
             so2 = json.loads(p2.stdout[p2.stdout.find("{"):] or "{}")
             check("再跑一次 standby：先關掉上一次準備好的畫面，只留一套", now_of(rds).get("status") == "stopped"

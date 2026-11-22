@@ -1329,6 +1329,10 @@ def login(rb, a):
     pw = pw.strip() if rc_ == 0 else ""
     if rc_ == 2 and "管線" in err_:
         out({"ok": False, "error": err_}, 2)
+    if rc_ in (124, 127):                  # 我們自己產生的訊息（找不到程式／逾時）：直接帶出
+        out({"ok": False, "error": "取不到密碼：" + err_}, 1)
+    if rc_ != 0:                           # 其他：只報結束碼，不印那個指令的 stderr（可能含機密）
+        out({"ok": False, "error": "取不到密碼：secret-cmd 結束碼 %d" % rc_}, 1)
     if not pw:
         out({"ok": False, "error": "取不到密碼（secret-cmd 沒有輸出）"}, 1)
     br = Browser(rb, headed=False, log=None)
@@ -1503,8 +1507,8 @@ def standby(rb, a):
         log = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")
         eng = nowin.popen_background([sys.executable, os.path.abspath(__file__), "live", rb["_path"], "--approval", aid,
                                       "--foreground", "--run-dir", run_dir], stdout=log, stderr=log, **kw)
-        pl = nowin.popen_background([sys.executable, os.path.join(HERE, "demo_player.py"), run_dir],
-                                    stdout=log, stderr=log, **kw)
+        pl = None if "--no-player" in a else nowin.popen_background(
+            [sys.executable, os.path.join(HERE, "demo_player.py"), run_dir], stdout=log, stderr=log, **kw)
         st_ = None
         for _ in range(240):
             time.sleep(0.5)
@@ -1517,8 +1521,8 @@ def standby(rb, a):
         ready = st_ == "ready"
         res.append({"check": "畫面就緒、停在第一步前", "ok": ready, "detail": "" if ready else "引擎狀態：%s" % st_})
         say(("✓ " if ready else "✗ ") + "畫面就緒、停在第一步前")
-        result.update(ok=ready, run_dir=run_dir, engine_pid=eng.pid, player_pid=pl.pid, screen=[sw, sh])
-        json.dump({"run_dir": run_dir, "approval": aid, "engine_pid": eng.pid, "player_pid": pl.pid, "ts": now_s()},
+        result.update(ok=ready, run_dir=run_dir, engine_pid=eng.pid, player_pid=pl and pl.pid, screen=[sw, sh])
+        json.dump({"run_dir": run_dir, "approval": aid, "engine_pid": eng.pid, "player_pid": pl and pl.pid, "ts": now_s()},
                   open(os.path.join(rb["_dir"], "standby.json"), "w", encoding="utf-8"), ensure_ascii=False)
     result["standby_s"] = round(time.time() - t0, 1)
     say(("就緒：上場時按播放器的「下一步」。" if result["ok"] else "沒有就緒：看上面打 ✗ 的項目。") +
