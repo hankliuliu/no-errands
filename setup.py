@@ -228,14 +228,21 @@ def install_skill(skill_dst, name="no-errands"):
         raise
     had_old = os.path.isdir(d)
     if had_old:
-        _rename(d, old)
+        try:
+            _rename(d, old)   # 重試到最後還是失敗：舊版沒動（改名是原子的），清掉暫存、明確報錯
+        except Exception as e:
+            shutil.rmtree(new, ignore_errors=True)
+            raise OSError("換版失敗：舊版移不開（%s）；舊版原封不動留在 %s" % (e, d))
     try:
         _rename(new, d)
-    except Exception:
-        if had_old:
-            _rename(old, d)
+    except Exception as e:
         shutil.rmtree(new, ignore_errors=True)
-        raise
+        if had_old:
+            try:
+                _rename(old, d)
+            except Exception as e2:   # 極少見：剛移得開的舊版又搬不回來 → 照實說在哪裡；下次安裝開頭會自動搬回
+                raise OSError("換版失敗而且舊版搬不回原位（%s）：舊版在 %s，再跑一次安裝會自動搬回" % (e2, old))
+        raise OSError("換版失敗：新版放不進去（%s）；舊版原封不動留在 %s" % (e, d))
     if had_old:
         shutil.rmtree(old, ignore_errors=True)
 

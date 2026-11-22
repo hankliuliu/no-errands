@@ -162,6 +162,26 @@ def main():
             S.os.replace = real_replace
         check("5 新版就位失敗 → 回報錯誤、舊版原封不動搬回、沒留暫存", raised and tree(dst) == before and mine() == [], (raised, mine()))
 
+        # 改名一直被拒（重試到最後都失敗）：舊版原封不動、明確報錯、暫存清乾淨，不停在新舊都不在正式位置的中間狀態
+        real_sleep = S.time.sleep
+        S.time.sleep = lambda _s: None
+        for which in ("old", "new"):
+            def always_denied(src, d2, which=which):
+                if (which == "old" and os.path.abspath(src) == os.path.abspath(dst)) or                         (which == "new" and os.path.abspath(d2) == os.path.abspath(dst) and ".new-" in src):
+                    raise PermissionError("模擬：一直被拒")
+                return real_replace(src, d2)
+            S.os.replace = always_denied
+            try:
+                try:
+                    S.install_skill(dst); msg = ""
+                except OSError as e:
+                    msg = str(e)
+            finally:
+                S.os.replace = real_replace
+            check("5 %s一直被拒 → 明確報錯、舊版原封不動、沒留暫存" % ("舊版移開" if which == "old" else "新版就位"),
+                  "原封不動" in msg and tree(dst) == before and mine() == [], (msg, mine()))
+        S.time.sleep = real_sleep
+
         real_copy = shutil.copytree
         def boom(*a, **k):
             raise OSError("模擬：複製失敗")
