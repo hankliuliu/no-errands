@@ -722,8 +722,9 @@ def _peek_notes(pid, before, chat, res, app):
     if len(titled) == 1:
         names = {i.get("name") for i in (popup_menu.popup_items(titled[0]["hwnd"]).get("items") or [])}
         if names & set(VIEW_MARKERS["notes"]):
-            tid = hashlib.sha256(("line|%s" % chat).encode("utf-8")).hexdigest()[:12]
-            d = os.path.join(HOME, "gather", "line", tid, "_peek")
+            # chat 已經是白名單裡的那筆名稱（main 先做了 canonical_chat）；代號算法與 gather 相同 → 落在同一個目標資料夾
+            tid = hashlib.sha256(("%s|%s" % (app, chat)).encode("utf-8")).hexdigest()[:12]
+            d = os.path.join(HOME, "gather", app, tid, "_peek")
             os.makedirs(d, exist_ok=True)
             path = os.path.join(d, "notes-%s.png" % time.strftime("%Y%m%d-%H%M%S"))
             try:
@@ -737,6 +738,23 @@ def _peek_notes(pid, before, chat, res, app):
     else:
         res["peek"] = {"error": "新視窗不是剛好一個（%d），不截" % len(titled)}
     ledger(app, "probe-peek", ok, "記事本視窗" if ok else res["peek"].get("error", ""), chat)
+
+
+PEEK_MAX_AGE_S = 30 * 60
+
+
+def purge_old_peeks(now=None):
+    """兜底：各目標 _peek 底下超過 30 分鐘的截圖一律刪掉（就算哪一次忘了刪或中途斷掉，記事本截圖也不會長期留在硬碟上）。"""
+    import glob
+    now = now or time.time()
+    n = 0
+    for f in glob.glob(os.path.join(HOME, "gather", "*", "*", "_peek", "*")):
+        try:
+            if now - os.path.getmtime(f) > PEEK_MAX_AGE_S:
+                os.remove(f); n += 1
+        except OSError:
+            pass
+    return n
 
 
 def cmd_probe(app, prof, chat, view, pol, peek=False):
@@ -1285,6 +1303,10 @@ def main():
         print(__doc__); sys.exit(2)
     app, sub = policy.canonical_app(a[0]), a[1]
     prof = PROFILES.get(app)
+    try:
+        purge_old_peeks()
+    except Exception:
+        pass
     try:
         if not prof:
             raise Refused("chat_guard 尚未支援這個 app（目前：fake-chat、line）")
