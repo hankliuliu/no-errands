@@ -183,6 +183,18 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
           bool(t1) and all(t2.get(k) == t1.get(k) for k in "cwm"),
           (t1, t2))
     check("A26 鍵盤焦點不在瀏覽器上（點了頁面範圍之後前景仍不是瀏覽器）", u.GetForegroundWindow() != h, u.GetForegroundWindow())
+    bad = []
+    for r_ in range(20):
+        px_ = lay["stage"][0] + int(lay["stage"][2] * (0.2 + 0.6 * ((r_ * 7) % 10) / 10))
+        py_ = lay["stage"][1] + int(lay["stage"][3] * (0.15 + 0.5 * ((r_ * 3) % 10) / 10))
+        move_abs(px_, py_); time.sleep(0.05)
+        u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.05)
+        u.mouse_event(0x0800, 0, 0, ctypes.c_ulong(-120 & 0xffffffff).value, 0)
+        time.sleep(0.25 + (r_ % 4) * 0.2)                  # 不同時間點（涵蓋舞台每秒重排的時刻）
+    time.sleep(0.6)
+    t3 = title()
+    check("A26 隔離層穩定：20 輪真的點擊＋滾輪＋移動（不同位置與時間點），頁面一次都沒收到",
+          bool(t1) and all(t3.get(k) == t1.get(k) for k in "cwm"), (t1, t3))
     time.sleep(CURSOR_WAIT)
     check("A26 真的游標不動約 2 秒就隱藏", rd(geom).get("cursor_hidden") is True, rd(geom).get("cursor_hidden"))
     move_abs(cx + 60, cy + 40); time.sleep(0.5)
@@ -438,13 +450,16 @@ def real_chrome_checks(stage_with):
             g1 = rd(geom)
             if g1.get("cap_user") is not None:
                 fails.append((r_, "按兩下", (g1.get("caption_plate"), zstack(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2))))
-            # × 收起，再用控制列的「字幕」打開
+            # × 收起（滑鼠停在字幕上 → × 出現在外側右上角 → 點它），再用控制列的「字幕」打開
             g0 = rd(geom).get("caption_plate") or g0
-            move(g0[0] + g0[2] - 10, g0[1] + 8); time.sleep(0.4)
-            u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.7)
+            move(g0[0] + g0[2] - 10, g0[1] + g0[3] // 2); time.sleep(0.5)
+            xb = rd(geom).get("xbtn")
+            if xb:
+                move(xb[0] + xb[2] // 2, xb[1] + xb[3] // 2); time.sleep(0.3)
+                u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.7)
             g1 = rd(geom)
             if g1.get("caption_on") is not False:
-                fails.append((r_, "×", zstack(g0[0] + g0[2] - 10, g0[1] + 8)))
+                fails.append((r_, "×", (xb, zstack(*(xb[:2] if xb else g0[:2])))))
             # 字幕收起後控制列移回右下角：等它實際位置＝應有位置、按鈕座標穩定了再按（讀到移動前的座標會按空）
             def ctl_settled():
                 g_ = rd(geom)
