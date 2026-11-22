@@ -190,7 +190,7 @@ class Stage:
         self.tk, self.run_dir = tk, run_dir
         self.now, self.wins, self.placed = {}, {}, {}
         self.t_start = time.time()
-        self.tick0 = u32.GetTickCount() + 3000 if os.name == "nt" else 0
+        self.tick0 = ctypes.windll.kernel32.GetTickCount() + 3000 if os.name == "nt" else 0
         self.root = r = tk.Tk()
         r.title("no-errands 示範舞台")
         W, H = r.winfo_screenwidth(), r.winfo_screenheight()
