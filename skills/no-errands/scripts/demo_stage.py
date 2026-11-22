@@ -832,7 +832,9 @@ class Stage:
             self.show_caption(False)
         # 控制列：和字幕重疊時往上讓到字幕上方（字幕不動）
         cx_, cy_, cw_, ch_ = L.controls_pos(self.lay, self.cap_box() if (text and self.cap_on) else None)
-        if (cx_, cy_) != getattr(self, "_ctl_xy", None):
+        # 和實際位置比（不只比上次下的指令）：視窗還沒顯示前下的移動會被 Tk 吃掉（CI：控制列一開始就顯示時停在預設位置）
+        actual = (self.ctlw.winfo_x(), self.ctlw.winfo_y()) if self.ctlw.winfo_viewable() else None
+        if (cx_, cy_) != getattr(self, "_ctl_xy", None) or (actual and actual != (cx_, cy_)):
             hh_ = self.lay["ctl_font"] * 2
             self.ctlw.geometry("%dx%d+%d+%d" % (cw_, ch_, cx_, cy_))
             self.hintw.geometry("%dx%d+%d+%d" % (cw_, hh_, cx_, cy_ - hh_))
@@ -874,7 +876,7 @@ class Stage:
     def geom(self):
         box = lambda w: [w.winfo_x(), w.winfo_y(), w.winfo_width(), w.winfo_height()] if w.winfo_viewable() else None
         return {"caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad),
-                "caption_on": self.cap_on, "controls_rect": box(self.ctlw),
+                "caption_on": self.cap_on, "controls_rect": box(self.ctlw), "controls_want": list(getattr(self, "_ctl_xy", None) or []),
                 "look_rect": list(self.look_rect) if getattr(self, "look_rect", None) else None,
                 "mask_rect": list(self.mask_rect) if getattr(self, "mask_rect", None) else None,
                 "fit": self.fit, "card": self.now.get("card"), "beat": (self.now.get("beat") or {}).get("text"),

@@ -367,7 +367,7 @@ def main():
         check("%d×%d：字幕就是這一拍的句子" % (W, H), g and g["caption_text"] == two_lines, g and g.get("caption_text"))
         check("%d×%d：講者模式輪到他按 → 控制列出現在右側，「下一步」在右半邊；和字幕重疊時控制列讓到字幕上方" % (W, H),
               g and g["controls_visible"] and g["next"][0] > W * 0.6 and g.get("controls_rect") and g.get("caption_plate")
-              and not L.overlaps(g["controls_rect"], g["caption_plate"]), g and (g.get("next"), g.get("controls_rect"), g.get("caption_plate")))
+              and not L.overlaps(g["controls_rect"], g["caption_plate"]), g and (g.get("next"), g.get("controls_rect"), g.get("caption_plate"), "want=%s" % g.get("controls_want")))
         json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
         try:
             p.wait(10)
