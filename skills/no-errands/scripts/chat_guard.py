@@ -567,6 +567,9 @@ UI_WORDS = re.compile(r"^(記事本|公告|檔案|照片|影片|照片・影片|
                       r"Like|Reply|Pin|Open|Cancel|OK)$")
 
 
+_SHAPE_PUNCT = set(".-/:,()[]~・|" + "．－／：，（）［］～｜")
+
+
 def _shape_of(name):
     """名稱的「形狀」：數字→9、中日韓字→字、拉丁字母→a、空白→_，標點保留；只看得出格式（例如 9999.99.99 是日期），看不到內容。
     只用在 12 字以內的短名稱；更長的一律只給字數。"""
@@ -574,14 +577,16 @@ def _shape_of(name):
     for ch in name:
         if ch.isdigit():
             out.append("9")
-        elif "一" <= ch <= "鿿" or "぀" <= ch <= "ヿ":
+        elif "一" <= ch <= "鿿" or "぀" <= ch <= "ヿ" or "㐀" <= ch <= "䶿" or "𠀀" <= ch <= "𯿿":
             out.append("字")
         elif ch.isalpha():
             out.append("a")
         elif ch.isspace():
             out.append("_")
-        else:
+        elif ch in _SHAPE_PUNCT:
             out.append(ch)
+        else:
+            out.append("?")   # 其他一律佔位：表情符號、符號、擴充區漢字……原字都不能出現（顯示名稱裡的表情符號就是內容）
     return "".join(out)
 
 

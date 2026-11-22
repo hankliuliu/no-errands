@@ -118,6 +118,12 @@ check("探索遮罩：短名稱只給形狀（日期看得出格式）", cg._mas
 check("探索遮罩：中文與英文名字只剩字形，不含任何原字", cg._mask("王小明") == {"len": 3, "shape": "字字字"}
       and "Ann" not in str(cg._mask("Ann Lee")))
 check("探索遮罩：介面用語照留、超過 12 字只給字數", cg._mask("記事本") == "記事本" and cg._mask("一" * 13) == 13)
+emo = "Amy😀★"
+check("探索遮罩：表情符號與符號換成佔位，原字不出現", "😀" not in str(cg._mask(emo)) and "★" not in str(cg._mask(emo))
+      and cg._mask(emo)["shape"] == "aaa??", cg._mask(emo))
+ext = "𠮷㐀x"
+check("探索遮罩：擴充區漢字只剩字形，原字不出現", "𠮷" not in str(cg._mask(ext)) and "㐀" not in str(cg._mask(ext))
+      and cg._mask(ext)["shape"] == "字字a", cg._mask(ext))
 import subprocess, tempfile, json as _json, shutil as _sh  # noqa: E402
 _h = tempfile.mkdtemp(prefix="ne-probe-")
 try:
