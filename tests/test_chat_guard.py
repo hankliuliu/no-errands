@@ -266,6 +266,11 @@ def main():
         lw = json.loads(subprocess.run([a.ad, "list-windows"], capture_output=True, text=True, encoding="utf-8").stdout)
         check("B3-8 probe 收尾：開出來的記事本視窗已關掉", o.get("closed_windows", 0) >= 1 and o.get("windows_left_open") == 0
               and events("notes-close") - c0 == 1, o)
+        # notes-tab：在記事本視窗裡只點「記事本」分頁（只讀切換），讀完照樣關掉
+        nt0, c1 = events("notes-tab"), events("notes-close")
+        o = cg("probe", "--chat", "Kilo", "--view", "notes-tab")
+        check("B3-8 probe notes-tab：分頁切換點到一次、視窗有關、輸出不含內容", o.get("ok") and (o.get("tab_click") or {}).get("done")
+              and events("notes-tab") - nt0 == 1 and events("notes-close") - c1 == 1 and "deploy" not in json.dumps(o, ensure_ascii=False), o.get("tab_click"))
         # 記事本開著時 LINE 剛好跳出別的有標題視窗（像來電）：兩個新視窗 → 都不關（關掉來電可能等於拒接），照實回報
         trigger({"op": "callonnotes"})
         o = cg("probe", "--chat", "Kilo", "--view", "notes")
