@@ -637,11 +637,26 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
             ref, used = br.find(acct, act["target"])
             info.pop("error", None)
             if ref and getattr(br, "look", None) is not None:
-                br.look.act(acct, "@" + ref, press=d in ("click", "check"))   # 舞台：示範游標移過去、按下效果
+                paused += br.look.act(acct, "@" + ref, press=d in ("click", "check")) or 0.0   # 舞台：示範游標移過去、按下效果
             if ref:
                 info["used"] = used
                 cmd = [d, "@" + ref] + ([subst(act["text"], vars_)] if d == "fill" else [])
-                rc, o, e = br.neb(acct, *cmd, approval=approval, step=st["id"])
+                # 舞台：逐步輸入（守門自己切段、每段前後讀回；暫停時停在原地、繼續時接著打）
+                prog = d == "fill" and getattr(br, "look", None) is not None and getattr(ctl, "dir", None)                     and (rb.get("stage") or {}).get("typing", "progressive") == "progressive"
+                if prog:
+                    cmd += ["--progressive", "--pace-file", os.path.join(ctl.dir, "control.json")]
+                rc, o, e = br.neb(acct, *cmd, approval=approval, step=st["id"], timeout=7200 if prog else 90)
+                if prog:
+                    for line in reversed((o or "").strip().splitlines()):
+                        try:
+                            pj = json.loads(line)
+                        except Exception:
+                            continue
+                        if isinstance(pj, dict) and isinstance(pj.get("progressive"), dict):
+                            pi = pj["progressive"]
+                            paused += float(pi.get("paused_s") or 0)      # 打字中途暫停的時間不算進這一步
+                            info["typing"] = {k: pi.get(k) for k in ("chunks", "typed_chars", "ms", "paused_s")}
+                            break
                 ok = rc == 0
                 if not ok:
                     info["error"] = err_of(rc, o)
@@ -789,11 +804,14 @@ class Look:
 
     # ---- F-3：示範游標（畫在舞台上；系統游標不動）與平順捲動
     def wait(self, secs):
-        """等 secs 秒；暫停的時間不算（游標停在原地）。"""
-        t = time.time()
+        """等 secs 秒；暫停的時間不算（游標停在原地）。回暫停了幾秒。"""
+        t, pz = time.time(), 0.0
         while time.time() - t < secs:
             time.sleep(0.04)
-            t += self.ctl.gate()
+            g = self.ctl.gate() or 0.0
+            t += g
+            pz += g
+        return pz
 
     def point(self, x, y):
         """示範游標移到頁面上的 CSS 點；回移動秒數（依距離 0.3–0.9 秒；第一次 0.6 秒）。"""
@@ -844,15 +862,16 @@ class Look:
         self.ctl.publish(look=None)
         box = self.into_view(sel)
         if not box:
-            return
+            return 0.0
         if press:
             x, y = box[0] + box[2] / 2, box[1] + box[3] / 2      # 和真正點擊的位置（元素中心）一致
         else:
             x, y = box[0] + min(36, box[2] / 2), box[1] + box[3] / 2   # 輸入框：指在框內左側
-        self.wait(self.point(x, y) + 0.2)
+        pz = self.wait(self.point(x, y) + 0.2)
         if press:
             self.press()
-            self.wait(0.18)
+            pz += self.wait(0.18)
+        return pz
 
     def set(self, acct, sel, scroll=True):
         """讀內容的拍子：捲到那一段 → 淡外框（舞台 1.2 秒後淡出）→ 游標指在那一段開頭的左邊、不蓋住字。"""
