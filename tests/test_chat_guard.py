@@ -274,6 +274,17 @@ def main():
         led = [json.loads(l) for l in open(os.path.join(home, "chat-guard-ledger.jsonl"), encoding="utf-8") if l.strip()]
         check("B3-8 分頁點擊留在 ledger（投遞滑鼠訊息的點擊也查得到）", any(e.get("sub") == "probe-tab-click" and e.get("allowed") for e in led),
               [e.get("sub") for e in led][-5:])
+        check("B3-8 notes-tab 回報兩顆分頁的選取狀態（點擊前後）", set((o.get("tab_state") or {}).get("after", {})) >= {"相簿", "記事本"}, o.get("tab_state"))
+        # 看一眼：只截這次開出的記事本視窗，存在該目標收集資料夾的暫存處，ledger 記一筆
+        o = cg("probe", "--chat", "Kilo", "--view", "notes", "--peek")
+        pk = (o.get("peek") or {}).get("path") or ""
+        okpng = bool(pk) and os.path.exists(pk) and open(pk, "rb").read(4) == bytes([0x89, 0x50, 0x4E, 0x47])
+        check("B3-8 peek：截到記事本視窗（PNG）、放在收集資料夾的 _peek 底下", okpng and ("%sgather%s" % (os.sep, os.sep)) in pk and "_peek" in pk, o.get("peek"))
+        check("B3-8 peek：輸出不含內容、視窗照樣關掉", "deploy" not in json.dumps(o, ensure_ascii=False) and o.get("windows_left_open") == 0, o.get("windows_left_open"))
+        led = [json.loads(l) for l in open(os.path.join(home, "chat-guard-ledger.jsonl"), encoding="utf-8") if l.strip()]
+        check("B3-8 peek 留在 ledger", any(e.get("sub") == "probe-peek" and e.get("allowed") for e in led), [e.get("sub") for e in led][-4:])
+        if pk and os.path.exists(pk):
+            os.remove(pk)
         # 記事本開著時 LINE 剛好跳出別的有標題視窗（像來電）：兩個新視窗 → 都不關（關掉來電可能等於拒接），照實回報
         trigger({"op": "callonnotes"})
         o = cg("probe", "--chat", "Kilo", "--view", "notes")
