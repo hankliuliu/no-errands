@@ -25,7 +25,7 @@ LOGDIR = tempfile.mkdtemp(prefix="ne-stage-logs-")
 def spawn(d, env):
     """舞台行程：輸出寫檔（不接到 CI 的管線，免得 tee 等一個沒結束的子行程），最多活 40 秒。"""
     lf = open(os.path.join(LOGDIR, "stage-%d.log" % len(PROCS)), "w")
-    p = subprocess.Popen([sys.executable, os.path.join(SC, "demo_stage.py"), d], env=dict(env, NE_STAGE_MAX_S="40"),
+    p = subprocess.Popen([sys.executable, os.path.join(SC, "demo_stage.py"), d], env=dict({"NE_STAGE_MAX_S": "40"}, **env),
                          stdin=subprocess.DEVNULL, stdout=lf, stderr=lf)
     PROCS.append(p)
     return p
@@ -35,7 +35,7 @@ def kill_tree(p):
     subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True)
 
 
-def watchdog(limit=300):
+def watchdog(limit=720):
     """整體逾時：時間到就收掉所有舞台行程、報 FAIL、結束（CI job 不會卡住）。"""
     def fire():
         print("FAIL 整體逾時（%d 秒）：收掉舞台行程" % limit, flush=True)
@@ -206,7 +206,9 @@ def real_chrome_checks(stage_with):
     now = {"card": None, "status": "running", "account": "a", "role": "第一線人員", "role_color": "#2f7de1", "section": "測試",
            "step_index": 2, "steps_total": 13, "crop": crop, "zoom": 1.0, "beat": {"text": beat, "i": 1, "n": 2},
            "mask": {"box": [289, 150, 300, 30], "color": "#ff00ff"}, "accounts": accts}
-    d, p = stage_with(now, None, {"NO_ERRANDS_HOME": work, "NE_STAGE_GEOM": geom})
+    # 這個情境有兩組 20 輪的測試：舞台要活得比預設的 40 秒久（CI 45060724781／45062678450 都在第 5 輪失敗——
+    # 是舞台到了 40 秒自己關掉，不是墊片漏點擊）
+    d, p = stage_with(now, None, {"NO_ERRANDS_HOME": work, "NE_STAGE_GEOM": geom, "NE_STAGE_MAX_S": "600"})
     r = fit_ok(d, False)
     check("A1 上台：頁面底邊貼齊螢幕底邊（差 ≤3）、四邊沒有空白帶", r and r.get("fit", {}).get("ok"), r)
     check("A19 視窗實測和要求的差距 ≤3 像素", r and r.get("placement_error") is not None and r["placement_error"] <= 3, r)
@@ -290,6 +292,77 @@ def real_chrome_checks(stage_with):
         cb = _ct.create_unicode_buffer(64); u.GetClassNameW(root_, cb, 64)
         return cb.value
 
+    def zstack(x_, y_):
+        """失敗時的診斷：這一點上由上到下的頂層視窗（類別、是否我們的）＋舞台回報的上下順序。"""
+        out_, hw_ = [], u.GetTopWindow(None)
+        while hw_ and len(out_) < 8:
+            r_ = DS._rect(hw_)
+            if u.IsWindowVisible(hw_) and r_[0] <= x_ < r_[0] + r_[2] and r_[1] <= y_ < r_[1] + r_[3]:
+                cb_ = _ct.create_unicode_buffer(64); u.GetClassNameW(hw_, cb_, 64)
+                pid_ = _wt.DWORD(); u.GetWindowThreadProcessId(hw_, _ct.byref(pid_))
+                out_.append("%s%s" % (cb_.value, "(舞台)" if pid_.value == p.pid else ""))
+            hw_ = u.GetWindow(hw_, 2)
+        return {"at_point": out_, "stage_alive": p.poll() is None, "stage_z": rd(geom).get("z_order")}
+
+    def stress_rounds(n):
+        """同一次執行重複 n 輪：三種位置的拖動、按兩下回預設、× 收起再用控制列的「字幕」打開；每一步都檢查，
+        頁面收到的點擊數全程不變。只過一次不算（5c）。"""
+        fails, kinds = [], [(0.02, 0.5, "內距"), (0.5, 0.5, "字的中間"), (0.27, 0.62, "字與字之間")]
+        c_start = page_clicks()
+        for r_ in range(n):
+            fx, fy, lab = kinds[r_ % 3]
+            sgn = 1 if r_ % 2 == 0 else -1
+            g0 = rd(geom).get("caption_plate")
+            if not g0:
+                fails.append((r_, "字幕沒有顯示", None)); break
+            sx_, sy_ = g0[0] + fx * g0[2], g0[1] + fy * g0[3]
+            move(sx_, sy_); time.sleep(0.3)
+            u.mouse_event(0x0002, 0, 0, 0, 0); time.sleep(0.1)
+            for s_ in range(1, 11):
+                move(sx_ + sgn * 6 * s_, sy_ - sgn * 4 * s_); time.sleep(0.03)
+            u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.6)
+            g1 = rd(geom).get("caption_plate")
+            if not (g1 and abs((g1[0] - g0[0]) - sgn * 60) <= 6 and abs((g1[1] - g0[1]) + sgn * 40) <= 6):
+                fails.append((r_, "拖動（%s）" % lab, (g0, g1, zstack(sx_, sy_))))
+            # 按兩下回預設
+            g0 = rd(geom).get("caption_plate") or g0
+            move(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2); time.sleep(0.25)
+            for _ in range(2):
+                u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.08)
+            time.sleep(0.7)
+            g1 = rd(geom)
+            if g1.get("cap_user") is not None:
+                fails.append((r_, "按兩下", (g1.get("caption_plate"), zstack(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2))))
+            # × 收起，再用控制列的「字幕」打開
+            g0 = rd(geom).get("caption_plate") or g0
+            move(g0[0] + g0[2] - 10, g0[1] + 8); time.sleep(0.4)
+            u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.7)
+            g1 = rd(geom)
+            if g1.get("caption_on") is not False:
+                fails.append((r_, "×", zstack(g0[0] + g0[2] - 10, g0[1] + 8)))
+            # 字幕收起後控制列移回右下角：等它實際位置＝應有位置、按鈕座標穩定了再按（讀到移動前的座標會按空）
+            def ctl_settled():
+                g_ = rd(geom)
+                cr_, cw_ = g_.get("controls_rect"), g_.get("controls_want")
+                return g_ if (g_.get("cap_btn") and cr_ and cw_ and cr_[:2] == cw_[:2]) else None
+            g1 = wait(ctl_settled, 2) or rd(geom)
+            time.sleep(0.25)
+            g1 = ctl_settled() or g1
+            cb = g1.get("cap_btn")
+            if cb:
+                move(cb[0], cb[1]); time.sleep(0.3)
+                u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.8)
+            if rd(geom).get("caption_on") is not True:
+                fails.append((r_, "用控制列打開字幕", {"cap_btn": cb, "controls_rect": g1.get("controls_rect"),
+                                                   "controls_want": g1.get("controls_want"), "stack": zstack(*cb) if cb else None}))
+                break
+            c_now = page_clicks()
+            if c_now != c_start:
+                fails.append((r_, "頁面收到點擊 %s→%s" % (c_start, c_now), None))
+                c_start = c_now
+        check("字幕墊片穩定：同一次執行重複 %d 輪（拖動、按兩下、×、再打開），每一步都成立、頁面一次點擊都沒收到" % n,
+              not fails, fails[:3])
+
     def drag_from(fx, fy, label, dx=-200, dy=-150):
         g0 = rd(geom).get("caption_plate")
         sx_, sy_ = g0[0] + fx * g0[2], g0[1] + fy * g0[3]
@@ -314,7 +387,11 @@ def real_chrome_checks(stage_with):
         shot_png("stage-shot-3-dragged.png")
         check("A2 拖過之後位置存檔（下次沿用）", rd(os.path.join(work, "stage-caption.json")).get("pos"),
               rd(os.path.join(work, "stage-caption.json")))
+        stress_rounds(20)
         # 按兩下：回到預設位置（即使游標停在字幕上也立刻移回）
+        g0 = rd(geom).get("caption_plate")
+        check("（接續前）字幕顯示中", g0, rd(geom).get("caption_on"))
+    if pl and rd(geom).get("caption_plate"):
         g0 = rd(geom).get("caption_plate")
         move(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2); time.sleep(0.3)
         for _ in range(2):
