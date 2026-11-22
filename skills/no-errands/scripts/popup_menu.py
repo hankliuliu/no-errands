@@ -88,6 +88,73 @@ def capture_window(hwnd, path):
     return w, h
 
 
+DEEP_PS = r"""param([long]$Hwnd)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+# Structure-only deep scan: RawView walk; counts per control type; name length buckets;
+# for document/list/pane/edit/text/window elements: whether Text/Value/LegacyIAccessible patterns exist and the total text length. Never outputs text.
+$types = @{}; $buckets = @{ "0" = 0; "1-5" = 0; "6-20" = 0; "21-100" = 0; "101+" = 0 }
+$pat = @{ text = 0; text_len = 0; value = 0; value_len = 0; legacy = 0; legacy_len = 0 }
+$n = 0; $maxDepth = 0
+try {
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Hwnd)
+  $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+  $stack = New-Object System.Collections.Stack
+  $stack.Push(@($root, 0))
+  while ($stack.Count -gt 0 -and $n -lt 20000) {
+    $pair = $stack.Pop(); $e = $pair[0]; $d = $pair[1]; $n++
+    if ($d -gt $maxDepth) { $maxDepth = $d }
+    $t = ($e.Current.ControlType.ProgrammaticName -replace 'ControlType.','')
+    if ($types.ContainsKey($t)) { $types[$t]++ } else { $types[$t] = 1 }
+    $L = ([string]$e.Current.Name).Length
+    if ($L -eq 0) { $buckets["0"]++ } elseif ($L -le 5) { $buckets["1-5"]++ } elseif ($L -le 20) { $buckets["6-20"]++ } elseif ($L -le 100) { $buckets["21-100"]++ } else { $buckets["101+"]++ }
+    if (@('Document','List','Pane','Edit','Text','Window','Custom','Group') -contains $t) {
+      $p = $null
+      if ($e.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$p)) { $pat.text++; try { $pat.text_len += $p.DocumentRange.GetText(-1).Length } catch {} }
+      $p = $null
+      if ($e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$p)) { $pat.value++; try { $pat.value_len += ([string]$p.Current.Value).Length } catch {} }
+    }
+    $c = $walker.GetFirstChild($e)
+    $kids = @()
+    while ($c -ne $null) { $kids += ,$c; $c = $walker.GetNextSibling($c) }
+    for ($i = $kids.Count - 1; $i -ge 0; $i--) { $stack.Push(@($kids[$i], $d + 1)) }
+  }
+  ConvertTo-Json -Compress -Depth 4 @{ ok = $true; nodes = $n; max_depth = $maxDepth; types = $types; name_len = $buckets; patterns = $pat }
+} catch { ConvertTo-Json -Compress @{ ok = $false; error = $_.Exception.GetType().Name; nodes = $n } }
+"""
+
+
+def child_windows(hwnd):
+    """子視窗的類別與大小（不含標題文字）。"""
+    import ctypes.wintypes as wt
+    u32 = _u32(); out = []
+    PROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+
+    def cb(h, _):
+        cls = ctypes.create_unicode_buffer(256); u32.GetClassNameW(h, cls, 256)
+        r = wt.RECT(); u32.GetWindowRect(h, ctypes.byref(r))
+        out.append({"hwnd": h, "class": cls.value, "w": r.right - r.left, "h": r.bottom - r.top, "visible": bool(u32.IsWindowVisible(h))})
+        return True
+    u32.EnumChildWindows(hwnd, PROC(cb), 0)
+    return out
+
+
+def deep_scan(hwnd, timeout=60):
+    """RawView 全樹的結構統計（類型個數、名稱長度分布、Text/Value 模式與文字總長度）。不回傳任何文字。"""
+    with tempfile.TemporaryDirectory() as td:
+        ps1 = os.path.join(td, "deep.ps1")
+        open(ps1, "w", encoding="ascii").write(DEEP_PS)
+        try:
+            p = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, str(hwnd)],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "timeout"}
+    try:
+        return json.loads(p.stdout.strip().splitlines()[-1])
+    except Exception:
+        return {"ok": False, "error": "no json"}
+
+
 def _u32():
     return ctypes.windll.user32
 

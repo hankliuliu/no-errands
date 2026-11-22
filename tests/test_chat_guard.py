@@ -285,6 +285,12 @@ def main():
         check("B3-8 peek 留在 ledger", any(e.get("sub") == "probe-peek" and e.get("allowed") for e in led), [e.get("sub") for e in led][-4:])
         if pk and os.path.exists(pk):
             os.remove(pk)
+        # notes-deep：只看結構（子視窗類別、RawView 統計、Text/Value 模式長度），不點、不截、不輸出文字
+        o = cg("probe", "--chat", "Kilo", "--view", "notes-deep")
+        dp = o.get("deep") or {}
+        check("B3-8 notes-deep：回報子視窗類別與 RawView 統計、輸出不含任何文字", o.get("ok") and (dp.get("scan_root") or {}).get("ok")
+              and (dp["scan_root"].get("nodes") or 0) > 0 and "deploy" not in json.dumps(o, ensure_ascii=False)
+              and "Ann" not in json.dumps(o, ensure_ascii=False) and o.get("windows_left_open") == 0, {k: dp.get(k) for k in ("error",)} or dp.get("scan_root"))
         # 記事本開著時 LINE 剛好跳出別的有標題視窗（像來電）：兩個新視窗 → 都不關（關掉來電可能等於拒接），照實回報
         trigger({"op": "callonnotes"})
         o = cg("probe", "--chat", "Kilo", "--view", "notes")
