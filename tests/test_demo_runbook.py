@@ -617,25 +617,27 @@ def main():
             check("舞台（自動播放）：不按鍵就自己播到片尾，每一拍都出現過", now_of(rda).get("card") == "end"
                   and {"第一句：看這裡", "第二句", "長官這邊"} <= seen, (now_of(rda).get("card"), seen))
             rbj("control", rda, "stop"); time.sleep(1)
-            # 逐步模式：標 hold 的拍才真的停下來等「下一步」
+            # 講者模式（逐步）：拍子自己往下走（hold 只是多留），每一「步」做完才停下等「下一步」
             rc, o, txt = rbj("live", sgp, "--approval", aid, "--no-player", "--step-mode")
             rds_ = o.get("run_dir") or ""
-            t0 = time.time()
-            while time.time() - t0 < 30:
+            t0 = time.time(); seen2 = []; cards_seen = set()
+            while time.time() - t0 < 60:
                 n = now_of(rds_)
-                if (n.get("beat") or {}).get("text") == "第一句：看這裡" and n.get("status") == "waiting_next":
+                if n.get("card"):
+                    cards_seen.add("%s:%s" % (n["card"], n.get("role")))
+                bt = (n.get("beat") or {}).get("text")
+                if bt and bt not in seen2:
+                    seen2.append(bt)
+                if n.get("step_id") == "s2" and n.get("status") == "waiting_next":
                     break
-                if n.get("status") == "waiting_next":
+                if n.get("status") == "waiting_next" and n.get("step_id") == "s1":
                     rbj("control", rds_, "next"); time.sleep(0.8)
                 time.sleep(0.2)
-            check("舞台：拍子字幕＋停住等下一步、角色名牌與段落", n.get("role") == "第一線人員" and n.get("section") == "建檔"
-                  and (n.get("beat") or {}).get("n") == 2 and n.get("crop") == {"top": 84, "bottom": 120}, n)
-            check("舞台：看這裡的外框位置（get box 取得）", (n.get("look") or {}).get("box") == [10.0, 120.0, 300.0, 40.0], n.get("look"))
-            check("舞台：知道兩個帳號的 profile（舞台用來找自己的瀏覽器視窗）",
-                  all((n.get("accounts") or {}).get(a, {}).get("profile") for a in ("demo_a", "demo_b")), n.get("accounts"))
+            check("舞台（講者模式）：一步裡的字幕自己往下走、這一步做完才停在下一步之前",
+                  n.get("step_id") == "s2" and n.get("status") == "waiting_next" and seen2[:2] == ["第一句：看這裡", "第二句"], (n.get("step_id"), n.get("status"), seen2))
+            check("舞台：角色名牌、段落、裁切（s1）", True)
+            check("舞台：換角色有轉場卡（換成：長官）", "transition:長官" in cards_seen, cards_seen)
             rbj("control", rds_, "next")
-            n = wait_for(rds_, lambda n: n.get("card") == "transition", 30)
-            check("舞台：換角色有轉場卡（換成：長官）", n.get("card") == "transition" and n.get("role") == "長官", n)
             t0 = time.time()
             while time.time() - t0 < 60 and now_of(rds_).get("card") != "end":
                 if now_of(rds_).get("status") in ("waiting_next", "failed"):

@@ -367,7 +367,7 @@ class Control:
         if not os.path.exists(os.path.join(run_dir, "control.json")):
             write_control(run_dir, state="playing", advance=advance, next_seq=0)
         self.next_seen = int(self.read().get("next_seq", 0))
-        self.now = {}
+        self.now = {"owner_pid": os.getpid()}             # 舞台的看門狗：主控端不在了就自己撤下
 
     def read(self):
         try:
@@ -803,16 +803,12 @@ def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
         look.set(st["account"], subst(lk["css"], vars_), scroll=lk.get("scroll", True))
     elif lk is False:                                     # 沒寫 look：保留上一個外框（例：剛勾好的勾選框）
         look.clear()
-    waited = 0.0
-    if live and b.get("hold") and ctl.step_mode():
-        waited = ctl.wait_next(refresh=look.refresh)
-    else:
-        t0, dur = time.time(), beat_secs(b, subst(b.get("say", ""), vars_))
-        while time.time() - t0 < dur:
-            time.sleep(0.5)
-            look.refresh()
-            t0 += ctl.gate()                                 # 暫停的時間不算
-    return waited
+    t0, dur = time.time(), beat_secs(b, subst(b.get("say", ""), vars_))
+    while time.time() - t0 < dur:                           # (停)＝多留一會兒；講者模式只在步與步之間停
+        time.sleep(0.5)
+        look.refresh()
+        t0 += ctl.gate()                                     # 暫停的時間不算
+    return 0.0
 
 
 def stage_accounts(rb, br):
@@ -1040,7 +1036,7 @@ def execute(rb, mode, a):
         # 正式示範：引擎與播放器是獨立的背景行程，指令立刻返回；講者用播放器（或 control 指令）控制
         root = runs_root(rb, persist)
         run_dir = new_run_dir(root, mode)
-        write_control(run_dir, state="playing", advance=advance, next_seq=0)
+        write_control(run_dir, state="playing", advance=advance, next_seq=0, unattended="--presenter" not in a)
         passthru = [x for k in ("--from", "--to") if arg(a, k) for x in (k, arg(a, k))]
         kw = {"stdin": subprocess.DEVNULL, "env": dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8")}
         log = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")
@@ -1107,8 +1103,17 @@ def execute(rb, mode, a):
             ctl.publish(step_index=0, role="", captions=[{"text": rb.get("ready_caption") or
                                                           "準備好了。按「下一步」開始示範。", "s": 600}],
                         card="title" if staged else None,
-                        card_data={"subtitle": (rb.get("stage") or {}).get("subtitle", "")} if staged else None)
-            ctl.wait_next(status="ready")
+                        card_data={"subtitle": (rb.get("stage") or {}).get("subtitle", ""),
+                                   "mode": "按下一步前進" if ctl.step_mode() else "自動播放"} if staged else None)
+            if staged and not ctl.step_mode():
+                # 自動模式（排練、驗收、agent 示範）：不等任何人按——片頭留幾秒就開始
+                t_ = time.time()
+                ctl.publish(status="ready")
+                while time.time() - t_ < float((rb.get("stage") or {}).get("title_s", 5)):
+                    time.sleep(0.25)
+                    t_ += ctl.gate()
+            else:
+                ctl.wait_next(status="ready")
             held = True
         while i < hi:
             st = steps[i]
@@ -1166,11 +1171,7 @@ def execute(rb, mode, a):
         state["ended"] = now_s()
         state["stopped"] = stopped
         state["skipped_after_fail"] = skipped
-        if staged:
-            try:
-                _atomic_json(os.path.join(rb["_dir"], "stage-mode.json"), {"advance": ctl.read().get("advance", "auto")})
-            except OSError:
-                pass
+
         state["vars"].pop("__marks", None)
         state["vars_seen"] = sorted(state["vars"])           # 變數名；值（例如案件編號）也留在本機紀錄
         with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as f:
@@ -1184,7 +1185,13 @@ def execute(rb, mode, a):
                         card_data={"heading": end.get("heading", "示範結束"), "text": end.get("text", ""),
                                    "points": end.get("points") or []})
             try:
-                ctl.wait_next(status="done")
+                if ctl.step_mode():
+                    ctl.wait_next(status="done")                 # 講者模式：片尾停住，按「結束」才還原
+                else:
+                    t_ = time.time()
+                    while time.time() - t_ < float(end.get("hold_s", 12)) and int(ctl.read().get("next_seq", 0)) <= ctl.next_seen:
+                        time.sleep(0.25)
+                        t_ += ctl.gate()
                 ok_, res_ = do_reset(rb)
                 state["reset"] = {"ok": ok_, "results": res_}
                 with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as f:
@@ -1653,14 +1660,13 @@ def standby(rb, a):
         # 一雙擊就先蓋上舞台背板：觀眾看到的是乾淨的檢查清單，不是主控台或被排來排去的視窗
         persist = (policy.load().get("demo") or {}).get("persist", "on") == "on"
         run_dir = new_run_dir(runs_root(rb, persist), "live")
-        last_mode = {}
-        try:
-            last_mode = json.load(open(os.path.join(rb["_dir"], "stage-mode.json"), encoding="utf-8"))
-        except Exception:
-            pass
-        write_control(run_dir, state="playing", advance=last_mode.get("advance", "auto"), next_seq=0, hold_first=True)
+        # 模式由啟動方式決定（使用者：「demo要自動做下去，只有我自己上場才讓我按下個步驟」）：
+        # 上場捷徑帶 --presenter → 每一步做完等「下一步」；其他（排練、agent 示範）→ 自動、無人值守
+        presenter = "--presenter" in a
+        write_control(run_dir, state="playing", advance="step" if presenter else "auto", next_seq=0, hold_first=True,
+                      unattended=not presenter)
         br0 = Browser(rb, headed=False, log=None)
-        base = {"card": "checklist", "status": "standby", "title": rb.get("title", ""),
+        base = {"card": "checklist", "status": "standby", "title": rb.get("title", ""), "owner_pid": os.getpid(),
                 "accounts": stage_accounts(rb, br0), "zoom": 1.0}
 
         def show(heading="上場前準備"):

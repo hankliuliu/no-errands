@@ -98,6 +98,48 @@ def main():
             kill_tree(p); closed = False
         check("%d×%d：status=closing → 舞台自己收掉" % (W, H), closed)
         shutil.rmtree(d, ignore_errors=True)
+    # ---- 安全出口：任何卡片都不能留下蓋滿螢幕、按什麼都沒反應的背板
+    import ctypes
+
+    def closes_within(p, t):
+        try:
+            p.wait(t)
+            return True
+        except subprocess.TimeoutExpired:
+            kill_tree(p)
+            return False
+
+    def stage_with(now, ctl=None, env_extra=None):
+        d = tempfile.mkdtemp(prefix="ne-stage-")
+        json.dump(now, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        if ctl is not None:
+            json.dump(ctl, open(os.path.join(d, "control.json"), "w"))
+        env = dict(os.environ, NE_STAGE_NO_HOTKEYS="1")
+        env.update(env_extra or {})
+        return d, spawn(d, env)
+
+    title = {"card": "title", "status": "ready", "title": "測試", "card_data": {"subtitle": "副標", "mode": "自動播放"}}
+    # 1 主控端（引擎）被強制結束 → 舞台幾秒內自己關
+    eng = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    d, p = stage_with(dict(title, owner_pid=eng.pid))
+    time.sleep(3)
+    eng.kill()
+    check("引擎被強制結束 → 舞台在 15 秒內自己關（片頭卡）", closes_within(p, 15))
+    # 2 引擎停了（control stopped）→ 片頭卡上也會說一句後自己關
+    d, p = stage_with(dict(title), {"state": "playing", "advance": "auto", "next_seq": 0})
+    time.sleep(3)
+    json.dump({"state": "stopped", "advance": "auto", "next_seq": 0}, open(os.path.join(d, "control.json"), "w"))
+    check("示範停止（片頭卡）→ 舞台說一句後自己關", closes_within(p, 10))
+    # 3 Ctrl+Shift+F12 在每一種卡片上都能離開（全域熱鍵，不依賴引擎）
+    ku = ctypes.windll.user32
+    for card in ("title", "checklist", None):
+        now = {"card": card, "status": "running", "card_data": {"heading": "x", "items": []}, "beat": {"text": "字幕", "i": 1, "n": 2}}
+        d, p = stage_with(now, None, {"NE_STAGE_NO_HOTKEYS": ""})
+        time.sleep(3)
+        for vk, up in ((0x11, 0), (0x10, 0), (0x7B, 0), (0x7B, 2), (0x10, 2), (0x11, 2)):   # Ctrl、Shift、F12 按下再放開
+            ku.keybd_event(vk, 0, up, 0); time.sleep(0.05)
+        check("Ctrl+Shift+F12 → 離開（卡片：%s）" % (card or "示範中"), closes_within(p, 10))
+
     # 預備清單沒過、講者按停止 → 收掉
     d = tempfile.mkdtemp(prefix="ne-stage-")
     json.dump({"card": "checklist", "card_data": {"heading": "還沒準備好", "items": [{"name": "連線到示範系統", "state": "fail",

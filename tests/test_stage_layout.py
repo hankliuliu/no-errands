@@ -64,5 +64,13 @@ check("被裁掉（在舞台外）的方框不畫", L.css_to_screen((0, 0, 200, 
 part = L.css_to_screen((300, 60, 400, 50), stage, crop, 1.5, 1.0)
 check("一半在舞台外 → 只畫舞台內的部分", part and part[1] == stage[1] and part[3] < 75, part)
 
+import demo_stage as DS  # noqa: E402
+q = r'"C:\x\chrome.exe" "--remote-debugging-port=0" "--user-data-dir=C:\Users\u\p\demo_a" "--window-size=1280,720"'
+check("認得自己的瀏覽器：參數整個包在引號裡的 --user-data-dir（agent-browser 的啟動方式）",
+      DS.profile_of_cmdline(q) == r"C:\Users\u\p\demo_a", DS.profile_of_cmdline(q))
+q2 = r"chrome.exe --user-data-dir=C:\p\b --x=1"
+check("認得自己的瀏覽器：沒有引號的 --user-data-dir", DS.profile_of_cmdline(q2) == r"C:\p\b", DS.profile_of_cmdline(q2))
+check("沒有 --user-data-dir → 不認", DS.profile_of_cmdline("chrome.exe --type=renderer") is None)
+
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
 sys.exit(0 if all(R) else 1)
