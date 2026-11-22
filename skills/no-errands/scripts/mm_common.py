@@ -89,6 +89,24 @@ def get(base, tok, path, params=None):
         raise RuntimeError("Mattermost GET %s → 連線失敗（%s）" % (path.split("?")[0], type(getattr(e, "reason", e)).__name__)) from None
 
 
+def get_bytes(base, tok, path, max_bytes=50 * 1024 * 1024):
+    """唯讀 GET 下載附件位元組（/files/<id>）；超過 max_bytes 就停，回 (None, "too_large")。"""
+    if not path.startswith("/") or ".." in path:
+        raise ValueError("bad path")
+    req = urllib.request.Request(base + "/api/v4" + path, method="GET",
+                                 headers={"Authorization": "Bearer " + tok, "User-Agent": "no-errands"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = r.read(max_bytes + 1)
+    except urllib.error.HTTPError as e:
+        return None, "http_%d" % e.code
+    except (urllib.error.URLError, OSError) as e:
+        return None, "conn_%s" % type(getattr(e, "reason", e)).__name__
+    if len(data) > max_bytes:
+        return None, "too_large"
+    return data, None
+
+
 def resolve_target(base, tok, to):
     """把發件匣的 to（頻道 id 或 @使用者名稱）解析成人看得懂的標籤。只用 GET。
     回 {"label": str, "kind": "channel"|"dm"}；失敗丟例外。"""

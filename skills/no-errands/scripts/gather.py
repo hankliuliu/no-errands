@@ -9,6 +9,10 @@
   gather.py read --target <id> [--from YYYY-MM-DD] [--to YYYY-MM-DD]
   gather.py import --target <id> <手機匯出的 txt>            # 桌面版拿不到的更早歷史，一次補齊
   gather.py targets                                         # 列出目標（id、服務、起始；不印聊天室名稱）
+  gather.py config --target <id> [--photos on|off] [--videos on|off]   # 照片／影片預設不收（量大）
+  gather.py fetch --target <id> [--kind photo|video|file|audio] [--from D] [--to D] [--item <編號>]   # 依未收清單補收
+附件：看到的每一筆都進 <目標>/files/index.jsonl（status received|missing＋原因）；人看的清單是 files/未收清單.md。
+Mattermost 另存頻道標題／用途與釘選貼文（announcements.json）；read 會一併回傳公告與記事本。
 
 儲存：~/.no-errands/gather/targets.json（目標設定；聊天室名稱只在這裡與政策檔）、
       ~/.no-errands/gather/<service>/<雜湊>/messages.jsonl ＋ state.json。內容不進 repo、log、ledger（ledger 只記筆數）。
@@ -23,6 +27,7 @@ import hashlib, json, os, re, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nowin  # noqa: E402,F401
 import policy  # noqa: E402
+import gather_items as gi  # noqa: E402
 
 HOME = policy.HOME
 GROOT = os.path.join(HOME, "gather")
@@ -332,8 +337,57 @@ def _mm_posts(t, since_ms):
         rows.append({"id": p["id"], "date": time.strftime("%Y-%m-%d", lt), "time": time.strftime("%H:%M", lt),
                      "sender": uname(p.get("user_id", "")), "text": p.get("message", ""), "kind": "text",
                      "create_at": p.get("create_at", 0), "update_at": p.get("update_at", 0),
-                     "deleted": bool(p.get("delete_at"))})
+                     "deleted": bool(p.get("delete_at")),
+                     "files": [{k: f.get(k) for k in ("id", "name", "size", "mime_type", "extension")}
+                               for f in ((p.get("metadata") or {}).get("files") or [])]})
     return rows
+
+
+def _mm_conn():
+    import mm_common
+    mm = (policy.load(HOME).get("mattermost") or {})
+    base, tok = mm_common.conf(mm.get("token_file"), mm.get("url"))
+    return mm_common, base, tok
+
+
+def _mm_extras(t):
+    """頻道標題／用途與釘選貼文（GET）。拿不到就照實回錯誤種類，不影響訊息同步。"""
+    mmc, base, tok = _mm_conn()
+    ann = {}
+    try:
+        ch = mmc.get(base, tok, "/channels/%s" % t["chat"])
+        ann["header"], ann["purpose"] = ch.get("header") or "", ch.get("purpose") or ""
+    except Exception as e:
+        ann["header_error"] = str(e)[:80]
+    try:
+        pin = mmc.get(base, tok, "/channels/%s/pinned" % t["chat"])
+        posts = (pin or {}).get("posts") or {}
+        ann["pinned"] = [{"id": p["id"], "date": time.strftime("%Y-%m-%d", time.localtime(p.get("create_at", 0) / 1000)),
+                          "time": time.strftime("%H:%M", time.localtime(p.get("create_at", 0) / 1000)),
+                          "user_id": p.get("user_id"), "text": p.get("message", "")}
+                         for p in sorted(posts.values(), key=lambda p: p.get("create_at", 0))]
+    except Exception as e:
+        ann["pinned_error"] = str(e)[:80]
+    return ann
+
+
+def _mm_fetcher():
+    mmc, base, tok = _mm_conn()
+    return lambda fid: mmc.get_bytes(base, tok, "/files/%s" % fid, gi.MAX_BYTES)
+
+
+def update_items(tid, t, d, msgs):
+    """訊息同步完之後：附件進索引（看到的每一筆都留紀錄）、Mattermost 下載該收的、寫未收清單。"""
+    items = gi.load_items(d)
+    new = gi.from_line_messages(t, msgs) if t["service"] == "line" else gi.from_mm_files(t, msgs)
+    items, added = gi.merge_items(items, new)
+    dl = None
+    if t["service"] == "mattermost":
+        if any(it["status"] == "pending" for it in items):
+            dl = gi.download_mm(d, items, _mm_fetcher())
+        gi.save_announcements(d, _mm_extras(t))
+    gi.write_outputs(d, t, items)
+    return dict(gi.summary(items), new_items=added, **({"downloaded": dl} if dl else {}))
 
 
 def sync_one(tid, t, load_hist=False):
@@ -367,6 +421,7 @@ def sync_one(tid, t, load_hist=False):
             st["cursor_ms"] = max(max(r["update_at"], r["create_at"]) for r in all_rows)
         res = {"mode": "api", "added": added, "updated": updated}
     save_msgs(d, merged)
+    res["items"] = update_items(tid, t, d, merged)
     st["last_sync"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     st.setdefault("syncs", []).append(dict(res, at=st["last_sync"], total=len(merged)))
     st["syncs"] = st["syncs"][-50:]
@@ -394,6 +449,14 @@ def cmd_status(a):
         row = {"target": tid, "service": t["service"], "since": t["since"], "count": len(ms), "earliest": earliest,
                "latest": "%s %s" % (ms[-1]["date"], ms[-1]["time"]) if ms else None, "last_sync": st.get("last_sync"),
                "gaps": st.get("gaps", [])}
+        items = gi.load_items(d)
+        if items:
+            row["items"] = gi.summary(items)
+            if row["items"]["download_failed"]:
+                row["attention"] = "有 %d 個附件下載失敗：gather.py fetch --target %s 重試；清單在 files/未收清單.md" % (row["items"]["download_failed"], tid)
+        ann = gi.load_announcements(d)
+        row["notes"] = gi.count_notes(d)
+        row["announcements"] = len(ann.get("announcements") or []) + len(ann.get("pinned") or [])
         if earliest and t["since"] < earliest:
             row["warning"] = "起始時間早於目前拿得到的最早訊息：%s 之前的還沒收到（桌面版可能拿不到；可用手機匯出 import 補齊）" % earliest
         if st.get("last_sync") and time.time() - time.mktime(time.strptime(st["last_sync"], "%Y-%m-%dT%H:%M:%S")) > 14 * 86400:
@@ -408,9 +471,53 @@ def cmd_read(a):
     ts = load_targets(); tid = arg(a, "--target")
     if tid not in ts:
         out({"ok": False, "error": "沒有這個目標"}, 2)
-    ms = load_msgs(tdir(tid, ts[tid]))
+    d = tdir(tid, ts[tid])
+    ms = load_msgs(d)
     lo, hi = arg(a, "--from", "0000"), arg(a, "--to", "9999")
-    out({"ok": True, "messages": [m for m in ms if lo <= m["date"] <= hi]})
+    notes = []
+    nd = os.path.join(d, "notes")
+    if os.path.isdir(nd):
+        notes = [open(os.path.join(nd, f), encoding="utf-8").read() for f in sorted(os.listdir(nd)) if f.endswith(".md")]
+    out({"ok": True, "messages": [m for m in ms if lo <= m["date"] <= hi], "announcements": gi.load_announcements(d),
+         "notes": notes})
+
+
+def cmd_config(a):
+    """每個目標的收集設定：--photos on|off、--videos on|off（預設都 off：量大）。"""
+    ts = load_targets(); tid = arg(a, "--target")
+    if tid not in ts:
+        out({"ok": False, "error": "沒有這個目標"}, 2)
+    changed = {}
+    for k in ("photos", "videos"):
+        v = arg(a, "--" + k)
+        if v in ("on", "off"):
+            ts[tid][k] = v == "on"; changed[k] = v
+    save_targets(ts)
+    ledger(cmd="config", target=tid, **changed)
+    out({"ok": True, "target": tid, "photos": bool(ts[tid].get("photos")), "videos": bool(ts[tid].get("videos")),
+         "note": "只影響之後看到的項目；已列在未收清單的用 fetch 補"})
+
+
+def cmd_fetch(a):
+    """依未收清單補收：--kind photo|video|file|audio、--from/--to 日期、--item <編號>。使用者點名的就算「依設定不收」也補。"""
+    ts = load_targets(); tid = arg(a, "--target")
+    if tid not in ts:
+        out({"ok": False, "error": "需要 --target <id>"}, 2)
+    t = ts[tid]; d = tdir(tid, t)
+    items = gi.load_items(d)
+    sel = gi.select_fn(arg(a, "--kind"), arg(a, "--from"), arg(a, "--to"), arg(a, "--item"))
+    chosen = [it for it in items if sel(it)]
+    if not chosen:
+        out({"ok": True, "target": tid, "matched": 0, "items": gi.summary(items)})
+    if t["service"] == "mattermost":
+        expired = sum(1 for it in chosen if it["reason"] == "已過期")
+        res = gi.download_mm(d, items, _mm_fetcher(), select=lambda it: sel(it) and it["reason"] != "已過期", force=True)
+        gi.write_outputs(d, t, items)
+        ledger(cmd="fetch", target=tid, matched=len(chosen), **res)
+        out({"ok": True, "target": tid, "matched": len(chosen), "still_expired": expired, **res, "items": gi.summary(items)})
+    # LINE：要從聊天室的檔案分頁另存（畫面操作），這一步尚未完成——照實回報，不假裝補到
+    out({"ok": False, "target": tid, "matched": len(chosen), "error": "LINE 的補收要從聊天室的檔案分頁另存，這一步還沒做好；清單照舊保留",
+         "items": gi.summary(items)}, 3)
 
 
 def cmd_import(a):
@@ -425,8 +532,9 @@ def cmd_import(a):
     if mi.get("gap"):
         st.setdefault("gaps", []).append(dict(mi["gap"], found=time.strftime("%Y-%m-%dT%H:%M:%S")))
     save_msgs(d, merged); save_state(d, st); write_dest(tid, t, merged)
+    items = update_items(tid, t, d, merged)
     ledger(cmd="import", target=tid, added=mi["added"], total=len(merged))
-    out({"ok": True, "mode": mi["mode"], "added": mi["added"], "total": len(merged)})
+    out({"ok": True, "mode": mi["mode"], "added": mi["added"], "total": len(merged), "items": items})
 
 
 def cmd_targets(a):
@@ -439,7 +547,7 @@ def main():
     if not a or a[0] in ("-h", "--help"):
         print(__doc__); sys.exit(2)
     {"add": cmd_add, "sync": cmd_sync, "status": cmd_status, "read": cmd_read, "import": cmd_import,
-     "targets": cmd_targets}.get(a[0], lambda _: out({"ok": False, "error": "沒有這個子指令"}, 2))(a)
+     "targets": cmd_targets, "config": cmd_config, "fetch": cmd_fetch}.get(a[0], lambda _: out({"ok": False, "error": "沒有這個子指令"}, 2))(a)
 
 
 if __name__ == "__main__":
