@@ -157,7 +157,8 @@ $send = New-Object System.Windows.Forms.Button
 $send.Text = 'Send'; $send.AccessibleName = 'Send'; $send.Left = 646; $send.Top = 396; $send.Width = 84
 
 # Header tool bar (like LINE): first button = open chat's display name, then a notes button (CJK name) and others.
-# The notes button opens a separate top-level window 'NE-NOTES' (no activation); events notes-open / notes-close.
+# The notes button opens a separate top-level window titled with the notes word (no activation); events notes-open / notes-close.
+# Test hook {"op":"callin","ms":N}: after N ms an unrelated titled window 'NE-CALL' pops up (like an incoming call).
 $tools = New-Object System.Windows.Forms.FlowLayoutPanel
 $tools.Left = 270; $tools.Top = 430; $tools.Width = 470; $tools.Height = 34; $tools.AccessibleName = 'chat tools'
 $cjkNotes = -join [char[]](0x8A18, 0x4E8B, 0x672C)
@@ -173,7 +174,7 @@ foreach ($nm in @($cjkNotes, 'Mute', 'Search tools', 'Call', 'Pin')) {
 $script:notesBtn.Add_Click({
     if (-not $script:current) { return }
     $nf = New-Object NeNoActivateForm
-    $nf.Text = 'NE-NOTES'; $nf.Width = 360; $nf.Height = 240; $nf.StartPosition = 'Manual'; $nf.Left = 900; $nf.Top = 120
+    $nf.Text = $cjkNotes; $nf.Width = 360; $nf.Height = 240; $nf.StartPosition = 'Manual'; $nf.Left = 900; $nf.Top = 120
     $nl = New-Object System.Windows.Forms.ListBox
     $nl.Dock = 'Fill'; $nl.AccessibleName = 'notes'
     [void]$nl.Items.Add('Note by Ann: deploy checklist v2')
@@ -305,6 +306,16 @@ $timer.Add_Tick({
                 if ($t.op -eq 'firstline') { $script:firstLineOverride = $t.text; continue }
                 if ($t.op -eq 'reset') { $script:exportNameOverride = $null; $script:firstLineOverride = $null; $script:dialogDelay = 0; continue }
                 if ($t.op -eq 'dialogdelay') { $script:dialogDelay = [int]$t.ms; continue }
+                if ($t.op -eq 'callin') {
+                    $ct = New-Object System.Windows.Forms.Timer
+                    $ct.Interval = [Math]::Max(1, [int]$t.ms)
+                    $ct.Add_Tick({ param($s, $e) $s.Stop(); $s.Dispose()
+                        $cf = New-Object NeNoActivateForm
+                        $cf.Text = 'NE-CALL'; $cf.Width = 300; $cf.Height = 160; $cf.StartPosition = 'Manual'; $cf.Left = 900; $cf.Top = 420
+                        $cf.Add_FormClosed({ Write-JsonLine $eventFile @{ kind = 'call-closed' } })
+                        $cf.Show(); Write-JsonLine $eventFile @{ kind = 'call-shown' } })
+                    $ct.Start(); continue
+                }
                 $c = $chats | Where-Object { $_.name -eq $t.chat } | Select-Object -First 1
                 if (-not $c) { continue }
                 if ($t.op -eq 'message') {

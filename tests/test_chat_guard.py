@@ -265,7 +265,18 @@ def main():
         check("B3-8 probe 輸出不含對話名稱與記事內容", "Kilo" not in dump and "deploy" not in dump and "Ann" not in dump, dump[:300])
         lw = json.loads(subprocess.run([a.ad, "list-windows"], capture_output=True, text=True, encoding="utf-8").stdout)
         check("B3-8 probe 收尾：開出來的記事本視窗已關掉", o.get("closed_windows", 0) >= 1 and o.get("windows_left_open") == 0
-              and events("notes-close") - c0 == 1 and not any(w.get("title") == "NE-NOTES" for w in lw.get("data", [])), o)
+              and events("notes-close") - c0 == 1, o)
+        # 記事本開著時 LINE 剛好跳出別的有標題視窗（像來電）：兩個新視窗 → 都不關（關掉來電可能等於拒接），照實回報
+        trigger({"op": "callin", "ms": 300})
+        o = cg("probe", "--chat", "Kilo", "--view", "notes")
+        check("B3-8 probe 期間跳出不相干的視窗：不關、照實回報 windows_left_open", o.get("ok") and o.get("windows_left_open", 0) >= 1
+              and events("call-closed") == 0 and events("call-shown") == 1, o)
+        import ctypes
+        for ttl in ("NE-CALL", "記事本"):   # 測試自己收掉
+            hw = ctypes.windll.user32.FindWindowW(None, ttl)
+            if hw:
+                ctypes.windll.user32.PostMessageW(hw, 0x0010, 0, 0)
+        time.sleep(1.0)
         cg("close")
         cg("open", "--chat", "Delta Friends", "--expect", cg("locate", "--chat", "Delta Friends").get("fingerprint") or "x")
         o = cg("probe", "--chat", "Delta Friends", "--view", "notes")

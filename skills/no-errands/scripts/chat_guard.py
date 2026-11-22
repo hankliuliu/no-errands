@@ -581,29 +581,51 @@ def _shape(node, depth=0, maxd=14):
     return d
 
 
-def _close_new(pid, before, res):
-    """收尾：這次探索新出現的視窗一律關掉——彈出視窗用 close_popup，有標題的頂層視窗送 WM_CLOSE 並確認真的關了。"""
+VIEW_TITLES = {"notes": ("記事本", "Notes", "Note", "Keep")}
+
+
+def _close_new(pid, before, res, view=None):
+    """收尾：只關「這次點擊預期會開的」——無標題的彈出選單照舊關；有標題的頂層視窗只有在新出現的剛好一個、
+    而且標題是這個檢視的介面用語（記事本／Notes…）時才送 WM_CLOSE。其他（例如 LINE 剛好跳出的來電視窗）一律不碰：
+    關掉來電視窗可能等於拒接，是對外的動作。不關的照實記在 windows_left_open 與標題字數。"""
     import ctypes
     u32 = ctypes.windll.user32
-    closed, left = 0, 0
-    for w in popup_menu.popup_windows(pid, exclude=before):
-        titled = u32.GetWindowTextLengthW(w["hwnd"]) > 0
+    news = popup_menu.popup_windows(pid, exclude=before)
+
+    def title(h):
+        n = u32.GetWindowTextLengthW(h)
+        buf = ctypes.create_unicode_buffer(n + 1); u32.GetWindowTextW(h, buf, n + 1)
+        return buf.value
+
+    titled = [w for w in news if u32.GetWindowTextLengthW(w["hwnd"]) > 0]
+    expected = None
+    if len(titled) == 1 and view in VIEW_TITLES and title(titled[0]["hwnd"]).strip() in VIEW_TITLES[view]:
+        expected = titled[0]["hwnd"]
+    closed, left = 0, []
+    for w in news:
+        h = w["hwnd"]
+        is_titled = w in titled
+        if is_titled and h != expected:
+            left.append({"title_len": len(title(h)), "class": w["class"]})
+            continue
         try:
-            if titled:
-                u32.PostMessageW(w["hwnd"], 0x0010, 0, 0)   # WM_CLOSE
+            if is_titled:
+                u32.PostMessageW(h, 0x0010, 0, 0)   # WM_CLOSE
             else:
-                popup_menu.close_popup(w["hwnd"])
+                popup_menu.close_popup(h)
         except Exception:
             pass
         for _ in range(20):
             time.sleep(0.15)
-            if not u32.IsWindow(w["hwnd"]) or not u32.IsWindowVisible(w["hwnd"]):
+            if not u32.IsWindow(h) or not u32.IsWindowVisible(h):
                 break
-        if u32.IsWindow(w["hwnd"]) and u32.IsWindowVisible(w["hwnd"]):
-            left += 1
+        if u32.IsWindow(h) and u32.IsWindowVisible(h):
+            left.append({"title_len": len(title(h)) if is_titled else 0, "class": w["class"], "close_failed": True})
         else:
             closed += 1
-    res["closed_windows"], res["windows_left_open"] = closed, left
+    res["closed_windows"], res["windows_left_open"] = closed, len(left)
+    if left:
+        res["left_windows"] = left
 
 
 def cmd_probe(app, prof, chat, view, pol):
@@ -661,7 +683,7 @@ def cmd_probe(app, prof, chat, view, pol):
         if view in (prof.get("view_buttons") or {}) and not res["new_windows"] and not res["new_popups"]:
             res["left_open"] = True   # 主視窗內原地切換：先不自己亂點返回，回報結構再決定正式路徑怎麼回去
     finally:
-        _close_new(pid, before, res)
+        _close_new(pid, before, res, view)
     ledger(app, "probe", True, view or "", chat)
     out(dict(res, ok=True))
 
