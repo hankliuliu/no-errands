@@ -610,7 +610,7 @@ def _shape(node, depth=0, maxd=14):
 
 # 真機（2026-11-22）：LINE 開出來的視窗標題一律是「LINE」——不能靠標題認。改看視窗內容：預期的那個視窗裡一定有這個檢視的項目
 #（記事本視窗有「記事本」分頁；其他功能面板有「儲存聊天」）。假聊天的記事本視窗標題就是記事本，也算。
-VIEW_MARKERS = {"notes": ("記事本", "Notes", "Note"), "notes-tab": ("記事本", "Notes", "Note"),
+VIEW_MARKERS = {"notes": ("記事本", "Notes", "Note"), "notes-tab": ("記事本", "Notes", "Note"), "notes-deep": ("記事本", "Notes", "Note"),
                 "menu": ("儲存聊天", "儲存聊天記錄", "Save chat", "Save chat history")}
 # 記事本視窗裡可以點的分頁（只讀切換）：名稱完全相符、型別是 Button、在那個視窗裡唯一
 NOTES_TABS = {"notes-tab": ("記事本", "Notes")}
@@ -710,6 +710,25 @@ def _click_notes_tab(pid, before, view, res, app=None, chat=None):
     res["notes_tab_items"] = [{"n": _mask(i.get("name")), "t": i.get("type")} for i in (after.get("items") or [])][:150]
 
 
+def _deep_notes(pid, before, res):
+    """只看結構（不點、不截、不輸出文字）：記事本視窗的子視窗類別與大小；RawView 全樹的類型個數、名稱長度分布、
+    Text／Value 模式與文字總長度；若有 Chrome 系子視窗（嵌入的網頁），從子視窗再掃一次。
+    （LegacyIAccessible 不在 .NET 的 UIA 用戶端裡，這一版不查。）"""
+    import ctypes
+    u32 = ctypes.windll.user32
+    titled = [w for w in popup_menu.popup_windows(pid, exclude=before)
+              if not w["class"].startswith("shadow_") and u32.GetWindowTextLengthW(w["hwnd"]) > 0]
+    if len(titled) != 1:
+        res["deep"] = {"error": "新視窗不是剛好一個（%d）" % len(titled)}
+        return
+    h = titled[0]["hwnd"]
+    kids = popup_menu.child_windows(h)
+    deep = {"children": [{k: c[k] for k in ("class", "w", "h", "visible")} for c in kids][:40], "scan_root": popup_menu.deep_scan(h)}
+    web = [c for c in kids if c["class"].startswith("Chrome_") or "WebEngine" in c["class"] or "RenderWidget" in c["class"]]
+    deep["scan_children"] = [{"class": c["class"], "scan": popup_menu.deep_scan(c["hwnd"])} for c in web[:4]]
+    res["deep"] = deep
+
+
 def _peek_notes(pid, before, chat, res, app):
     """看一眼（只限探索）：只截這次探索自己開出的記事本視窗（新出現的有標題視窗剛好一個、裡面有記事本分頁）。
     單一視窗擷取；主視窗絕不截（聊天列表會露出白名單以外的名稱與預覽）。圖存在該目標收集資料夾底下的暫存處，
@@ -779,8 +798,8 @@ def cmd_probe(app, prof, chat, view, pol, peek=False):
             if not btn:
                 raise Refused("找不到選單按鈕")
             guarded(prof, "click", btn, bp, {"zone": "main", "allow": "menu-button"})
-        elif view in (prof.get("view_buttons") or {}) or view in NOTES_TABS:
-            nm = prof["view_buttons"]["notes" if view in NOTES_TABS else view]
+        elif view in (prof.get("view_buttons") or {}) or view in NOTES_TABS or view == "notes-deep":
+            nm = prof["view_buttons"]["notes" if (view in NOTES_TABS or view == "notes-deep") else view]
             tb = header_toolbar(full, chat)
             btn = next((k for k in (tb or {}).get("children") or [] if k.get("role") == "button" and k.get("name") == nm), None)
             if not btn:
@@ -792,6 +811,8 @@ def cmd_probe(app, prof, chat, view, pol, peek=False):
         time.sleep(1.5)
         if view in NOTES_TABS:
             _click_notes_tab(pid, before, view, res, app, chat)
+        if view == "notes-deep":
+            _deep_notes(pid, before, res)
         if peek and view in ("notes", "notes-tab"):
             _peek_notes(pid, before, chat, res, app)
         res["main_after"] = _shape(snapshot(win, interactive=False)["tree"])
