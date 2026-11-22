@@ -836,6 +836,11 @@ class Stage:
             self.show_caption(False)
         # 控制列：和字幕重疊時往上讓到字幕上方（字幕不動）
         cx_, cy_, cw_, ch_ = L.controls_pos(self.lay, self.cap_box() if (text and self.cap_on) else None)
+        # 控制列顯示中（使用者可能正要按）只往上讓、不往下跳回：例如按 × 收起字幕時，按鈕不會在游標底下移走；
+        # 收起之後（滑鼠不動 2.5 秒）才回到右下角
+        prev_ = getattr(self, "_ctl_xy", None)
+        if self.ctl_shown and prev_ and cy_ > prev_[1]:
+            cx_, cy_ = prev_
         # 和實際位置比（不只比上次下的指令）：視窗還沒顯示前下的移動會被 Tk 吃掉（CI：控制列一開始就顯示時停在預設位置）
         # 同一個目標連續重擺 3 次仍不相符（例如座標系不一致）就停手並記下，不要每一格都重擺（da 的提醒）
         actual = (self.ctlw.winfo_x(), self.ctlw.winfo_y()) if self.ctlw.winfo_viewable() else None

@@ -338,12 +338,21 @@ def real_chrome_checks(stage_with):
             g1 = rd(geom)
             if g1.get("caption_on") is not False:
                 fails.append((r_, "×", zstack(g0[0] + g0[2] - 10, g0[1] + 8)))
+            # 字幕收起後控制列移回右下角：等它實際位置＝應有位置、按鈕座標穩定了再按（讀到移動前的座標會按空）
+            def ctl_settled():
+                g_ = rd(geom)
+                cr_, cw_ = g_.get("controls_rect"), g_.get("controls_want")
+                return g_ if (g_.get("cap_btn") and cr_ and cw_ and cr_[:2] == cw_[:2]) else None
+            g1 = wait(ctl_settled, 2) or rd(geom)
+            time.sleep(0.25)
+            g1 = ctl_settled() or g1
             cb = g1.get("cap_btn")
             if cb:
                 move(cb[0], cb[1]); time.sleep(0.3)
                 u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.8)
             if rd(geom).get("caption_on") is not True:
-                fails.append((r_, "用控制列打開字幕", rd(geom).get("cap_btn")))
+                fails.append((r_, "用控制列打開字幕", {"cap_btn": cb, "controls_rect": g1.get("controls_rect"),
+                                                   "controls_want": g1.get("controls_want"), "stack": zstack(*cb) if cb else None}))
                 break
             c_now = page_clicks()
             if c_now != c_start:
@@ -374,10 +383,13 @@ def real_chrome_checks(stage_with):
         drag_from(0.5, 0.5, "字的中間", dx=150, dy=60)
         drag_from(0.27, 0.62, "字與字之間／筆畫附近", dx=-80, dy=90)
         shot_png("stage-shot-3-dragged.png")
-        stress_rounds(20)
         check("A2 拖過之後位置存檔（下次沿用）", rd(os.path.join(work, "stage-caption.json")).get("pos"),
               rd(os.path.join(work, "stage-caption.json")))
+        stress_rounds(20)
         # 按兩下：回到預設位置（即使游標停在字幕上也立刻移回）
+        g0 = rd(geom).get("caption_plate")
+        check("（接續前）字幕顯示中", g0, rd(geom).get("caption_on"))
+    if pl and rd(geom).get("caption_plate"):
         g0 = rd(geom).get("caption_plate")
         move(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2); time.sleep(0.3)
         for _ in range(2):
