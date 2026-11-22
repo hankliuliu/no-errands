@@ -41,8 +41,14 @@ far = (10, lay["stage"][1] + 10, 100, 30)
 check("外框不重疊 → 留在預設位置", L.caption_pos((bw, bh), lay, look=far) == (dx, dy))
 ctl = lay["controls"]
 wide = (1500, bh)
-cx, cy = L.caption_pos(wide, lay, ctl=ctl)
-check("和控制列左右重疊 → 放在控制列上方", cy + bh <= ctl[1], (cy, ctl))
+cx, cy = L.caption_pos(wide, lay)
+check("字幕不因控制列移動（caption_pos 不看控制列）", (cx, cy) == L.caption_pos(wide, lay, look=None), (cx, cy))
+cp_ = L.controls_pos(lay, (cx, cy, wide[0], wide[1]))
+hint_h = lay["ctl_font"] * 2
+check("控制列和字幕重疊 → 控制列（連同提示列）讓到字幕上方，字幕不動",
+      cp_[1] + cp_[3] <= cy - 12 and not L.overlaps((cp_[0], cp_[1] - hint_h, cp_[2], cp_[3] + hint_h), (cx, cy, wide[0], wide[1])), (cp_, cy))
+check("控制列和字幕不重疊 → 留在右下角", L.controls_pos(lay, (10, cy, 200, bh)) == tuple(ctl))
+check("沒有字幕 → 控制列在右下角", L.controls_pos(lay, None) == tuple(ctl))
 user = (0.1, 0.2)
 check("拖過（使用者位置）→ 用使用者的位置，不再自動讓開",
       L.caption_pos((bw, bh), lay, look=look, user=user) == (int(lay["stage"][0] + 0.1 * lay["stage"][2]), int(lay["stage"][1] + 0.2 * lay["stage"][3])))

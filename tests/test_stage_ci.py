@@ -234,7 +234,30 @@ def real_chrome_checks(stage_with):
     if mr and img:
         c = px_at(img, mr[0] + mr[2] // 2, mr[1] + mr[3] // 2)
         check("遮罩的顏色是指定的頁面底色", abs(c[0] - 255) < 20 and c[1] < 40 and abs(c[2] - 255) < 20, c)
-    # 3 拖動：兩層一起動
+    # 3 滑鼠一動控制列出現：字幕不動（控制列讓位）
+    if pl:
+        def move_abs(x_, y_):
+            u.mouse_event(0x8001, int(x_ * 65535 / (W - 1)), int(y_ * 65535 / (H - 1)), 0, 0)
+        move_abs(W // 2, H // 3); time.sleep(0.15); move_abs(W // 2 + 40, H // 3 + 30); time.sleep(0.8)
+        g3 = rd(geom)
+        check("A2 滑鼠移動讓控制列出現時，字幕位置前後不變", g3.get("controls_visible") and g3.get("caption_plate") == pl,
+              (pl, g3.get("caption_plate"), g3.get("controls_visible")))
+        cr3 = g3.get("controls_rect")
+        check("控制列出現時不蓋住字幕", cr3 and not L.overlaps(cr3, pl), (cr3, pl))
+        # 4 滑鼠停在字幕上時換句子：字幕不跳（以中心與底邊為錨點）
+        move_abs(pl[0] + pl[2] // 2, pl[1] + pl[3] // 2); time.sleep(0.6)
+        n2 = dict(now, beat={"text": "第二句比較短。", "i": 2, "n": 2})
+        json.dump(n2, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        time.sleep(1.0)
+        g4 = rd(geom)
+        p4 = g4.get("caption_plate")
+        check("A2 滑鼠停在字幕上換句子：字幕不跳（中心與底邊不變）",
+              p4 and g4.get("caption_text") == "第二句比較短。" and abs((p4[0] + p4[2] / 2) - (pl[0] + pl[2] / 2)) <= 2
+              and abs((p4[1] + p4[3]) - (pl[1] + pl[3])) <= 2, (pl, p4, g4.get("caption_text")))
+        json.dump(now, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        time.sleep(1.0)
+        pl = rd(geom).get("caption_plate") or pl
+    # 5 拖動：兩層一起動
     if pl:
         cx, cy = pl[0] + 6, pl[1] + pl[3] // 2
 
@@ -264,8 +287,9 @@ def real_chrome_checks(stage_with):
 
 
 def main():
-    if os.name != "nt" or "--i-am-ci" not in sys.argv:
-        print("SKIP 舞台視窗測試：只在 Windows CI 跑（要 --i-am-ci）")
+    if os.name != "nt" or "--i-am-ci" not in sys.argv or os.environ.get("GITHUB_ACTIONS") != "true":
+        # 全螢幕視窗、真的滑鼠輸入、擷圖：只在 GitHub Actions 的測試機上（不動使用者的螢幕、滑鼠鍵盤）
+        print("SKIP 舞台視窗測試：只在 Windows CI 跑（要 --i-am-ci，且 GITHUB_ACTIONS=true）")
         return 0
     wd = watchdog()
     two_lines = "它只根據院內說明來寫，依據列在下面；核准的人不能確認寄出，所以每一封回覆至少經過兩個人。"
@@ -284,8 +308,9 @@ def main():
         check("%d×%d：字幕塊實際排出來最多兩行、不超過最大寬度（舞台寬 62%%）" % (W, H),
               g and g["caption_req"][1] <= 2 * g["cap_line_h"] + 2 * g["cap_pad"] + 12 and g["caption_req"][0] <= g["cap_max_w"] + 2, g)
         check("%d×%d：字幕就是這一拍的句子" % (W, H), g and g["caption_text"] == two_lines, g and g.get("caption_text"))
-        check("%d×%d：講者模式輪到他按 → 控制列出現，「下一步」在右下角" % (W, H),
-              g and g["controls_visible"] and g["next"][0] > W * 0.6 and g["next"][1] > H * 0.8, g and g.get("next"))
+        check("%d×%d：講者模式輪到他按 → 控制列出現在右側，「下一步」在右半邊；和字幕重疊時控制列讓到字幕上方" % (W, H),
+              g and g["controls_visible"] and g["next"][0] > W * 0.6 and g.get("controls_rect") and g.get("caption_plate")
+              and not L.overlaps(g["controls_rect"], g["caption_plate"]), g and (g.get("next"), g.get("controls_rect"), g.get("caption_plate")))
         json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
         try:
             p.wait(10)

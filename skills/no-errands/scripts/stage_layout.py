@@ -120,9 +120,10 @@ def css_to_screen(box, stage, crop, zoom, dpr):
     return int(x0), int(y0), int(x1 - x0), int(y1 - y0)
 
 
-def caption_pos(box_wh, lay, look=None, ctl=None, user=None, margin=12):
+def caption_pos(box_wh, lay, look=None, user=None, margin=12):
     """字幕塊的左上角。user＝(rx, ry) 舞台比例（使用者拖過的位置；拖過就不自動讓開）；
-    否則預設下方置中，與「看這裡」外框重疊（含邊距）→ 改到上方；與控制列左右重疊 → 放在控制列上方。"""
+    否則預設下方置中，與「看這裡」外框重疊（含邊距）→ 改到上方。
+    控制列不會讓字幕移動（5c：滑鼠一動字幕就跳，要拖的人在追一個會動的目標）——重疊時由控制列讓位（controls_pos）。"""
     bw, bh = box_wh
     sx, sy, sw, sh = lay["stage"]
     if user:
@@ -134,11 +135,20 @@ def caption_pos(box_wh, lay, look=None, ctl=None, user=None, margin=12):
         box = (x - margin, y - margin, bw + 2 * margin, bh + 2 * margin)
         if look and overlaps(box, look):
             y = sy + margin                               # 讓開外框：放到上方（角色帶下面）
-        elif ctl and overlaps((x, y, bw, bh), ctl):
-            y = ctl[1] - bh - margin                      # 和控制列重疊：放在控制列上方
     x = min(max(x, sx), sx + sw - bw)                     # 拖不出舞台
     y = min(max(y, sy), sy + sh - bh)
     return int(x), int(y)
+
+
+def controls_pos(lay, cap=None, margin=12):
+    """控制列（含上方一行提示）的位置：預設右下角；和字幕塊重疊（含邊距）時往上移到字幕上方——字幕留在原地。"""
+    x, y, w, h = lay["controls"]
+    hint_h = lay["ctl_font"] * 2
+    if cap:
+        grown = (cap[0] - margin, cap[1] - margin, cap[2] + 2 * margin, cap[3] + 2 * margin)
+        if overlaps((x, y - hint_h, w, h + hint_h), grown):
+            y = max(lay["stage"][1] + hint_h, cap[1] - margin - h)
+    return x, y, w, h
 
 
 def caption_ratio(pos, lay):

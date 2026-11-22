@@ -375,6 +375,12 @@ class Stage:
             except Exception:
                 pass
 
+    def cap_box(self):
+        """字幕底板目前的螢幕矩形（沒顯示回 None）。"""
+        if not self.capbg.winfo_viewable():
+            return None
+        return (self.capbg.winfo_x(), self.capbg.winfo_y(), self.capbg.winfo_width(), self.capbg.winfo_height())
+
     def show_caption(self, on):
         for w in (self.capbg, self.capw):
             if on and not w.winfo_viewable():
@@ -767,7 +773,8 @@ class Stage:
         for k in range(n):
             x = 70 - 8 - (n - 1 - k) * 12
             self.dots.create_oval(x - 4, 2, x + 4, 10, fill=ACCENT if k < i else "#2a3140", width=0)
-        # 字幕塊：大小跟著文字；預設下方置中、自動讓開外框與控制列；拖過以使用者位置為準
+        # 字幕塊：大小跟著文字；預設下方置中、自動讓開外框；拖過以使用者位置為準。控制列不推字幕（由控制列讓位）。
+        # 滑鼠停在字幕上或拖動中：位置凍結；滑鼠離開後也等到下一拍才重新計算（不在使用者眼前跳）。
         text = beat.get("text", "") if not now.get("card") else ""
         if self.cap.cget("text") != (text or ""):
             self.cap.configure(text=text or "")
@@ -775,13 +782,31 @@ class Stage:
             self.capw.update_idletasks()
             bw, bh = self.cap.winfo_reqwidth(), self.cap.winfo_reqheight()
             look = getattr(self, "look_rect", None)
-            ctlr = self.lay["controls"] if show_ctl else None
-            x, y = L.caption_pos((bw, bh), self.lay, look=look, ctl=ctlr, user=self.cap_user)
-            if not self.cap_drag0:
+            box0 = self.cap_box()
+            hover = bool(cur and box0 and L.inside((cur[0], cur[1], 0, 0), box0))
+            if hover or self.cap_drag0:
+                self.cap_hold = text
+            if box0 and (hover or self.cap_drag0 or getattr(self, "cap_hold", None) == text):
+                if not self.cap_drag0 and (bw, bh) != (box0[2], box0[3]):
+                    # 凍結中換了句子：以中心與底邊為錨點換大小，位置不跳
+                    sx, sy, sw, sh = self.lay["stage"]
+                    nx = min(max(int(box0[0] + box0[2] / 2 - bw / 2), sx), sx + sw - bw)
+                    ny = min(max(int(box0[1] + box0[3] - bh), sy), sy + sh - bh)
+                    self.place_caption(bw, bh, nx, ny)
+            else:
+                self.cap_hold = None
+                x, y = L.caption_pos((bw, bh), self.lay, look=look, user=self.cap_user)
                 self.place_caption(bw, bh, x, y)
             self.show_caption(True)
         else:
             self.show_caption(False)
+        # 控制列：和字幕重疊時往上讓到字幕上方（字幕不動）
+        cx_, cy_, cw_, ch_ = L.controls_pos(self.lay, self.cap_box() if (text and self.cap_on) else None)
+        if (cx_, cy_) != getattr(self, "_ctl_xy", None):
+            hh_ = self.lay["ctl_font"] * 2
+            self.ctlw.geometry("%dx%d+%d+%d" % (cw_, ch_, cx_, cy_))
+            self.hintw.geometry("%dx%d+%d+%d" % (cw_, hh_, cx_, cy_ - hh_))
+            self._ctl_xy = (cx_, cy_)
         try:
             self.place_browsers(now)
         except Exception:
@@ -818,7 +843,7 @@ class Stage:
 
     def geom(self):
         box = lambda w: [w.winfo_x(), w.winfo_y(), w.winfo_width(), w.winfo_height()] if w.winfo_viewable() else None
-        return {"caption_plate": box(self.capbg), "caption_textwin": box(self.capw),
+        return {"caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "controls_rect": box(self.ctlw),
                 "look_rect": list(self.look_rect) if getattr(self, "look_rect", None) else None,
                 "mask_rect": list(self.mask_rect) if getattr(self, "mask_rect", None) else None,
                 "fit": self.fit, "card": self.now.get("card"), "beat": (self.now.get("beat") or {}).get("text"),
