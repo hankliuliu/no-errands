@@ -80,7 +80,7 @@ def norm_time(raw, captured):
     """畫面上的日期時間 → ("YYYY-MM-DD HH:MM" 或 None, 是否用推的)。captured 是擷取時間（datetime）。
     沒有年份：取擷取當年，若比擷取時間還晚就算前一年（推的）。今天／昨天：相對擷取日（推的）。"""
     s = norm_text(raw).replace("：", ":")
-    s = re.sub(r"(上午|AM)\s*(\d{1,2}):", lambda m: "%s:" % m.group(2), s, flags=re.I)
+    s = re.sub(r"(上午|AM)\s*(\d{1,2}):", lambda m: "%d:" % (int(m.group(2)) % 12), s, flags=re.I)   # 上午 12:xx＝00:xx
     s = re.sub(r"(下午|PM)\s*(\d{1,2}):", lambda m: "%d:" % (int(m.group(2)) % 12 + 12), s, flags=re.I)
     try:
         for rx in _FULL:
@@ -312,6 +312,12 @@ def _merge_splits(per, rep):
             # 只剩日期或表情列的尾巴（沒有內文也沒有作者）：那一則在別張已經轉過，不另記
             if not norm_text(r.get("text")) and not norm_text(r.get("author")):
                 rep["tail_dropped"] = rep.get("tail_dropped", 0) + 1
+                continue
+            # 只有圖、沒有文字的開頭碎片：下一張有同作者、同樣只有圖的完整一則 → 就是它（重疊拍到了完整版）
+            if not norm_text(r.get("text")) and r.get("cut_bottom") and i + 1 < len(per) and any(
+                    "key" in x and not norm_text(x.get("text")) and norm_text(x.get("author")) == norm_text(r.get("author"))
+                    and (x.get("images") or 0) >= 1 for x in per[i + 1][1]):
+                rep["split_covered"] = rep.get("split_covered", 0) + 1
                 continue
             # 這一輪任何一張已經有這一則的完整版本（重疊拍到了）：碎片已被涵蓋，不另記
             if any("key" in x and contains(x, r.get("text"), r.get("author")) for _, rows_ in per for x in rows_):
