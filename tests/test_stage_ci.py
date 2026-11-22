@@ -245,9 +245,15 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
     check("A21 示範游標的移動是連續的（相鄰取樣位移 ≤40 像素、沒有瞬移）", jumps and max(jumps) <= 40, (max(jumps or [0]), len(samples)))
     check("A27 移動途中使用者點了字幕：示範游標照樣走到目標", abs(samples[-1][0] - e2[0]) <= 2 and abs(samples[-1][1] - e2[1]) <= 2,
           (samples[-1], e2))
+    ackp = os.path.join(d, "stage_ack.json")
+    t_pub = time.time()
     json.dump(dict(now, pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0.8, "seq": 2}, look={"box": [320, 150, 300, 60], "seq": 1}, press=1),
               open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
-    time.sleep(0.12)
+    ack = wait(lambda: rd(ackp) if (rd(ackp).get("press") or 0) >= 1 else None, 2) or {}
+    check("A22 按下的效果在發出後 0.1 秒內畫出並回報（引擎等到這個回報才送出點擊）",
+          ack.get("t") is not None and ack["t"] - t_pub <= 0.1, (t_pub, ack))
+    rip = wait(lambda: rd(geom).get("ripple_on") is True, 0.5)
+    check("A22 漣漪確實在畫面上（回報後 0.5 秒內讀到顯示中）", rip, rd(geom).get("ripple_on"))
     shot_png("stage-shot-4-pointer-press.png")
     a1 = rd(geom).get("look_alpha")
     time.sleep(1.9)

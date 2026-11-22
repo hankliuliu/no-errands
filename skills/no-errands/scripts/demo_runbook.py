@@ -825,9 +825,22 @@ class Look:
         self.ctl.publish(pointer={"x": round(x, 1), "y": round(y, 1), "dur": round(dur, 2), "seq": self.ptr_seq})
         return dur
 
-    def press(self):
+    def press(self, timeout=0.6):
+        """按下的效果：發布後等舞台回報「已畫出來」（stage_ack.json）才回來，之後才送出真正的點擊——
+        觀眾先看到按下、頁面才有反應（A22）。沒有舞台（--no-player）時最多等 timeout 秒。回暫停秒數。"""
         self.press_seq += 1
         self.ctl.publish(press=self.press_seq)
+        ack = os.path.join(getattr(self.ctl, "dir", "") or ".", "stage_ack.json")
+        t0, pz = time.time(), 0.0
+        while time.time() - t0 < timeout:
+            try:
+                if int(json.load(open(ack, encoding="utf-8")).get("press") or 0) >= self.press_seq:
+                    self.acked = getattr(self, "acked", 0) + 1
+                    break
+            except Exception:
+                pass
+            time.sleep(0.02)
+        return pz
 
     def into_view(self, sel):
         """目標不在可視範圍時平順地捲過去（訊息區：滾輪式分 3–4 段、約 0.4 秒）；其他地方用 scrollintoview。回目標方框。"""
@@ -869,8 +882,8 @@ class Look:
             x, y = box[0] + min(36, box[2] / 2), box[1] + box[3] / 2   # 輸入框：指在框內左側
         pz = self.wait(self.point(x, y) + 0.2)
         if press:
-            self.press()
-            pz += self.wait(0.18)
+            pz += self.press()
+            pz += self.wait(0.12)                                # 漣漪畫出來之後再停一下，才點擊
         return pz
 
     def set(self, acct, sel, scroll=True):
