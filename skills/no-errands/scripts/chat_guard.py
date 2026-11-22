@@ -583,7 +583,12 @@ def _shape(node, depth=0, maxd=14):
 
 # 真機（2026-11-22）：LINE 開出來的視窗標題一律是「LINE」——不能靠標題認。改看視窗內容：預期的那個視窗裡一定有這個檢視的項目
 #（記事本視窗有「記事本」分頁；其他功能面板有「儲存聊天」）。假聊天的記事本視窗標題就是記事本，也算。
-VIEW_MARKERS = {"notes": ("記事本", "Notes", "Note"), "menu": ("儲存聊天", "儲存聊天記錄", "Save chat", "Save chat history")}
+VIEW_MARKERS = {"notes": ("記事本", "Notes", "Note"), "notes-tab": ("記事本", "Notes", "Note"),
+                "menu": ("儲存聊天", "儲存聊天記錄", "Save chat", "Save chat history")}
+# 記事本視窗裡可以點的分頁（只讀切換）：名稱完全相符、型別是 Button、在那個視窗裡唯一
+NOTES_TABS = {"notes-tab": ("記事本", "Notes")}
+# 分頁列：要點的分頁旁邊一定有成對的「相簿」分頁（真機第一次探索看到兩顆成對）；兩顆都在才點
+TAB_PAIRS = {"notes-tab": ("相簿", "Album", "Albums")}
 
 
 def _close_new(pid, before, res, view=None):
@@ -640,6 +645,40 @@ def _close_new(pid, before, res, view=None):
         res["left_windows"] = left
 
 
+def _click_notes_tab(pid, before, view, res, app=None, chat=None):
+    """在剛開出的記事本視窗裡點「記事本」分頁（只讀切換）。只認：新出現的有標題視窗剛好一個、裡面有記事本項目；
+    分頁按鈕名稱完全相符、型別 Button、唯一。投遞滑鼠訊息到那個視窗（游標不動）；不符就不點、照實回報。"""
+    import ctypes
+    u32 = ctypes.windll.user32
+    titled = [w for w in popup_menu.popup_windows(pid, exclude=before)
+              if not w["class"].startswith("shadow_") and u32.GetWindowTextLengthW(w["hwnd"]) > 0]
+    if len(titled) != 1:
+        res["tab_click"] = {"done": False, "why": "新視窗不是剛好一個（%d）" % len(titled)}
+        return
+    it = popup_menu.popup_items(titled[0]["hwnd"])
+    def button_like(i):   # Qt 讀成 Button；WinForms 平面按鈕經 FromHandle 讀成 Pane（CI 實測）→ 只在按鈕大小時算
+        r = i.get("rect") or [0, 0, 0, 0]
+        return i.get("type") == "Button" or (i.get("type") == "Pane" and 0 < r[3] - r[1] <= 60 and 0 < r[2] - r[0] <= 300)
+    tabs = [i for i in (it.get("items") or []) if i.get("name") in NOTES_TABS[view] and button_like(i)]
+    pair = [i for i in (it.get("items") or []) if i.get("name") in TAB_PAIRS[view] and button_like(i)]
+    if len(tabs) != 1 or len(pair) != 1:
+        res["tab_click"] = {"done": False, "why": "分頁列對不上（記事本 %d、相簿 %d；兩顆都要剛好一顆）" % (len(tabs), len(pair))}
+        ledger(app or "line", "probe-tab-click", False, res["tab_click"]["why"], chat)
+        return
+    try:
+        popup_menu.click_item(titled[0]["hwnd"], tabs[0], root=it.get("root"))
+    except popup_menu.CoordMismatch:
+        res["tab_click"] = {"done": False, "why": "座標檢查沒過"}
+        ledger(app or "line", "probe-tab-click", False, "座標檢查沒過：%s" % tabs[0].get("name"), chat)
+        return
+    # 對真實聊天程式的每一次點擊都要查得到（這一下走投遞滑鼠訊息，不經 guarded，所以在這裡記）
+    ledger(app or "line", "probe-tab-click", True, "分頁：%s" % tabs[0].get("name"), chat)
+    time.sleep(1.5)
+    after = popup_menu.popup_items(titled[0]["hwnd"])
+    res["tab_click"] = {"done": True}
+    res["notes_tab_items"] = [{"n": _mask(i.get("name")), "t": i.get("type")} for i in (after.get("items") or [])][:150]
+
+
 def cmd_probe(app, prof, chat, view, pol):
     """只讀探索 UI 結構（Sprint E）：只限白名單對話，開著的必須是指名對話；可點一顆檢視按鈕（notes，必須在驗過的標頭工具列裡）
     或打開選單（menu）看項目。輸出只有角色、可用動作與名稱字數（介面用語除外）。不輸入、不點其他東西。
@@ -662,8 +701,8 @@ def cmd_probe(app, prof, chat, view, pol):
             if not btn:
                 raise Refused("找不到選單按鈕")
             guarded(prof, "click", btn, bp, {"zone": "main", "allow": "menu-button"})
-        elif view in (prof.get("view_buttons") or {}):
-            nm = prof["view_buttons"][view]
+        elif view in (prof.get("view_buttons") or {}) or view in NOTES_TABS:
+            nm = prof["view_buttons"]["notes" if view in NOTES_TABS else view]
             tb = header_toolbar(full, chat)
             btn = next((k for k in (tb or {}).get("children") or [] if k.get("role") == "button" and k.get("name") == nm), None)
             if not btn:
@@ -673,6 +712,8 @@ def cmd_probe(app, prof, chat, view, pol):
         elif view:
             raise Refused("不認得的檢視")
         time.sleep(1.5)
+        if view in NOTES_TABS:
+            _click_notes_tab(pid, before, view, res, app, chat)
         res["main_after"] = _shape(snapshot(win, interactive=False)["tree"])
         res["new_popups"], res["new_windows"] = [], []
         import ctypes

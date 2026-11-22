@@ -175,11 +175,20 @@ $script:notesBtn.Add_Click({
     if (-not $script:current) { return }
     $nf = New-Object NeNoActivateForm
     $nf.Text = $cjkNotes; $nf.Width = 360; $nf.Height = 240; $nf.StartPosition = 'Manual'; $nf.Left = 900; $nf.Top = 120
+    $tabBar = New-Object System.Windows.Forms.FlowLayoutPanel
+    $tabBar.Dock = 'Top'; $tabBar.Height = 32
+    $cjkAlbum = -join [char[]](0x76F8, 0x7C3F)
+    foreach ($tn in @($cjkAlbum, $cjkNotes)) {
+        $tbtn = New-Object System.Windows.Forms.Button
+        $tbtn.Text = $tn; $tbtn.AccessibleName = $tn; $tbtn.Width = 80
+        if ($tn -eq $cjkNotes) { $tbtn.Add_Click({ Write-JsonLine $eventFile @{ kind = 'notes-tab' } }) }
+        $tabBar.Controls.Add($tbtn)
+    }
     $nl = New-Object System.Windows.Forms.ListBox
     $nl.Dock = 'Fill'; $nl.AccessibleName = 'notes'
     [void]$nl.Items.Add('Note by Ann: deploy checklist v2')
     [void]$nl.Items.Add('Note by Ben: buoy maintenance schedule')
-    $nf.Controls.Add($nl)
+    $nf.Controls.Add($nl); $nf.Controls.Add($tabBar)
     $nf.Add_FormClosed({ Write-JsonLine $eventFile @{ kind = 'notes-close' } })
     $nf.Show()
     Write-JsonLine $eventFile @{ kind = 'notes-open'; chat = $script:current.name }
