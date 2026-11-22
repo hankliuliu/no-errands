@@ -383,7 +383,8 @@ class Stage:
         self.menu = tk.Menu(r, tearoff=0, font=(FONT, px(lay["ctl_font"])))
         self.menu.add_command(label="自動／逐步", command=self.toggle_mode)
         self.menu.add_command(label="備案畫面", command=self.planb)
-        self.menu.add_command(label="停止示範", command=self.stop)
+        self.menu.add_command(label="結束示範（片尾、還原）", command=self.end_now)
+        self.menu.add_command(label="立刻停止", command=self.stop)
         self.hotkeys()
         r.after(300, self.take_front)                    # 上場時舞台取得前景（背板蓋住一切；勿擾也靠這個）
         if os.environ.get("NE_STAGE_MAX_S"):             # 測試：最多活這麼久（CI 不會因為一個沒關的視窗卡住整個 job）
@@ -572,6 +573,11 @@ class Stage:
 
     def stop(self):
         write_control(self.run_dir, state="stopped")
+
+    def end_now(self):
+        """中途結束：引擎停下目前的動作、顯示片尾、還原資料、收掉舞台。"""
+        self.toast("已收到：結束示範")
+        write_control(self.run_dir, state="ending")
 
     def more(self):
         b = self.b_more

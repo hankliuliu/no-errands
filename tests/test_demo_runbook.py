@@ -792,6 +792,20 @@ def main():
             check("舞台：片尾按「結束」→ 引擎自己跑還原、片尾卡顯示結果、收掉舞台",
                   n.get("status") == "closing" and "reset" in rj_ and (n.get("card_data") or {}).get("reset"), (n, rj_.get("reset")))
 
+            # 中途「結束示範」（control state=ending）：停下動作 → 片尾 → 還原 → 收掉（5c：時間不夠時任何一步都能收）
+            focus(["訊息"], "")
+            rc, o, txt = rbj("live", sgp, "--approval", aid, "--no-player")
+            rde = o.get("run_dir") or ""
+            wait_for(rde, lambda n: n.get("step_id") == "s1" and (n.get("beat") or {}).get("text"), 30)
+            cpath = os.path.join(rde, "control.json")             # 舞台的「結束示範」寫的就是這個
+            json.dump(dict(json.load(open(cpath, encoding="utf-8")), state="ending"), open(cpath, "w"))
+            n = wait_for(rde, lambda n: n.get("card") == "end", 30)
+            check("中途結束 → 停下動作、顯示片尾", n.get("card") == "end" and n.get("step_id") == "s1", (n.get("card"), n.get("step_id")))
+            n = wait_for(rde, lambda n: n.get("status") == "closing", 40)
+            rje = json.load(open(os.path.join(rde, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rde, "run.json")) else {}
+            check("中途結束 → 照常執行還原、最後收掉舞台（這一段的政策檔還沒有還原同意，所以只看有沒有執行）",
+                  n.get("status") == "closing" and rje.get("reset") is not None
+                  and (rje.get("stopped") or {}).get("ended_early") == "s1", (n.get("status"), rje.get("reset"), rje.get("stopped")))
             # 舞台段落結束：假瀏覽器不再模擬輸入框，焦點欄位還原成後面的測試預期的狀態
             os.remove(os.path.join(home, "simulate-field"))
             focus(["訊息"], "/case help")

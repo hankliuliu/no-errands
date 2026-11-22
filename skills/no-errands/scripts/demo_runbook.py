@@ -321,6 +321,11 @@ class StopDemo(Exception):
     pass
 
 
+class EndDemo(StopDemo):
+    """講者在示範中途按「結束示範」（control state=ending）：停下動作 → 片尾 → 還原 → 收掉舞台（5c：時間不夠時任何一步都能收）。"""
+    pass
+
+
 def replace_retry(tmp, path, tries=40):
     """Windows：讀的一方（播放器每 0.25 秒、驗收驅動）剛好開著目標檔時 os.replace 會 PermissionError。
     總驗收實測：引擎「在等下一步」那一次寫入被這樣吞掉，播放器一直顯示舊狀態、沒人按下一步。→ 重試最多約 2 秒。"""
@@ -389,6 +394,8 @@ class Control:
             c = self.read()
             if c.get("state") == "stopped":
                 raise StopDemo()
+            if c.get("state") == "ending":
+                raise EndDemo()
             if c.get("state") != "paused":
                 break
             if t0 is None:
@@ -423,6 +430,8 @@ class Control:
             c = self.read()
             if c.get("state") == "stopped":
                 raise StopDemo()
+            if c.get("state") == "ending":
+                raise EndDemo()
             if int(c.get("next_seq", 0)) > self.next_seen:
                 self.next_seen = int(c["next_seq"])
                 break
@@ -1470,12 +1479,27 @@ def execute(rb, mode, a):
             if mode == "rehearse" and persist and rec.get("shot"):
                 os.makedirs(os.path.join(rb["_dir"], "planb"), exist_ok=True)
                 shutil.copyfile(os.path.join(shots, rec["shot"]), os.path.join(rb["_dir"], "planb", rec["shot"]))
+    except EndDemo:
+        # 中途結束：照常走片尾與還原（控制狀態改回 playing，片尾的等待才不會又被當成結束）
+        stopped = {"ended_early": steps[min(i, len(steps) - 1)]["id"]}
+        try:
+            write_control(run_dir, state="playing")
+        except Exception:
+            pass
+        ctl.publish(status="running", look=None, pointer=None)
     except StopDemo:
         stopped = {"user_stop": steps[min(i, len(steps) - 1)]["id"]}
         ctl.publish(status="stopped")
     finally:
-        if mode != "live" or not stopped or "user_stop" in (stopped or {}) or "stage_fit" in (stopped or {}):
+        if mode != "live" or not stopped or any(k in (stopped or {}) for k in ("user_stop", "stage_fit", "ended_early")):
             br.close_all()
+        if staged and stopped and "user_stop" in stopped:
+            # 緊急停止（Ctrl+Shift+F12、舞台被撤下）：沒有片尾，但資料照樣還原（不留給別人收）
+            try:
+                ok_, res_ = do_reset(rb)
+                state["reset"] = {"ok": ok_, "results": res_}
+            except Exception as e:
+                state["reset"] = {"ok": False, "results": [str(e)[:120]]}
         state["ended"] = now_s()
         state["stopped"] = stopped
         state["skipped_after_fail"] = skipped
@@ -1512,7 +1536,7 @@ def execute(rb, mode, a):
             except StopDemo:
                 pass
             ctl.publish(status="closing")
-    summary = {"ok": (stopped is None or "user_stop" in stopped) and not skipped, "mode": mode,
+    summary = {"ok": (stopped is None or "user_stop" in stopped or "ended_early" in stopped) and not skipped, "mode": mode,
                "skipped_after_fail": skipped, "run_dir": run_dir if persist else None,
                "steps_run": len(state["steps"]), "steps_ok": sum(1 for s in state["steps"] if s["ok"]),
                "recovered": [s["id"] for s in state["steps"] if s.get("recovered")],
