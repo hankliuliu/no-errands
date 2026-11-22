@@ -848,6 +848,171 @@ def cmd_probe(app, prof, chat, view, pol, peek=False):
     out(dict(res, ok=True))
 
 
+NOTES_MAX_SHOTS, NOTES_HARD_MAX, NOTES_TIMEOUT_S, NOTES_STEP = 15, 40, 90, 0.6
+NOTES_MAX_SKIP = 4000   # 接續時最多先捲過幾格（不擷取）
+NOTES_OK_STOPS = ("bottom", "cap", "timeout", "user_input")
+
+
+def target_id(app, chat):
+    """和 gather 的目標代號同一個算法 → 圖落在同一個目標資料夾。"""
+    return hashlib.sha256(("%s|%s" % (app, chat)).encode("utf-8")).hexdigest()[:12]
+
+
+def _notes_window(pid, before):
+    """新出現、有標題、裡面有記事本分頁的視窗剛好一個 → (hwnd, items)；否則 (None, 原因)。"""
+    import ctypes
+    u32 = ctypes.windll.user32
+    titled = [w for w in popup_menu.popup_windows(pid, exclude=before)
+              if not w["class"].startswith("shadow_") and u32.GetWindowTextLengthW(w["hwnd"]) > 0]
+    if len(titled) != 1:
+        return None, "新視窗不是剛好一個（%d）" % len(titled)
+    it = popup_menu.popup_items(titled[0]["hwnd"])
+    names = {i.get("name") for i in (it.get("items") or [])}
+    if not names & set(VIEW_MARKERS["notes"]):
+        return None, "新視窗裡沒有記事本分頁"
+    return titled[0]["hwnd"], it
+
+
+def cmd_notes(app, prof, chat, pol, max_shots=NOTES_MAX_SHOTS, skip_notches=0, timeout_s=NOTES_TIMEOUT_S):
+    """記事本擷取（單一視窗擷取；工具不讀圖，轉寫交給 agent，見 gather.py notes）。
+    點擊只有一下：驗過的標頭工具列裡的記事本按鈕。之後只投遞滾輪訊息到記事本清單的範圍內（游標不動），
+    每捲約清單高度的 60% 擷取一張；到底（連兩張相同）、到張數上限、逾時或使用者一動就停。
+    擷取前後各比一次主視窗標頭，不一致 → 圖全丟、回報 wrong_chat。收尾只關這次開出的記事本視窗。
+    圖與清單只寫到該目標收集資料夾的 _notes_shots/<run>/；輸出與 ledger 只有數字。"""
+    import ctypes, ctypes.wintypes as wt, shutil as _sh
+    if not policy.in_whitelist(pol, chat):
+        raise Refused("記事本擷取只限白名單裡的對話")
+    if popup_menu is None or os.name != "nt":
+        raise Refused("記事本擷取目前只支援 Windows")
+    max_shots = max(1, min(int(max_shots), NOTES_HARD_MAX))
+    skip_notches = max(0, min(int(skip_notches), NOTES_MAX_SKIP))
+    win = find_window(prof)
+    full = snapshot(win, interactive=False)
+    if not header_ok(prof, full, chat):
+        raise Refused("目前開著的不是指名對話：先 open --chat 並確認標頭")
+    WATCH["win"] = win
+    pid = win.get("pid")
+    tid = target_id(app, chat)
+    run = time.strftime("%Y%m%d-%H%M%S")
+    rdir = os.path.join(HOME, "gather", app, tid, "_notes_shots", run)
+    res = {"run": run, "shots": 0, "wheels": 0, "stop": None}
+    man = {"run": run, "app": app, "tid": tid, "created": time.strftime("%Y-%m-%dT%H:%M:%S"), "max_shots": max_shots,
+           "skip_notches": skip_notches, "shots": [], "stop": None}
+    before = popup_menu.visible_hwnds(pid)
+    u32 = ctypes.windll.user32
+    t0 = time.time()
+    try:
+        nm = prof["view_buttons"]["notes"]
+        tb = header_toolbar(full, chat)
+        btn = next((k for k in (tb or {}).get("children") or [] if k.get("role") == "button" and k.get("name") == nm), None)
+        if not btn:
+            raise Refused("標頭工具列裡找不到「%s」" % nm)
+        _, bp = find_node(full, lambda n: n is btn)
+        guarded(prof, "click", btn, bp, {"zone": "main", "allow": "view-button", "target_chat": chat})
+        hwnd, it = None, None
+        for _ in range(10):
+            time.sleep(0.6)
+            hwnd, it = _notes_window(pid, before)
+            if hwnd:
+                break
+        if not hwnd:
+            res["stop"], res["why"] = "no_window", it
+        elif any(i.get("name") in TAB_PAIRS["notes-tab"] and i.get("sel") is True for i in (it.get("items") or [])):
+            res["stop"] = "not_notes_tab"   # 停在相簿分頁：不點分頁（零新增點擊），照實回報
+        else:
+            _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0)
+            if res["stop"] in NOTES_OK_STOPS and res["stop"] != "user_input" and not header_ok(prof, snapshot(win, interactive=False), chat):
+                res["stop"] = "wrong_chat"   # 擷取後主視窗標頭不是同一個對話 → 圖全丟
+    except Refused as e:
+        if "使用者回來" not in str(e):
+            raise
+        res["stop"] = "user_input"
+    finally:
+        man["stop"] = res["stop"]
+        if res["stop"] == "wrong_chat":
+            _sh.rmtree(rdir, ignore_errors=True)
+            man["shots"] = []
+        if man["shots"]:
+            json.dump(man, open(os.path.join(rdir, "manifest.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+            res["notches_total"] = man.get("notches_total")
+            ov = [x["overlap"] for x in man["shots"] if x["overlap"] is not None]
+            res["overlap_min"] = min(ov) if ov else None
+            res["overlap_unverified"] = sum(1 for x in man["shots"] if x["overlap_unverified"])
+        elif os.path.isdir(rdir):
+            _sh.rmtree(rdir, ignore_errors=True)
+        res["shots"] = len(man["shots"])
+        _close_new(pid, before, res, "notes")
+        ledger(app, "notes-capture", res["stop"] in NOTES_OK_STOPS,
+               "run %s shots %d wheels %d stop %s" % (run, res["shots"], res["wheels"], res["stop"]), chat)
+    out(dict(res, ok=res["stop"] in NOTES_OK_STOPS), 0 if res["stop"] in NOTES_OK_STOPS else 1)
+
+
+def _capture_notes(hwnd, rdir, man, res, max_shots, skip_notches, timeout_s, t0):
+    import ctypes, ctypes.wintypes as wt
+    u32 = ctypes.windll.user32
+    wr = wt.RECT(); u32.GetWindowRect(hwnd, ctypes.byref(wr))
+    lists = [l for l in popup_menu.list_rects(hwnd)
+             if wr.left <= l["rect"][0] < l["rect"][2] <= wr.right and wr.top <= l["rect"][1] < l["rect"][3] <= wr.bottom
+             and l["rect"][3] - l["rect"][1] >= 100]
+    if not lists:
+        res["stop"] = "no_list"
+        return
+    lr = max(lists, key=lambda l: (l["rect"][2] - l["rect"][0]) * (l["rect"][3] - l["rect"][1]))["rect"]
+    cx, cy = (lr[0] + lr[2]) // 2, (lr[1] + lr[3]) // 2
+    rel = (lr[0] - wr.left, lr[2] - wr.left, lr[1] - wr.top, lr[3] - wr.top)
+    list_h = lr[3] - lr[1]
+    man["list_h"] = list_h
+
+    def post_wheel(n):
+        if not (lr[0] <= cx < lr[2] and lr[1] <= cy < lr[3]):
+            raise Refused("滾輪座標不在記事本清單裡：不捲")
+        # 投遞給清單中心底下最深的子視窗：Qt 沒有子視窗 → 就是記事本視窗本身（它照座標分派）；原生清單 → 清單本身
+        popup_menu.wheel(popup_menu._deepest_child(hwnd, cx, cy), cx, cy, n)
+        res["wheels"] += 1
+
+    left = skip_notches
+    while left > 0:   # 接續：先捲過已擷取的段落（不擷取）
+        n = min(left, 30)
+        post_wheel(-n); left -= n
+        time.sleep(0.25)
+        check_interrupt()
+    if skip_notches:
+        time.sleep(0.8)
+    os.makedirs(rdir, exist_ok=True)
+    notches, total, prev = 1, skip_notches, None   # 第一步只捲一格，量到實際位移後再調
+    while True:
+        check_interrupt()
+        w, h_, raw = popup_menu.grab_window(hwnd)
+        keys = popup_menu.row_keys(raw, w, h_, *rel)
+        shift, ratio = (None, 0.0) if prev is None else popup_menu.vertical_shift(prev, keys)
+        if prev is not None and shift == 0:
+            res["stop"] = "bottom"
+            break
+        n_ = len(man["shots"]) + 1
+        fn = "%02d.png" % n_
+        popup_menu.write_png(os.path.join(rdir, fn), w, h_, raw)
+        man["shots"].append({"n": n_, "file": fn, "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                             "sha256": hashlib.sha256(raw).hexdigest(), "w": w, "h": h_, "notches_at": total,
+                             "shift_px": shift,
+                             "overlap": None if (prev is None or shift is None) else round(1 - shift / max(1, list_h), 2),
+                             "overlap_unverified": prev is not None and shift is None, "status": "pending"})
+        if prev is not None and shift:   # 依實測位移調整下一次的格數，目標每次捲約清單高度的 60%
+            notches = max(1, min(30, int(round(NOTES_STEP * list_h / (shift / notches)))))
+        elif prev is not None:
+            notches = max(1, notches // 2)   # 對不上位移：保守一點捲少一些，避免中間漏掉
+        prev = keys
+        if len(man["shots"]) >= max_shots:
+            res["stop"] = "cap"
+            break
+        if time.time() - t0 > timeout_s:
+            res["stop"] = "timeout"
+            break
+        post_wheel(-notches)
+        total += notches
+        time.sleep(0.6)
+    man["notches_total"] = total
+
+
 def _dialog_titles(prof):
     return tuple(prof.get("dialog_titles") or ()) + ((prof["dialog_title"],) if prof.get("dialog_title") else ())
 
@@ -1340,9 +1505,9 @@ def main():
         pol = policy.load(HOME)
         if not policy.is_granted(pol, app):
             raise Refused("使用者尚未授權這個 app（同意閘門）：先在對話中取得指名同意")
-        if sub == "probe" and not policy.in_whitelist(pol, policy.canonical_chat(pol, arg(a, "--chat") or "") or ""):
+        if sub in ("probe", "notes") and not policy.in_whitelist(pol, policy.canonical_chat(pol, arg(a, "--chat") or "") or ""):
             raise Refused("probe 只限白名單裡的對話（點開記事本等可能清掉「有新內容」的標記）")
-        if sub in ("open", "export", "close", "act", "probe") or (sub == "read" and not arg(a, "--file")):
+        if sub in ("open", "export", "close", "act", "probe", "notes") or (sub == "read" and not arg(a, "--file")):
             idle_gate(prof, pol, a)
             HANDBACK["may_restore"] = True   # 只有過了閒置閘門的指令可以把縮小的視窗還原
         HANDBACK["enabled"] = pol.get("visibility") != "watch" and bool(prof.get("raises_foreground"))
@@ -1363,6 +1528,9 @@ def main():
             cmd_close(app, prof, cancel_late="--cancel-late-dialog" in a)
         elif sub == "probe":
             cmd_probe(app, prof, arg(a, "--chat") or "", arg(a, "--view"), pol, peek="--peek" in a)
+        elif sub == "notes":
+            cmd_notes(app, prof, arg(a, "--chat") or "", pol, max_shots=arg(a, "--max-shots", NOTES_MAX_SHOTS),
+                      skip_notches=arg(a, "--skip-notches", 0), timeout_s=float(arg(a, "--timeout", NOTES_TIMEOUT_S)))
         elif sub == "act" and len(a) >= 3 and a[2] in ("click", "set-value"):
             cmd_act(app, prof, a[2], arg(a, "--target") or "", arg(a, "--text", ""))
         else:

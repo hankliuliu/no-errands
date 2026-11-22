@@ -159,6 +159,8 @@ $send.Text = 'Send'; $send.AccessibleName = 'Send'; $send.Left = 646; $send.Top 
 # Header tool bar (like LINE): first button = open chat's display name, then a notes button (CJK name) and others.
 # The notes button opens a separate top-level window titled with the notes word (no activation); events notes-open / notes-close.
 # Test hook {"op":"callonnotes"}: the next notes click also pops an unrelated titled window 'NE-CALL' (like an incoming call).
+# Test hook {"op":"notescount","n":N}: notes windows list N notes (scrollable); 0 = the default two.
+# Test hook {"op":"switchonnotes"}: 1.5 s after the next notes click the header shows another chat (wrong-chat check).
 $tools = New-Object System.Windows.Forms.FlowLayoutPanel
 $tools.Left = 270; $tools.Top = 430; $tools.Width = 470; $tools.Height = 34; $tools.AccessibleName = 'chat tools'
 $cjkNotes = -join [char[]](0x8A18, 0x4E8B, 0x672C)
@@ -186,12 +188,24 @@ $script:notesBtn.Add_Click({
     }
     $nl = New-Object System.Windows.Forms.ListBox
     $nl.Dock = 'Fill'; $nl.AccessibleName = 'notes'
-    [void]$nl.Items.Add('Note by Ann: deploy checklist v2')
-    [void]$nl.Items.Add('Note by Ben: buoy maintenance schedule')
+    if ($script:notesCount -gt 0) {
+        for ($i = 1; $i -le $script:notesCount; $i++) { [void]$nl.Items.Add(('Note {0} by Ann: deploy item {0}' -f $i)) }
+    } else {
+        [void]$nl.Items.Add('Note by Ann: deploy checklist v2')
+        [void]$nl.Items.Add('Note by Ben: buoy maintenance schedule')
+    }
     $nf.Controls.Add($nl); $nf.Controls.Add($tabBar)
     $nf.Add_FormClosed({ Write-JsonLine $eventFile @{ kind = 'notes-close' } })
     $nf.Show()
     Write-JsonLine $eventFile @{ kind = 'notes-open'; chat = $script:current.name }
+    if ($script:switchOnNotes) {
+        $script:switchOnNotes = $false
+        $sw = New-Object System.Windows.Forms.Timer
+        $sw.Interval = 1500
+        $sw.Add_Tick({ $this.Stop(); $header.Text = 'Delta Friends'; $header.AccessibleName = 'open chat: Delta Friends'
+                       Write-JsonLine $eventFile @{ kind = 'header-switched' } })
+        $sw.Start()
+    }
     if ($script:callOnNotes) {
         $script:callOnNotes = $false
         $cf = New-Object NeNoActivateForm
@@ -320,9 +334,11 @@ $timer.Add_Tick({
                 $t = $line | ConvertFrom-Json
                 if ($t.op -eq 'exportname') { $script:exportNameOverride = $t.name; continue }
                 if ($t.op -eq 'firstline') { $script:firstLineOverride = $t.text; continue }
-                if ($t.op -eq 'reset') { $script:exportNameOverride = $null; $script:firstLineOverride = $null; $script:dialogDelay = 0; continue }
+                if ($t.op -eq 'reset') { $script:exportNameOverride = $null; $script:firstLineOverride = $null; $script:dialogDelay = 0; $script:notesCount = 0; continue }
                 if ($t.op -eq 'dialogdelay') { $script:dialogDelay = [int]$t.ms; continue }
                 if ($t.op -eq 'callonnotes') { $script:callOnNotes = $true; continue }
+                if ($t.op -eq 'notescount') { $script:notesCount = [int]$t.n; continue }
+                if ($t.op -eq 'switchonnotes') { $script:switchOnNotes = $true; continue }
                 $c = $chats | Where-Object { $_.name -eq $t.chat } | Select-Object -First 1
                 if (-not $c) { continue }
                 if ($t.op -eq 'message') {

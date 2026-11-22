@@ -84,6 +84,7 @@ jobs:
           "$PY" tests/test_nowin.py | tee nowin.txt
           "$PY" tests/test_gather.py | tee gather.txt
           "$PY" tests/test_gather_items.py | tee gather_items.txt
+          "$PY" tests/test_gather_notes.py | tee gather_notes.txt
           if [ "$RUNNER_OS" = "Windows" ]; then NE_NOWIN_DISABLE=1 "$PY" tests/test_nowin.py --expect-popups | tee nowin-pos.txt; fi
           "$PY" tests/test_errand_audit.py | tee audit.txt
           "$PY" tests/test_codex_install.py | tee codex.txt
@@ -150,6 +151,7 @@ jobs:
             nowin.txt
             gather.txt
             gather_items.txt
+            gather_notes.txt
             player.txt
             stagewin.txt
             nowin-pos.txt
