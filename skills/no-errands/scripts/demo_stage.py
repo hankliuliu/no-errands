@@ -71,6 +71,10 @@ if os.name == "nt":
     EnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SWP_NOMOVE, SWP_NOSIZE = 0x0010, 0x0004, 0x0040, 0x0002, 0x0001
     HWND_TOP, HWND_TOPMOST, HWND_NOTOPMOST = 0, -1, -2
+    # 一定要宣告型別：沒宣告時 -1 被當成 32 位元整數傳，64 位元的 HWND 參數收到的不是 -1 → SetWindowPos 整個失敗，
+    # 瀏覽器沒被擺上台、被置頂的背板蓋住（排練 4：舞台上一片黑）
+    u32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    u32.SetWindowPos.restype = wintypes.BOOL
 
 
 def _cls(h):
