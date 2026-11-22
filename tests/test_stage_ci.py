@@ -78,8 +78,10 @@ html,body{margin:0;height:100%;background:#ffffff;font:16px sans-serif}
 #f{position:fixed;left:0;right:0;bottom:0;height:40px;background:#00b050}
 #c{position:absolute;top:84px;left:269px;right:0;padding:20px}
 </style><div id=a></div><div id=g></div><div id=s></div><div id=c>測試頁面</div><div id=f></div>
-<script>let c=0;addEventListener('mousedown',()=>c++,true);addEventListener('click',()=>c++,true);
-addEventListener('dblclick',()=>c++,true);setInterval(()=>{document.title='c='+c},200);</script>"""
+<script>let c=0,w=0,m=0,f=0,i=0;addEventListener('click',()=>c++,true);addEventListener('mousedown',()=>c++,true);addEventListener('dblclick',()=>c++,true);
+addEventListener('wheel',()=>w++,{capture:true,passive:true});addEventListener('mousemove',()=>m++,true);
+(function r(){f++;requestAnimationFrame(r)})();setInterval(()=>i++,100);
+setInterval(()=>{document.title='c='+c+' w='+w+' m='+m+' f='+f+' i='+i},200);</script>"""
 
 
 def shot_png(path):
@@ -144,6 +146,110 @@ def find_chrome():
         if base and os.path.exists(p):
             return p
     return None
+
+
+def f3_checks(d, p, now, h, geom, W, H, lay):
+    """F-3（A21／A25／A26／A27／A28）：隔離層擋下真的滑鼠、頁面在隔離層底下照常繪製與計時、真的游標閒置隱藏、
+    示範游標移動連續且落點準確、系統游標不因示範而動、使用者點字幕不打斷示範游標、外框淡出。"""
+    import ctypes, re
+    from ctypes import wintypes
+    import demo_stage as DS
+    u = ctypes.windll.user32
+
+    def title():
+        b = ctypes.create_unicode_buffer(300)
+        u.GetWindowTextW(h, b, 300)
+        return {k: int(v) for k, v in re.findall(r"\b([cwmfi])=(\d+)", b.value)}
+
+    def move_abs(x_, y_):
+        u.mouse_event(0x8001, int(x_ * 65535 / (W - 1)), int(y_ * 65535 / (H - 1)), 0, 0)
+
+    def cursor():
+        pt = wintypes.POINT(); u.GetCursorPos(ctypes.byref(pt)); return (pt.x, pt.y)
+    g = rd(geom)
+    check("A26 隔離層蓋住整個舞台", g.get("shield") == list(lay["stage"]), (g.get("shield"), lay["stage"]))
+    t0 = title()
+    time.sleep(1.0)
+    t1 = title()
+    check("A28 隔離層開著時頁面照常繪製（畫面更新計數 1 秒內增加 >20）", t1.get("f", 0) - t0.get("f", 0) > 20, (t0, t1))
+    check("A28 隔離層開著時頁面計時器沒有被放慢（100 ms 計時 1 秒內增加 ≥7）", t1.get("i", 0) - t0.get("i", 0) >= 7, (t0, t1))
+    # 真的滑鼠在頁面上：移動、點擊、滾輪 → 頁面都收不到
+    cx, cy = lay["stage"][0] + lay["stage"][2] // 2, lay["stage"][1] + lay["stage"][3] // 3
+    move_abs(cx, cy); time.sleep(0.2); move_abs(cx + 30, cy + 20); time.sleep(0.2)
+    u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.2)
+    u.mouse_event(0x0800, 0, 0, ctypes.c_ulong(-120 & 0xffffffff).value, 0); time.sleep(0.8)
+    t2 = title()
+    check("A26 真的滑鼠在頁面範圍內點擊、滾輪、移動：頁面一個都沒收到",
+          bool(t1) and all(t2.get(k) == t1.get(k) for k in "cwm"),
+          (t1, t2))
+    check("A26 鍵盤焦點不在瀏覽器上（點了頁面範圍之後前景仍不是瀏覽器）", u.GetForegroundWindow() != h, u.GetForegroundWindow())
+    time.sleep(CURSOR_WAIT)
+    check("A26 真的游標不動約 2 秒就隱藏", rd(geom).get("cursor_hidden") is True, rd(geom).get("cursor_hidden"))
+    move_abs(cx + 60, cy + 40); time.sleep(0.5)
+    check("A26 真的游標一動就出現", rd(geom).get("cursor_hidden") is False, rd(geom).get("cursor_hidden"))
+
+    # 示範游標：找出那個滑鼠穿透的小窗（舞台行程、WS_EX_TRANSPARENT）
+    def ptr_hwnd():
+        found = []
+        CB = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def f(hw, _):
+            pid = wintypes.DWORD(); u.GetWindowThreadProcessId(hw, ctypes.byref(pid))
+            if pid.value == p.pid and u.IsWindowVisible(hw) and u.GetWindowLongW(hw, -20) & 0x20:
+                found.append(hw)
+            return True
+        u.EnumWindows(CB(f), 0)
+        return found[0] if found else None
+    R = int(26 * max(1.0, H / 1080.0))
+    crop, k = now["crop"], DS.dpr_of(h) * float(now.get("zoom") or 1.0)
+    tgt1, tgt2 = (700, 400), (330, 160)
+    cur0 = cursor()
+    json.dump(dict(now, pointer={"x": tgt1[0], "y": tgt1[1], "dur": 0.6, "seq": 1}), open(os.path.join(d, "now.json"), "w", encoding="utf-8"),
+              ensure_ascii=False)
+    time.sleep(1.4)
+    ph = wait(ptr_hwnd, 5)
+    check("A21 示範游標出現（滑鼠穿透的小窗）", ph, ph)
+    if not ph:
+        return
+    e1 = L.css_point(tgt1, lay["stage"], crop, float(now.get("zoom") or 1.0), DS.dpr_of(h))
+    r = DS._rect(ph)
+    check("A21 示範游標落在目標（箭頭尖端誤差 ≤2）", abs(r[0] + R - e1[0]) <= 2 and abs(r[1] + R - e1[1]) <= 2, (r, e1))
+    check("A26 示範期間系統游標位置沒有改變", cursor() == cur0, (cur0, cursor()))
+    # 第二段移動：連續取樣；途中使用者點一下字幕（A27）
+    json.dump(dict(now, pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0.8, "seq": 2}, look={"box": [320, 150, 300, 60], "seq": 1}),
+              open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    samples, t_ = [], time.time()
+    pl = rd(geom).get("caption_plate")
+    clicked = False
+    while time.time() - t_ < 1.3:
+        rr = DS._rect(ph)
+        samples.append((rr[0] + R, rr[1] + R))
+        if not clicked and time.time() - t_ > 0.3 and pl:
+            move_abs(pl[0] + 8, pl[1] + pl[3] // 2); u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0)
+            clicked = True
+        time.sleep(0.012)
+    jumps = [abs(samples[i + 1][0] - samples[i][0]) + abs(samples[i + 1][1] - samples[i][1]) for i in range(len(samples) - 1)]
+    e2 = L.css_point(tgt2, lay["stage"], crop, float(now.get("zoom") or 1.0), DS.dpr_of(h))
+    check("A21 示範游標的移動是連續的（相鄰取樣位移 ≤40 像素、沒有瞬移）", jumps and max(jumps) <= 40, (max(jumps or [0]), len(samples)))
+    check("A27 移動途中使用者點了字幕：示範游標照樣走到目標", abs(samples[-1][0] - e2[0]) <= 2 and abs(samples[-1][1] - e2[1]) <= 2,
+          (samples[-1], e2))
+    json.dump(dict(now, pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0.8, "seq": 2}, look={"box": [320, 150, 300, 60], "seq": 1}, press=1),
+              open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    time.sleep(0.12)
+    shot_png("stage-shot-4-pointer-press.png")
+    a1 = rd(geom).get("look_alpha")
+    time.sleep(1.9)
+    a2 = rd(geom).get("look_alpha")
+    check("A25 讀內容的外框很淡（不透明度 ≤0.6），而且約 1.6 秒後淡出", a1 and 0 < a1 <= 0.6 and not a2, (a1, a2))
+    shot_png("stage-shot-5-after-fade.png")
+    # 卡片（轉場）：示範游標淡出
+    json.dump(dict(now, card="transition", pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0, "seq": 2}),
+              open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    time.sleep(0.8)
+    check("轉場卡時示範游標收起", not u.IsWindowVisible(ph), u.IsWindowVisible(ph))
+
+
+CURSOR_WAIT = 2.8
 
 
 def real_chrome_checks(stage_with):
@@ -386,6 +492,10 @@ def real_chrome_checks(stage_with):
         check("A2 拖過之後位置存檔（下次沿用）", rd(os.path.join(work, "stage-caption.json")).get("pos"),
               rd(os.path.join(work, "stage-caption.json")))
         stress_rounds(20)
+    f3_checks(d, p, now, h, geom, W, H, lay)
+    json.dump(now, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)   # 回到台上（f3 最後是轉場卡）
+    time.sleep(1.5)
+    if pl:
         # 按兩下：回到預設位置（即使游標停在字幕上也立刻移回）
         g0 = rd(geom).get("caption_plate")
         check("（接續前）字幕顯示中", g0, rd(geom).get("caption_on"))
