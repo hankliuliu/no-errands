@@ -581,7 +581,9 @@ def _shape(node, depth=0, maxd=14):
     return d
 
 
-VIEW_TITLES = {"notes": ("記事本", "Notes", "Note", "Keep")}
+# 真機（2026-11-22）：LINE 開出來的視窗標題一律是「LINE」——不能靠標題認。改看視窗內容：預期的那個視窗裡一定有這個檢視的項目
+#（記事本視窗有「記事本」分頁；其他功能面板有「儲存聊天」）。假聊天的記事本視窗標題就是記事本，也算。
+VIEW_MARKERS = {"notes": ("記事本", "Notes", "Note"), "menu": ("儲存聊天", "儲存聊天記錄", "Save chat", "Save chat history")}
 
 
 def _close_new(pid, before, res, view=None):
@@ -597,10 +599,20 @@ def _close_new(pid, before, res, view=None):
         buf = ctypes.create_unicode_buffer(n + 1); u32.GetWindowTextW(h, buf, n + 1)
         return buf.value
 
+    news = [w for w in news if not w["class"].startswith("shadow_")]   # 視窗陰影：隨主視窗消失，不是要關的東西
     titled = [w for w in news if u32.GetWindowTextLengthW(w["hwnd"]) > 0]
     expected = None
-    if len(titled) == 1 and view in VIEW_TITLES and title(titled[0]["hwnd"]).strip() in VIEW_TITLES[view]:
-        expected = titled[0]["hwnd"]
+    if len(titled) == 1 and view in VIEW_MARKERS:
+        marks = VIEW_MARKERS[view]
+        if title(titled[0]["hwnd"]).strip() in marks:
+            expected = titled[0]["hwnd"]
+        else:
+            try:
+                names = {i.get("name") for i in (popup_menu.popup_items(titled[0]["hwnd"]).get("items") or [])}
+            except Exception:
+                names = set()
+            if names & set(marks):
+                expected = titled[0]["hwnd"]
     closed, left = 0, []
     for w in news:
         h = w["hwnd"]
