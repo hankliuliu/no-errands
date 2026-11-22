@@ -1404,8 +1404,11 @@ def execute(rb, mode, a):
     try:
         if mode == "live" and ctl.read().get("hold_first") and i == lo:
             # 上場前準備（standby）：先把每個帳號的瀏覽器開到它第一步要用的頁面，停在「按下一步開始」
+            # 片頭從第一刻就完整（副標、模式）——準備階段也是觀眾會看到的畫面（5c：擷取裡有一格片頭少了副標與模式）
             ctl.publish(step_index=0, status="staging", captions=[{"text": "準備畫面中…", "s": 60}],
-                        card="title" if staged else None)
+                        card="title" if staged else None,
+                        card_data={"subtitle": (rb.get("stage") or {}).get("subtitle", ""),
+                                   "mode": "按下一步前進" if ctl.step_mode() else "自動播放"} if staged else None)
             home = rb["target"]["base_url"].rstrip("/") + rb["target"].get("home_path", "/")
             for acct in rb["accounts"]:
                 br.ensure(acct)
