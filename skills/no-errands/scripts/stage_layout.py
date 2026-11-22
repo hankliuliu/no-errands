@@ -164,3 +164,62 @@ def overlaps(a, b):
     ax, ay, aw, ah = a
     bx, by, bw, bh = b
     return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
+def inside(a, b, tol=0):
+    """矩形 a 完全落在 b 內（容許 tol 像素）。"""
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return ax >= bx - tol and ay >= by - tol and ax + aw <= bx + bw + tol and ay + ah <= by + bh + tol
+
+
+def fit_report(screen, stage, content, tol=3):
+    """台上瀏覽器頁面的實測範圍（實體像素）對舞台：頁面底邊要貼齊螢幕底邊；舞台的四邊都不能露出背板（空白帶）。
+    頁面超出舞台（頂端被角色帶蓋住、左邊伸到螢幕外）是刻意的裁切，不算空白。"""
+    W, H = screen
+    sx, sy, sw, sh = stage
+    if not content:
+        return {"ok": False, "why": ["量不到頁面範圍"], "gaps": None, "bottom_diff": None}
+    cx, cy, cw, ch = content
+    gaps = {"上": cy - sy, "左": cx - sx, "右": (sx + sw) - (cx + cw), "下": (sy + sh) - (cy + ch)}
+    why = []
+    bottom_diff = (cy + ch) - H
+    if abs(bottom_diff) > tol:
+        why.append("頁面底邊和螢幕底邊差 %d 像素" % bottom_diff)
+    for k, v in gaps.items():
+        if v > tol:
+            why.append("舞台%s緣露出 %d 像素的空白帶" % (k, v))
+    return {"ok": not why, "why": why, "gaps": gaps, "bottom_diff": bottom_diff}
+
+
+def placement_error(want, got):
+    """要求的視窗矩形和實測矩形的最大差距（像素）。"""
+    if not want or not got:
+        return None
+    return max(abs(a - b) for a, b in zip(want, got))
+
+
+def align_plan(lst, straddler, target, gap=4):
+    """訊息區頂端不留半行（CSS px）。lst：訊息區可視範圍；straddler：跨在頂端、被切到的那一則（None＝已對齊）；
+    target：這一拍要看的東西（或最後一則）。回 (做法, 值)：
+      ("ok", 0)        沒有被切到的訊息
+      ("scroll", px)   往上捲 px，被切的那則從開頭顯示，而且 target 仍完整在訊息區內
+      ("mask", box)    捲了會把 target 擠出去：用頁面底色蓋住被切那則露出的殘段（target 在那則裡面時只蓋到 target 上方）
+      ("none", 原因)   做不到（target 自己被切到頂端）"""
+    if not straddler:
+        return ("ok", 0)
+    lx, ly, lw, lh = lst
+    top, bottom = ly, ly + lh
+    sy, sh = straddler[1], straddler[3]
+    c = top - sy
+    if target is None:
+        return ("scroll", int(math.ceil(c)))
+    ty, th = target[1], target[3]
+    if ty + th + c <= bottom + 1:
+        return ("scroll", int(math.ceil(c)))
+    within = ty >= sy - 1 and ty + th <= sy + sh + 1
+    if not within:
+        return ("mask", [lx, top, lw, round(sy + sh - top, 1)])
+    if ty - top >= 2 * gap:
+        return ("mask", [lx, top, lw, round(ty - gap - top, 1)])
+    return ("none", "這一拍要看的東西本身跨在訊息區頂端")

@@ -760,28 +760,149 @@ def parse_box(o):
 
 
 class Look:
-    """「看這裡」：記住目標（CSS 選取器或 ref），隨時重取位置發布到 now.json；找不到就不畫。"""
+    """「看這裡」：記住目標（CSS 選取器或 ref），隨時重取位置發布到 now.json；找不到就不畫。
+    劇本 stage.align 有設定時，每拍也把訊息區頂端對齊到一則訊息的開頭（A9：不留被切一半的字）：
+    能往上捲就捲（被切的那則從開頭顯示、目標仍完整）；捲了會把目標擠出去就請舞台用頁面底色蓋住殘段。
+    全部只用唯讀的 get box／get count 和 scroll。"""
 
-    def __init__(self, br, ctl):
+    def __init__(self, br, ctl, align=None):
         self.br, self.ctl, self.acct, self.sel = br, ctl, None, None
+        self.align_cfg, self.align_on, self.box, self.anchor, self._align_t = align, False, None, None, 0.0
+        self.color = (align or {}).get("color")
+
+    def step(self, acct, on):
+        """換步驟：這一步要不要對齊；殘段遮罩清掉。"""
+        self.acct, self.sel, self.box, self.anchor = acct, None, None, None
+        self.align_on = bool(self.align_cfg and on)
+        self.ctl.publish(mask=None, align=None)
 
     def set(self, acct, sel, scroll=True):
         self.acct, self.sel = acct, sel
         if sel and scroll:
             self.br.neb(acct, "scrollintoview", sel)
             time.sleep(0.3)
-        self.refresh()
+        self.refresh(realign=False)
+        self.align()
 
     def clear(self):
-        self.acct = self.sel = None
+        self.sel = self.box = None
         self.ctl.publish(look=None)
 
-    def refresh(self):
-        if not self.sel:
+    def refresh(self, realign=True):
+        if self.sel:
+            rc, o, e = self.br.neb(self.acct, "get", "box", self.sel)
+            box = parse_box(o) if rc == 0 else None
+            self.box = box
+            self.ctl.publish(look={"box": box} if box else None)
+        if realign and self.align_on and self.anchor is not None and time.time() - self._align_t >= 1.0:
+            b = self._box(self.align_cfg["item_nth"].format(k=1))       # 有新訊息、版面動了 → 重新對齊
+            if b is None or abs(b[1] - self.anchor[1]) > 2 or abs(b[3] - self.anchor[3]) > 2:
+                self.align()
+
+    def _box(self, sel):
+        rc, o, e = self.br.neb(self.acct, "get", "box", sel)
+        return parse_box(o) if rc == 0 else None
+
+    def align(self):
+        if not self.align_on or not self.acct:
             return
+        import stage_layout
+        cfg = self.align_cfg
+        self._align_t = time.time()
+        if cfg.get("skip_if"):
+            rc, o, e = self.br.neb(self.acct, "get", "count", cfg["skip_if"])
+            if rc == 0 and o.strip().split()[-1:] and o.strip().split()[-1].isdigit() and int(o.strip().split()[-1]) > 0:
+                self.anchor = None
+                self.ctl.publish(mask=None, align={"how": "skip", "ok": None, "why": "對話框開著"})
+                return
+        lst = self._box(cfg["list"])
+        if not lst:
+            self.anchor = None
+            self.ctl.publish(mask=None, align={"how": "none", "ok": False, "why": "找不到訊息區"})
+            return
+        top = lst[1]
+        last = strad = None
+        for k in range(1, int(cfg.get("max_items", 15)) + 1):
+            b = self._box(cfg["item_nth"].format(k=k))
+            if b is None:
+                break
+            last = last or b
+            if b[1] >= top - 1:
+                continue
+            if b[1] + b[3] > top + 1:
+                strad = (k, b)
+            break
+        plan = stage_layout.align_plan(lst, strad and strad[1], self.box or last)
+        rec = {"how": plan[0], "ok": plan[0] in ("ok", "scroll", "mask"), "cut": round(top - strad[1][1], 1) if strad else 0}
+        mask = None
+        if plan[0] == "scroll":
+            self.br.neb(self.acct, "scroll", "up", str(plan[1]), "--selector", cfg["scroller"])
+            time.sleep(0.25)
+            b = self._box(cfg["item_nth"].format(k=strad[0]))
+            rec["ok"] = bool(b and abs(b[1] - top) <= 2)
+            if self.sel:
+                self.refresh_box_only()
+        elif plan[0] == "mask":
+            mask = {"box": plan[1], "color": self.page_color()}
+        elif plan[0] == "none":
+            rec["why"] = plan[1]
+        self.anchor = self._box(cfg["item_nth"].format(k=1))
+        self.ctl.publish(mask=mask, align=rec)
+
+    def refresh_box_only(self):
         rc, o, e = self.br.neb(self.acct, "get", "box", self.sel)
-        box = parse_box(o) if rc == 0 else None
-        self.ctl.publish(look={"box": box} if box else None)
+        self.box = parse_box(o) if rc == 0 else None
+        self.ctl.publish(look={"box": self.box} if self.box else None)
+
+    def page_color(self):
+        """遮罩用的頁面底色：劇本寫的 > 頁面的 CSS 變數（例：--center-channel-bg）> 黑。"""
+        if self.color:
+            return self.color
+        var = (self.align_cfg or {}).get("color_var")
+        if var:
+            rc, o, e = self.br.neb(self.acct, "get", "styles", self.align_cfg["list"])
+            m = re.search(re.escape(var) + r":\s*(#[0-9a-fA-F]{3,8})\b", o or "")
+            if m:
+                self.color = m.group(1)
+                return self.color
+        return "#000000"
+
+
+def stage_fit_probe(rb, steps, ctl, run_dir, timeout=12.0):
+    """A1／A19：上場前，把每個帳號的瀏覽器照它第一步的裁切擺到舞台位置（在背板下面，觀眾看不到），
+    讀舞台量到的實際頁面範圍（stage_fit.json）。連續兩次合格才算；不合格回一句原因（不 READY、不上台）。"""
+    p = os.path.join(run_dir, "stage_fit.json")
+    for acct in rb["accounts"]:
+        st = next((x for x in steps if x["account"] == acct), None)
+        if not st:
+            continue
+        role = (rb["accounts"].get(acct) or {}).get("role") or acct
+        t0 = time.time()
+        ctl.publish(fit_probe=acct, crop=crop_of(rb, st))
+        rec, good = None, 0
+        while time.time() - t0 < timeout:
+            time.sleep(0.4)
+            try:
+                r = json.load(open(p, encoding="utf-8"))
+            except Exception:
+                continue
+            if r.get("account") != acct or not r.get("probe") or float(r.get("t") or 0) < t0 or r.get("ok") is None:
+                continue
+            if rec is not None and r.get("t") == rec.get("t"):
+                continue
+            rec = r
+            good = good + 1 if r.get("ok") else 0
+            if good >= 2:
+                break
+        if good < 2:
+            ctl.publish(fit_probe=None)
+            why = list(((rec or {}).get("fit") or {}).get("why") or [])
+            pe = (rec or {}).get("placement_error")
+            if pe is not None and pe > 3:
+                why.append("視窗沒有照要求的大小擺好（差 %d 像素）" % pe)
+            return "%s的畫面：%s" % (role, "；".join(why) or "量不到頁面範圍")
+    ctl.publish(fit_probe=None, crop=None)
+    return None
 
 
 def beats_of(st):
@@ -798,12 +919,13 @@ def beat_secs(b, text):
 def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
     """一拍：字幕＋看這裡。自動模式（預設）：留 beat_secs 秒、暫停時計時凍結；逐步模式：hold 的拍才停下等「下一步」。"""
     ctl.publish(beat={"text": subst(b.get("say", ""), vars_), "i": k, "n": n})
+    t0 = time.time()                                          # 字幕一出來就開始計時（外框、對齊的查詢不拉長這一拍）
     lk = b.get("look")
     if isinstance(lk, dict) and lk.get("css"):
         look.set(st["account"], subst(lk["css"], vars_), scroll=lk.get("scroll", True))
     elif lk is False:                                     # 沒寫 look：保留上一個外框（例：剛勾好的勾選框）
         look.clear()
-    t0, dur = time.time(), beat_secs(b, subst(b.get("say", ""), vars_))
+    dur = beat_secs(b, subst(b.get("say", ""), vars_))
     while time.time() - t0 < dur:                           # (停)＝多留一會兒；講者模式只在步與步之間停
         time.sleep(0.5)
         look.refresh()
@@ -1078,7 +1200,7 @@ def execute(rb, mode, a):
     replay = (replay if os.path.isabs(replay) else os.path.join(rb["_dir"], replay)) if replay else None
     staged = mode == "live" and stage_on(rb)
     if staged:
-        br.look = Look(br, ctl)
+        br.look = Look(br, ctl, align=(rb.get("stage") or {}).get("align"))
         br.live = True
         ctl.publish(accounts=stage_accounts(rb, br), title=rb.get("title", ""), zoom=1.0, card=None)
     ctl.publish(steps_total=hi - lo, status="running", mode=mode, title=rb.get("title", ""),
@@ -1100,12 +1222,20 @@ def execute(rb, mode, a):
                 url = rb["target"]["base_url"].rstrip("/") + subst(first["url"], state["vars"]) if first and "{" not in first["url"] else home
                 br.neb(acct, "open", url)
                 br.cur_url[acct] = url
-            ctl.publish(step_index=0, role="", captions=[{"text": rb.get("ready_caption") or
-                                                          "準備好了。按「下一步」開始示範。", "s": 600}],
-                        card="title" if staged else None,
-                        card_data={"subtitle": (rb.get("stage") or {}).get("subtitle", ""),
-                                   "mode": "按下一步前進" if ctl.step_mode() else "自動播放"} if staged else None)
-            if staged and not ctl.step_mode():
+            fit_why = stage_fit_probe(rb, steps[lo:hi], ctl, run_dir) if staged else None
+            if fit_why:
+                stopped = {"stage_fit": fit_why}
+                ctl.publish(status="failed", fit_fail=fit_why)
+                i = hi
+            else:
+                ctl.publish(step_index=0, role="", captions=[{"text": rb.get("ready_caption") or
+                                                              "準備好了。按「下一步」開始示範。", "s": 600}],
+                            card="title" if staged else None,
+                            card_data={"subtitle": (rb.get("stage") or {}).get("subtitle", ""),
+                                       "mode": "按下一步前進" if ctl.step_mode() else "自動播放"} if staged else None)
+            if fit_why:
+                pass
+            elif staged and not ctl.step_mode():
                 # 自動模式（排練、驗收、agent 示範）：不等任何人按——片頭留幾秒就開始
                 t_ = time.time()
                 ctl.publish(status="ready")
@@ -1128,6 +1258,8 @@ def execute(rb, mode, a):
                     time.sleep(float((rb.get("stage") or {}).get("transition_s", 1.6)))
                 ctl.publish(card=None, role=info_["role"], role_color=info_["color"], section=st.get("section", ""),
                             crop=crop_of(rb, st), look=None, beat={"text": "", "i": 0, "n": len(beats_of(st))})
+                al = (rb.get("stage") or {}).get("align") or {}
+                br.look.step(st["account"], (st.get("view") or "read") in (al.get("views") or [st.get("view") or "read"]))
             ctl.publish(step_index=i - lo + 1, step_id=st["id"], account=st["account"], role=role,
                         captions=captions_of(rb, st), on_fail=st.get("on_fail", ""), status="running", waited_s=0,
                         planb=pb if os.path.exists(pb) else None)
@@ -1173,7 +1305,7 @@ def execute(rb, mode, a):
         stopped = {"user_stop": steps[min(i, len(steps) - 1)]["id"]}
         ctl.publish(status="stopped")
     finally:
-        if mode != "live" or not stopped or "user_stop" in (stopped or {}):
+        if mode != "live" or not stopped or "user_stop" in (stopped or {}) or "stage_fit" in (stopped or {}):
             br.close_all()
         state["ended"] = now_s()
         state["stopped"] = stopped
@@ -1185,7 +1317,7 @@ def execute(rb, mode, a):
             json.dump(state, f, ensure_ascii=False, indent=1)
         if not stopped:
             ctl.publish(status="done")
-        if staged and not (stopped and "user_stop" in stopped):
+        if staged and not (stopped and ("user_stop" in stopped or "stage_fit" in stopped)):
             # 片尾：停住讓講者可以回頭講；按「結束」由引擎自己還原，片尾卡顯示結果
             end = (rb.get("stage") or {}).get("end") or {}
             ctl.publish(card="end", look=None, beat={"text": "", "i": 0, "n": 0},
@@ -1789,6 +1921,19 @@ def standby(rb, a):
             if st_ in ("ready", "failed", "stopped", "done") or eng.poll() is not None:
                 break
         ready = st_ == "ready"
+        if staged:
+            try:
+                fw = json.load(open(os.path.join(run_dir, "now.json"), encoding="utf-8")).get("fit_fail")
+            except Exception:
+                fw = None
+            res.append({"check": "頁面貼齊螢幕底邊、舞台沒有空白帶（實測）", "ok": not fw and ready, "detail": fw or ""})
+            if fw:
+                say("✗ 畫面版面：" + fw)
+                labels.setdefault("畫面版面", {"name": "畫面版面（頁面貼齊螢幕）", "say": fw + "。請 agent 處理後再雙擊一次。"})
+                item("畫面版面", False)
+                _atomic_json(os.path.join(run_dir, "now.json"),
+                             dict(base, card_data={"heading": "還沒準備好：照下面的說明處理後，再雙擊一次", "items": items},
+                                  beat={"text": "按右下角「⋯」→「停止示範」可以關掉這個畫面。", "i": 0, "n": 0}))
         res.append({"check": "畫面就緒、停在第一步前", "ok": ready, "detail": "" if ready else "引擎狀態：%s" % st_})
         say(("✓ " if ready else "✗ ") + "畫面就緒、停在第一步前")
         result.update(ok=ready, run_dir=run_dir, engine_pid=eng.pid, player_pid=pl and pl.pid, screen=[sw, sh])

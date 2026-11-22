@@ -94,6 +94,86 @@ check("被裁掉（在舞台外）的方框不畫", L.css_to_screen((0, 0, 200, 
 part = L.css_to_screen((300, 60, 400, 50), stage, crop, 1.5, 1.0)
 check("一半在舞台外 → 只畫舞台內的部分", part and part[1] == stage[1] and part[3] < 75, part)
 
+# ---- A1/A19：頁面範圍實測（1920×1080、角色帶 65）
+lay = L.layout(1920, 1080)
+stg = lay["stage"]
+good = (-404, stg[1] - 126, 1920 + 404, 1080 - stg[1] + 126)
+r = L.fit_report((1920, 1080), stg, good)
+check("A1 頁面底邊貼齊螢幕底邊、四邊沒有空白帶 → 合格（頂端與左邊伸出舞台是刻意裁切）", r["ok"], r)
+short = (-11, -191 + 87, 1920, 915 - (-191 + 87))           # 00:54 那次：視窗被系統截到螢幕大小，底邊停在 915
+r = L.fit_report((1920, 1080), stg, short)
+check("A1 00:54 那次的實測值（底邊停在 915）→ 不合格，指出底邊差距與下緣空白帶",
+      not r["ok"] and r["bottom_diff"] == -165 and any("下緣" in w for w in r["why"]), r)
+r = L.fit_report((1920, 1080), stg, (0, stg[1] - 126, 1900, 1080 - stg[1] + 126))
+check("A1 右緣露出 20 像素 → 不合格", not r["ok"] and any("右緣" in w for w in r["why"]), r)
+check("A1 量不到頁面 → 不合格", not L.fit_report((1920, 1080), stg, None)["ok"])
+check("A1 3 像素以內算貼齊", L.fit_report((1920, 1080), stg, (0, stg[1], 1920, 1080 - stg[1] + 2))["ok"])
+check("A19 要求與實測的差距", L.placement_error((-11, -191, 2400, 1400), (-11, -191, 1941, 1106)) == 459 and
+      L.placement_error((1, 2, 3, 4), (1, 2, 3, 4)) == 0)
+check("字幕塊完全落在頁面內／超出頁面", L.inside((10, 900, 300, 60), good) and not L.inside((10, 1050, 300, 60), good))
+# ---- A9：訊息區頂端不留半行
+lst = (269, 141, 984, 354)
+check("A9 沒有被切到的訊息 → 已對齊", L.align_plan(lst, None, (269, 397, 984, 90)) == ("ok", 0))
+p = L.align_plan(lst, (269, 120, 984, 200), (269, 330, 984, 100))
+check("A9 被切 21 px、往上捲之後目標仍完整 → 往上捲 21", p == ("scroll", 21), p)
+p = L.align_plan(lst, (269, -14.4, 984, 411.4), (269, 397, 984, 90.8))
+check("A9 被切 155 px、往上捲會把最後一則擠出去 → 用底色蓋住殘段（到被切那則的底邊）",
+      p[0] == "mask" and p[1][1] == 141 and abs(p[1][1] + p[1][3] - 397) <= 0.1, p)
+p = L.align_plan(lst, (269, 0, 984, 600), (269, 300, 984, 80))
+check("A9 目標在被切的那則裡面 → 只蓋到目標上方 4 px", p[0] == "mask" and abs(p[1][1] + p[1][3] - 296) <= 0.1, p)
+p = L.align_plan(lst, (269, 0, 984, 600), (269, 140, 984, 400))
+check("A9 目標自己跨在頂端 → 做不到（照實記錄）", p[0] == "none", p)
+
+# ---- A9：Look 的對齊流程（假的瀏覽器：只回 get box／get count／scroll）
+import demo_runbook as DR  # noqa: E402
+
+
+class FakeBr:
+    def __init__(self, boxes, modal=0):
+        self.boxes, self.modal, self.calls, self.dy = boxes, modal, [], 0
+
+    def neb(self, acct, *a):
+        self.calls.append(a)
+        if a[:2] == ("get", "count"):
+            return 0, "%d\n" % self.modal, ""
+        if a[:2] == ("get", "styles"):
+            return 0, "--center-channel-bg: #111827\n", ""
+        if a[0] == "scroll":
+            self.dy += int(a[2]) if a[1] == "up" else -int(a[2])
+            return 0, "✓ Done", ""
+        if a[:2] == ("get", "box"):
+            b = self.boxes.get(a[2])
+            if not b:
+                return 1, "", "no"
+            y = b[1] + (self.dy if a[2] != "#post-list" else 0)
+            return 0, "x: %s\ny: %s\nwidth: %s\nheight: %s\n" % (b[0], y, b[2], b[3]), ""
+        return 0, "", ""
+
+
+class FakeCtl:
+    def __init__(self):
+        self.now = {}
+
+    def publish(self, **kw):
+        self.now.update(kw)
+
+
+AL = {"list": "#post-list", "scroller": ".s", "item_nth": "#p :nth-last-child({k} of [role=\"listitem\"])",
+      "skip_if": ".modal-content", "color_var": "--center-channel-bg"}
+nth = lambda k: AL["item_nth"].format(k=k)
+boxes = {"#post-list": [269, 141, 984, 354], nth(1): [269, 397, 984, 90.8], nth(2): [269, -14.4, 984, 411.4], "#t": [269, 397, 984, 90.8]}
+c = FakeCtl(); lk = DR.Look(FakeBr(boxes), c, align=AL); lk.step("a", True); lk.set("a", "#t")
+check("A9 Look：被切 155 px、捲了會擠掉目標 → 發布遮罩（頁面底色取自 CSS 變數）",
+      c.now["align"]["how"] == "mask" and c.now["mask"]["color"] == "#111827" and c.now["mask"]["box"][1] == 141, c.now)
+boxes2 = {"#post-list": [269, 141, 984, 354], nth(1): [269, 330, 984, 100], nth(2): [269, 120, 984, 200], "#t": [269, 330, 984, 100]}
+br2 = FakeBr(boxes2); c = FakeCtl(); lk = DR.Look(br2, c, align=AL); lk.step("a", True); lk.set("a", "#t")
+check("A9 Look：被切 21 px → 往上捲 21、捲完驗證對齊、沒有遮罩",
+      c.now["align"] == {"how": "scroll", "ok": True, "cut": 21.0} and c.now.get("mask") is None and ("scroll", "up", "21", "--selector", ".s") in br2.calls, (c.now, br2.calls[-6:]))
+c = FakeCtl(); lk = DR.Look(FakeBr(boxes, modal=1), c, align=AL); lk.step("a", True); lk.set("a", "#t")
+check("A9 Look：對話框開著 → 不捲、不遮（記為 skip）", c.now["align"]["how"] == "skip" and c.now.get("mask") is None, c.now)
+c = FakeCtl(); br3 = FakeBr(boxes); lk = DR.Look(br3, c, align=AL); lk.step("a", False); lk.set("a", "#t")
+check("這一步不對齊（劇本沒列這個檢視）→ 不做任何對齊查詢", c.now.get("align") is None and not any(x[0] == "scroll" for x in br3.calls))
+
 import demo_stage as DS  # noqa: E402
 q = r'"C:\x\chrome.exe" "--remote-debugging-port=0" "--user-data-dir=C:\Users\u\p\demo_a" "--window-size=1280,720"'
 check("認得自己的瀏覽器：參數整個包在引號裡的 --user-data-dir（agent-browser 的啟動方式）",

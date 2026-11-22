@@ -152,6 +152,7 @@ jobs:
             gather_items.txt
             player.txt
             stagewin.txt
+            stage-shot-*.png
             nowin-pos.txt
             audit.txt
             codex.txt

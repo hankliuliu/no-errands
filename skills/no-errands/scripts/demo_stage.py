@@ -24,6 +24,7 @@ import stage_layout as L  # noqa: E402
 import nowin  # noqa: E402,F401
 
 BG, FG, DIM, ACCENT, LOOK = "#0b0d12", "#f4f4f4", "#7d8794", "#2f7de1", "#ffcc33"
+CAP_ALPHA = 0.62                                        # 字幕底板的不透明度（字本身完全不透明）
 FONT = "Microsoft JhengHei UI"
 OFF = -32000                                            # 移到螢幕外
 EXIT_HINT = "要離開這個畫面：按 Esc 或 Ctrl+Shift+F12，或雙擊背景"
@@ -75,6 +76,14 @@ if os.name == "nt":
     # 瀏覽器沒被擺上台、被置頂的背板蓋住（排練 4：舞台上一片黑）
     u32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
     u32.SetWindowPos.restype = wintypes.BOOL
+    # 繞過系統的最大視窗尺寸：沒有這個旗標時，系統在 WM_WINDOWPOSCHANGING 把視窗截到「螢幕＋邊框」大小，
+    # 往上移出螢幕的瀏覽器底邊跟著縮上來，舞台下方露出一條黑帶（00:54 那次：1941×1106，底邊停在 915）
+    SWP_NOSENDCHANGING = 0x0400
+    g32 = ctypes.windll.gdi32
+    g32.CreateRoundRectRgn.argtypes = [ctypes.c_int] * 6
+    g32.CreateRoundRectRgn.restype = wintypes.HANDLE
+    u32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HANDLE, wintypes.BOOL]
+    u32.GetWindowRgnBox.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 
 
 def _cls(h):
@@ -254,29 +263,42 @@ class Stage:
         self.where.pack(side="right", padx=lay["pad"])        # 「5 / 13 · 現場操作」：這是現場操作，不是錄影
         self.rule = tk.Frame(self.band, height=3, bg=ACCENT)
         self.rule.place(relx=0, rely=1.0, anchor="sw", relwidth=1.0)
-        # 字幕塊（Sprint F-2）：浮在舞台上、大小跟著文字、可拖、可關。Tk 做不到「底半透明而字完全不透明」，
-        # 選整塊 85% 不透明（字仍清楚、底下的頁面隱約可見）。
-        CAPBG = "#000000"
-        self.capw = self._top(0, 0, 10, 10)
-        self.capw.configure(bg=CAPBG)
+        # 字幕塊（Sprint F-2）：浮在頁面上、大小跟著文字、可拖、可關。兩層視窗疊在同一個位置：
+        #   底板 capbg：黑色、整窗 CAP_ALPHA 透明度（看得到底下的頁面）、圓角（SetWindowRgn）
+        #   字   capw ：色鍵透明（KEY 色的像素完全透明、點擊穿到底板），字本身完全不透明 → 白字清楚
+        # 兩層一律同時設定位置（tick 與拖動都走 place_caption），不會錯開。
+        CAPBG, KEY = "#000000", "#010203"
+        self.cap_key = KEY
+        self.capbg = self._top(0, 0, 10, 10)
+        self.capbg.configure(bg=CAPBG)
         try:
-            self.capw.attributes("-alpha", 0.85)
+            self.capbg.attributes("-alpha", CAP_ALPHA)
+        except Exception:
+            pass
+        self.capw = self._top(0, 0, 10, 10)
+        self.capw.configure(bg=KEY)
+        try:
+            self.capw.attributes("-transparentcolor", KEY)
         except Exception:
             pass
         cp = lay["cap_pad"]
-        self.cap = tk.Label(self.capw, text="", font=(FONT, px(lay["cap_font"]), "bold"), fg=FG, bg=CAPBG,
+        self.cap = tk.Label(self.capw, text="", font=(FONT, px(lay["cap_font"]), "bold"), fg=FG, bg=KEY,
                             justify="center", wraplength=lay["cap_max_w"] - 2 * cp, padx=cp, pady=max(4, cp // 2))
         self.cap.pack()
-        self.cap_x = tk.Label(self.capw, text="×", font=(FONT, px(max(12, lay["cap_font"] // 2))), fg="#dddddd", bg=CAPBG)
-        self.cap_on, self.cap_user, self.cap_drag0 = True, load_caption_pos(), None
-        for w in (self.capw, self.cap):
+        self.cap_x = tk.Label(self.capw, text="×", font=(FONT, px(max(12, lay["cap_font"] // 2))), fg="#dddddd", bg="#000000")
+        self.cap_on, self.cap_user, self.cap_drag0, self._cap_rgn = True, load_caption_pos(), None, None
+        for w in (self.capbg, self.capw, self.cap):
             w.bind("<ButtonPress-1>", self.cap_press)
             w.bind("<B1-Motion>", self.cap_move)
             w.bind("<ButtonRelease-1>", self.cap_release)
             w.bind("<Double-Button-1>", self.cap_reset)
             w.bind("<Enter>", lambda e: self.cap_x.place(relx=1.0, x=-4, y=2, anchor="ne"))
-        self.capw.bind("<Leave>", lambda e: self.cap_x.place_forget())
+        self.capbg.bind("<Leave>", lambda e: self.cap_x.place_forget())
         self.cap_x.bind("<Button-1>", lambda e: self.toggle_caption())
+        # 遮罩：頁面底色的一塊，蓋住訊息區頂端被切一半的那則訊息露出的殘段（引擎算好位置，now.json 的 mask）
+        self.maskw = self._top(0, 0, 1, 1)
+        self.maskw.withdraw()
+        self.want, self.fit, self.replaced = {}, None, 0
         # 控制列（像影片播放器）：右下角一小塊；自動播放時滑鼠動了才出現
         ox, oy, ow, oh = lay["controls"]
         CTLBG = "#11151d"
@@ -325,18 +347,40 @@ class Stage:
             pass
 
     def cap_press(self, e):
-        self.cap_drag0 = (e.x_root, e.y_root, self.capw.winfo_x(), self.capw.winfo_y())
+        self.cap_drag0 = (e.x_root, e.y_root, self.capbg.winfo_x(), self.capbg.winfo_y())
 
     def cap_move(self, e):
         if not self.cap_drag0:
             return
         x0, y0, wx, wy = self.cap_drag0
         sx, sy, sw, sh = self.lay["stage"]
-        bw, bh = self.capw.winfo_width(), self.capw.winfo_height()
+        bw, bh = self.capbg.winfo_width(), self.capbg.winfo_height()
         x = min(max(wx + e.x_root - x0, sx), sx + sw - bw)
         y = min(max(wy + e.y_root - y0, sy), sy + sh - bh)
-        self.capw.geometry("+%d+%d" % (x, y))
+        self.place_caption(bw, bh, x, y)
         self.cap_user = L.caption_ratio((x, y), self.lay)        # 拖過就以使用者的位置為準（不再自動讓開）
+
+    def place_caption(self, bw, bh, x, y):
+        """字幕兩層一起擺；底板大小變了才重設圓角。"""
+        g = "%dx%d+%d+%d" % (bw, bh, x, y)
+        self.capbg.geometry(g)
+        self.capw.geometry(g)
+        if os.name == "nt" and self._cap_rgn != (bw, bh):
+            try:
+                self.capbg.update_idletasks()
+                r = max(6, self.lay["cap_pad"])
+                hw = int(self.capbg.frame(), 16)
+                u32.SetWindowRgn(hw, g32.CreateRoundRectRgn(0, 0, bw + 1, bh + 1, 2 * r, 2 * r), True)
+                self._cap_rgn = (bw, bh)
+            except Exception:
+                pass
+
+    def show_caption(self, on):
+        for w in (self.capbg, self.capw):
+            if on and not w.winfo_viewable():
+                w.deiconify()
+            elif not on and w.winfo_viewable():
+                w.withdraw()
 
     def cap_release(self, e):
         if self.cap_drag0:
@@ -485,7 +529,9 @@ class Stage:
     def place_browsers(self, now):
         if os.name != "nt":
             return
-        active = None if now.get("card") else now.get("account")
+        # 試擺（上場前，引擎寫 fit_probe）：照裁切擺到舞台位置但不置頂——在背板下面、觀眾看不到，只為了量實際範圍
+        probe = now.get("fit_probe") if now.get("card") else None
+        active = probe or (None if now.get("card") else now.get("account"))
         for acct, info in (now.get("accounts") or {}).items():
             h = self.win_of(acct, info.get("profile"))
             if not h:
@@ -497,7 +543,7 @@ class Stage:
                 continue
             self.active_hwnd = h
             crop = now.get("crop") or {}
-            key = json.dumps([crop, now.get("zoom"), self.W, self.H])
+            key = json.dumps([crop, now.get("zoom"), self.W, self.H, bool(probe)])
             if self.placed.get(acct) == key:
                 continue
             wr, cr = _rect(h), content_rect(h)
@@ -505,9 +551,62 @@ class Stage:
                 continue
             shell = (cr[0] - wr[0], cr[1] - wr[1], (wr[0] + wr[2]) - (cr[0] + cr[2]), (wr[1] + wr[3]) - (cr[1] + cr[3]))
             x, y, w, hh = L.browser_rect(self.lay["stage"], shell, crop, float(now.get("zoom") or 1.5), dpr_of(h))
-            u32.SetWindowPos(h, HWND_TOPMOST, x, y, w, hh, SWP_NOACTIVATE | SWP_SHOWWINDOW)
+            u32.SetWindowPos(h, HWND_NOTOPMOST if probe else HWND_TOPMOST, x, y, w, hh,
+                             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING)
             self.placed[acct] = key
+            self.want[acct] = (x, y, w, hh)
             self.dpr = dpr_of(h)
+
+    def check_fit(self, now):
+        """A1／A19：每秒量一次台上瀏覽器的實際視窗與頁面範圍。被系統或瀏覽器改回（差距 >3 像素）、
+        或頁面沒貼齊螢幕底邊／舞台露出空白帶 → 重量殼的大小再擺一次（最多連續 5 次）。結果寫到 stage_fit.json。"""
+        probe = now.get("fit_probe") if now.get("card") else None
+        acct = probe or (None if now.get("card") else now.get("account"))
+        h = self.wins.get(acct) if acct else None
+        rec = {"t": round(time.time(), 2), "account": acct, "probe": bool(probe), "screen": [self.W, self.H],
+               "stage": list(self.lay["stage"])}
+        if h and u32.IsWindow(h) and self.placed.get(acct) not in (None, "off"):
+            wr, cr = _rect(h), content_rect(h)
+            err = L.placement_error(self.want.get(acct), wr)
+            fit = L.fit_report((self.W, self.H), self.lay["stage"], cr)
+            rec.update(window=list(wr), want=list(self.want.get(acct) or []), content=list(cr) if cr else None,
+                       placement_error=err, fit=fit, replaced=self.replaced)
+            if (err is not None and err > 3) or not fit["ok"]:
+                self._unfit = getattr(self, "_unfit", 0) + 1
+                if self._unfit <= 5:
+                    self.placed[acct] = None             # 下一個 tick 重量殼、重擺
+                    self.replaced += 1
+            else:
+                self._unfit = 0
+            rec["ok"] = bool(fit["ok"] and (err is None or err <= 3))
+        else:
+            rec["ok"] = None                             # 現在台上沒有瀏覽器（卡片）
+        self.fit = rec
+        try:
+            p = os.path.join(self.run_dir, "stage_fit.json")
+            json.dump(rec, open(p + ".tmp", "w", encoding="utf-8"), ensure_ascii=False)
+            os.replace(p + ".tmp", p)
+        except OSError:
+            pass
+
+    def draw_mask(self, now):
+        """訊息區頂端的殘段遮罩（頁面底色）：CSS 方框 → 舞台座標；沒有就收起來。"""
+        m = now.get("mask") or {}
+        acct = now.get("account")
+        rect = None
+        if m.get("box") and not now.get("card") and acct and self.placed.get(acct) not in (None, "off"):
+            rect = L.css_to_screen(m["box"], self.lay["stage"], now.get("crop") or {}, float(now.get("zoom") or 1.5),
+                                   getattr(self, "dpr", 1.0))
+        self.mask_rect = rect
+        if not rect:
+            if self.maskw.winfo_viewable():
+                self.maskw.withdraw()
+            return
+        x, y, w, h = rect
+        self.maskw.configure(bg=m.get("color") or "#000000")
+        self.maskw.geometry("%dx%d+%d+%d" % (max(1, w), max(1, h), x, y))
+        if not self.maskw.winfo_viewable():
+            self.maskw.deiconify()
 
     def draw_look(self, now):
         box = (now.get("look") or {}).get("box")
@@ -679,18 +778,24 @@ class Stage:
             ctlr = self.lay["controls"] if show_ctl else None
             x, y = L.caption_pos((bw, bh), self.lay, look=look, ctl=ctlr, user=self.cap_user)
             if not self.cap_drag0:
-                self.capw.geometry("%dx%d+%d+%d" % (bw, bh, x, y))
-            if not self.capw.winfo_viewable():
-                self.capw.deiconify()
-        elif self.capw.winfo_viewable():
-            self.capw.withdraw()
+                self.place_caption(bw, bh, x, y)
+            self.show_caption(True)
+        else:
+            self.show_caption(False)
         try:
             self.place_browsers(now)
         except Exception:
             pass
         self.draw_look(now)
+        self.draw_mask(now)
         if time.time() - getattr(self, "_z_t", 0) >= 1.0:
+            try:
+                if os.name == "nt":
+                    self.check_fit(now)
+            except Exception:
+                pass
             self.restack()
+            self.write_geom()
         if os.environ.get("NE_STAGE_GEOM"):
             self.dump_geom()
         self.root.after(200, self.tick)
@@ -704,18 +809,37 @@ class Stage:
             h = getattr(self, "active_hwnd", None)
             if os.name == "nt" and h and not self.now.get("card") and u32.IsWindow(h):
                 u32.SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
-            for w in [self.band] + self.edges + [self.capw, self.ctlw, self.hintw]:
+            for w in [self.maskw, self.band] + self.edges + [self.capbg, self.capw, self.ctlw, self.hintw]:
                 if w.winfo_viewable():
                     w.attributes("-topmost", True)
                     w.lift()
         except Exception:
             pass
 
+    def geom(self):
+        box = lambda w: [w.winfo_x(), w.winfo_y(), w.winfo_width(), w.winfo_height()] if w.winfo_viewable() else None
+        return {"caption_plate": box(self.capbg), "caption_textwin": box(self.capw),
+                "look_rect": list(self.look_rect) if getattr(self, "look_rect", None) else None,
+                "mask_rect": list(self.mask_rect) if getattr(self, "mask_rect", None) else None,
+                "fit": self.fit, "card": self.now.get("card"), "beat": (self.now.get("beat") or {}).get("text"),
+                "cap_user": self.cap_user}
+
+    def write_geom(self):
+        try:
+            g = dict(self.geom(), t=round(time.time(), 2), screen=[self.W, self.H],
+                     controls_visible=bool(self.ctl_shown), caption_text=self.cap.cget("text"))
+            p = os.path.join(self.run_dir, "stage_geom.json")
+            json.dump(g, open(p + ".tmp", "w", encoding="utf-8"), ensure_ascii=False)
+            os.replace(p + ".tmp", p)
+        except Exception:
+            pass
+
     def dump_geom(self):
         self.root.update_idletasks()
-        g = {"screen": [self.W, self.H], "caption_text": self.cap.cget("text"), "card_texts": getattr(self, "card_texts", []),
-             "caption_box": [self.capw.winfo_x(), self.capw.winfo_y(), self.capw.winfo_width(), self.capw.winfo_height()]
-             if self.capw.winfo_viewable() else None,
+        g = {**self.geom(), "screen": [self.W, self.H], "caption_text": self.cap.cget("text"), "card_texts": getattr(self, "card_texts", []),
+             "caption_box": [self.capbg.winfo_x(), self.capbg.winfo_y(), self.capbg.winfo_width(), self.capbg.winfo_height()]
+             if self.capbg.winfo_viewable() else None,
+             "caption_rgn": self.cap_rgn_box(),
              "caption_req": [self.cap.winfo_reqwidth(), self.cap.winfo_reqheight()],
              "cap_max_w": self.lay["cap_max_w"], "cap_line_h": self.lay["cap_line_h"], "cap_pad": self.lay["cap_pad"],
              "controls_visible": bool(self.ctl_shown),
@@ -728,6 +852,14 @@ class Stage:
             os.replace(tmp, os.environ["NE_STAGE_GEOM"])
         except PermissionError:
             pass
+
+    def cap_rgn_box(self):
+        """底板的圓角區域（測試用：有設區域才回 [l,t,r,b]）。"""
+        if os.name != "nt" or not self.capbg.winfo_viewable():
+            return None
+        r = wintypes.RECT()
+        k = u32.GetWindowRgnBox(int(self.capbg.frame(), 16), ctypes.byref(r))
+        return [r.left, r.top, r.right, r.bottom] if k > 1 else None
 
     def run(self):
         self.root.mainloop()
