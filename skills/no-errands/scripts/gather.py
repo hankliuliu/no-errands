@@ -133,6 +133,12 @@ def _apply_names(msgs, names):
     return msgs
 
 
+# 佔位字與系統字樣永遠不是名字的一部分（例如「Amy 貼圖」是只貼貼圖的 Amy，不是名叫「Amy 貼圖」的人）
+NAME_STOP = {"貼圖", "圖片", "照片", "影片", "檔案", "語音訊息", "相簿", "記事本", "公告", "收回訊息", "已收回訊息", "通話",
+             "未接來電", "已取消", "Sticker", "Stickers", "Photo", "Photos", "Video", "Videos", "File", "Files", "Album",
+             "Note", "Notes", "Announcement", "Call", "unsent"}
+
+
 def learn_split_names(msgs, min_n=4, share=0.9):
     """回 (修正後的 msgs, 學到的多段名字)。可重複呼叫（已修正的不會再動）。"""
     names = set()
@@ -151,6 +157,8 @@ def learn_split_names(msgs, min_n=4, share=0.9):
                     firsts[t] = firsts.get(t, 0) + 1
             if firsts:
                 tok, n = max(firsts.items(), key=lambda kv: kv[1])
+                if tok in NAME_STOP or tok.startswith("["):
+                    continue
                 if n >= min_n and n / len(ms) >= share:
                     found.add(s + " " + tok)
         if not found:

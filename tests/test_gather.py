@@ -149,6 +149,11 @@ check("6 修正後內文不再帶名字的後半", next(m for m in fixed if m["t
 check("6 單字名字的人不受影響（Bob 的訊息不動）", [m["text"] for m in fixed if m["sender"] == "Bob"] == ["早", "收到", "歡迎"])
 again, n2 = gather.learn_split_names(copy.deepcopy(fixed))
 check("6 重複學習不再變動（冪等）", [gather.key(m) for m in again] == [gather.key(m) for m in fixed] and not n2)
+stick = [{"date": "2026-11-04", "time": "10:%02d" % i, "sender": "Cat", "text": "貼圖 x%d" % i, "kind": "text"} for i in range(6)]
+stick += [{"date": "2026-11-04", "time": "11:%02d" % i, "sender": "Dan", "text": "收到", "kind": "text"} for i in range(6)]
+s2, n3 = gather.learn_split_names(copy.deepcopy(stick))
+check("6 佔位字不併進名字、單詞訊息不算證據", not n3 and {m["sender"] for m in s2} == {"Cat", "Dan"}, n3)
+check("6 學完之後沒有任何內文變空", all(m["text"].strip() for m in fixed + s2))
 for label, stored in (("沒遷移：舊解析的資料", old), ("遷移後的資料", gather.assign_ids(fixed))):
     new = gather._apply_names(gather.parse_line_export(EXP2), gather.known_names(stored))
     merged, mi = gather.merge(copy.deepcopy(stored), new)
