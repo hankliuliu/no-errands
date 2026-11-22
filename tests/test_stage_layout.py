@@ -30,6 +30,14 @@ for W, H in L.RESOLUTIONS:
     check("%d×%d：兩行字幕放得進字幕帶" % (W, H), 2 * lay["cap_line_h"] <= c[3], (lay["cap_line_h"], c[3]))
     check("%d×%d：舞台至少佔螢幕高度的 75%%" % (W, H), s[3] >= 0.75 * H, s)
 
+check("這台（1920×1200、150%%）：系統縮放已經夠 → 頁面維持 100%%", L.page_zoom(1200, 1.5) == 1.0, L.page_zoom(1200, 1.5))
+check("投影機 1920×1080、100%% → 頁面縮放 1.5", L.page_zoom(1080, 1.0) == 1.5, L.page_zoom(1080, 1.0))
+check("1366×768、100%% → 依高度等比（約 1.07 → 不到 12%% 就維持 100%%）", L.page_zoom(768, 1.0) == 1.0, L.page_zoom(768, 1.0))
+check("1920×1080、125%% → 補到 1.2", L.page_zoom(1080, 1.25) == 1.2, L.page_zoom(1080, 1.25))
+stage1200 = L.layout(1920, 1200)["stage"]
+box = L.css_to_screen((100, 100, 200, 20), stage1200, {}, 1.0, 1.5)
+check("150%% 縮放、頁面 100%%：CSS→實體 ×1.5", box == (150, stage1200[1] + 150, 300, 30), box)
+
 short = "案件建好了，系統回了一張案件卡片。"
 check("短句在四種解析度都是一行", all(L.caption_lines(short, W, H) == 1 for W, H in L.RESOLUTIONS),
       [L.caption_lines(short, W, H) for W, H in L.RESOLUTIONS])
