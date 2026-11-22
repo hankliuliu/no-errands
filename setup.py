@@ -244,6 +244,18 @@ def rule_path(path):
 
 
 GUARD_GROUPS = ("direct-tools", "token", "consent")
+
+
+def token_hook_cmd(py_bin, home):
+    """hook 指令一律「找不到就放行」：PreToolUse 的結束代碼 2 = 擋下，而 python 開不到腳本檔就是以 2 結束——
+    ~/.no-errands 被刪掉或搬走時，這台機器上所有 session 的所有工具呼叫都會被擋、agent 自己也修不了。
+    所以先用 python -c 檢查檔案在不在，不在就以 0 結束；python 本身不在時是殼層的 127／9009，不是 2，也不擋。
+    路徑用正斜線（bash 的雙引號會吃掉成對的反斜線；Windows 的 Python 認得正斜線）。"""
+    p = os.path.join(home, "bin", "token_guard.py").replace("\\", "/")
+    code = "import os,runpy;p=r'%s';os.path.isfile(p) and runpy.run_path(p,run_name='__main__')" % p.replace("'", "")
+    return '%s -c "%s"' % (py_bin, code)
+
+
 TOKEN_HOOK_MATCHER = "Read|Bash|PowerShell|Grep|Glob|Edit|Write|NotebookEdit"
 
 
@@ -256,8 +268,7 @@ def guard_rules(home, groups=GUARD_GROUPS):
     py_bin = ned_cmd(home).rsplit(" ", 1)[0]
     deny, ask, hooks = [], [], []
     if "token" in groups:
-        hooks.append({"matcher": TOKEN_HOOK_MATCHER, "hooks": [
-            {"type": "command", "command": '%s "%s"' % (py_bin, os.path.join(home, "bin", "token_guard.py")), "timeout": 10}]})
+        hooks.append({"matcher": TOKEN_HOOK_MATCHER, "hooks": [{"type": "command", "command": token_hook_cmd(py_bin, home), "timeout": 10}]})
     # 守門從「建議」變成「只有這條路」：不准直接呼叫兩個執行檔（ned／neb 用子行程呼叫，不受權限規則影響）。
     # 2026-11-22 巢狀 claude -p（haiku）實測：萬用字元規則擋得住裸名稱、.exe、引號 Windows 路徑、正斜線與 /c/ 路徑、
     # 先 cd 再相對路徑、bash -c 包裝、變數存整段路徑、PowerShell 呼叫運算子與先 Set-Location；neb 照常放行。
@@ -482,6 +493,10 @@ def main():
 
     if a.uninstall:
         s1 = remove_block(md_path)
+        sp = (os.path.join(os.path.abspath(a.project), ".claude", "settings.json") if a.project
+              else os.path.join(a.claude_dir, "settings.json"))
+        if os.path.exists(sp):   # 權限規則與 token hook 一定一起拿掉（沒加過就什麼都不動）
+            steps.append(dict(apply_rules(sp, guard_rules(home), remove=True), step="uninstall:guard-rules", path=sp))
         if a.user:
             steps.extend(codex_uninstall(a, home))
         s2 = os.path.isdir(skill_dst) and skill_is_ours(skill_dst, home)

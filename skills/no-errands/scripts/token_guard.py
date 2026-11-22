@@ -41,13 +41,18 @@ def under(child, parent):
     return c == p or c.startswith(p + os.sep)
 
 
+PATH_KEYS = ("file_path", "path", "notebook_path", "command")
+
+
 def decide(event, pol, project_dir):
     """回傳 None（不表態）或 deny 的理由。"""
     mm = pol.get("mattermost") or {}
     tf = mm.get("token_file")
     if not tf:
         return None
-    blob = json.dumps(event.get("tool_input") or {}, ensure_ascii=False).replace("\\\\", "/").replace("\\", "/").lower()
+    # 只看「路徑」與「殼層指令」欄位：Edit／Write 的內容、Grep 的搜尋樣式提到檔名不算讀檔（文件裡寫到檔名是常事）
+    ti = event.get("tool_input") or {}
+    blob = " ".join(str(ti.get(k) or "") for k in PATH_KEYS).replace("\\", "/").lower()
     base = os.path.basename(tf).lower()
     hit = any(v in blob for v in variants(tf)) or (len(base) >= 6 and re.search(r"(?<![\w.-])" + re.escape(base) + r"(?![\w.-])", blob))
     if not hit:

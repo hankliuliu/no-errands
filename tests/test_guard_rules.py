@@ -101,6 +101,24 @@ try:
     hp = subprocess.run(s3["hooks"]["PreToolUse"][0]["hooks"][0]["command"], shell=True, input='{"tool_name":"Bash","tool_input":{"command":"ls"}}',
                         capture_output=True, text=True)
     check("寫進設定的 hook 指令真的能跑、不相關的指令回 0 且不表態", hp.returncode == 0 and hp.stdout.strip() == "", (hp.returncode, hp.stdout, hp.stderr[-200:]))
+    # 找不到腳本就放行：把 bin/token_guard.py 搬走，同一條 hook 指令必須以 0 結束（2 = 擋下所有工具）
+    tgp = os.path.join(h3, "bin", "token_guard.py")
+    os.rename(tgp, tgp + ".away")
+    hp2 = subprocess.run(s3["hooks"]["PreToolUse"][0]["hooks"][0]["command"], shell=True,
+                         input='{"tool_name":"Read","tool_input":{"file_path":"x"}}', capture_output=True, text=True)
+    os.rename(tgp + ".away", tgp)
+    check("腳本檔不在：hook 以 0 結束、不表態（不會擋下所有工具）", hp2.returncode == 0 and hp2.stdout.strip() == "",
+          (hp2.returncode, hp2.stderr[-200:]))
+    bad_py = '"%s"' % os.path.join(td, "no-such-python.exe")
+    hp3 = subprocess.run(ne.token_hook_cmd(bad_py, h3), shell=True, input="{}", capture_output=True, text=True, errors="replace")
+    check("python 本身不在：結束代碼不是 2（殼層錯誤，不擋）", hp3.returncode != 2, hp3.returncode)
+    # 只看路徑與殼層指令欄位：文件內容、搜尋樣式提到檔名不算
+    check("token_guard：Edit／Write 的內容提到檔名 → 不擋", tg.decide(ev("Write", {"file_path": os.path.join(td, "README.md"),
+          "content": "token 放在 mattermost.txt"}), pol, projA) is None
+          and tg.decide(ev("Edit", {"file_path": os.path.join(td, "a.md"), "old_string": "x", "new_string": "mattermost.txt"}), pol, projA) is None)
+    check("token_guard：Grep 的搜尋樣式是檔名 → 不擋", tg.decide(ev("Grep", {"pattern": "mattermost.txt", "path": td}), pol, projA) is None)
+    check("token_guard：殼層指令提到檔名 → 擋（已知副作用，寫在 README）",
+          tg.decide(ev("Bash", {"command": "grep -rn mattermost.txt docs/"}), pol, projA) is not None)
     cp = subprocess.run([sys.executable, os.path.join(REPO, "setup.py"), "--project", p3, "--home", h3, "--guard-rules",
                          "--guard-groups", "nope"], capture_output=True, text=True, encoding="utf-8")
     check("CLI 不認得的組 → 拒絕", cp.returncode == 2)

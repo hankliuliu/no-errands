@@ -113,7 +113,9 @@ python doctor.py
 **token 白名單**：`policy.py token-allow add <專案資料夾> --reason "<你的原話>"`（寫 ledger；這個指令本身在 `consent` 組裡要先問你）。
 為什麼用 hook 不用 deny：Claude Code 的 deny 規則沒辦法被專案層級蓋掉，做不到「白名單時可以」。hook 在每次 Read／Bash／PowerShell／Grep／Glob／Edit／Write 之前讀政策檔判斷：工具輸入裡出現 token 檔的路徑（各種寫法）或檔名、而目前專案（Claude Code 啟動的資料夾）不在白名單 → 擋下並說明。
 巢狀 `claude -p`（`claude-haiku-5-5`）實測：不在白名單的專案，Read 與 `cat` 都被擋、沒有洩漏；白名單專案兩種都讀得到。額外負擔：每次符合的工具呼叫約 60 毫秒（啟動一次 Python）。
-限制和權限規則一樣：把路徑拆開再組、用萬用字元或另一支程式去讀，hook 看不到；hook 壞掉時不表態（不會讓你整個不能用，但也就不擋）。
+**失效時一律放行，不會讓 Claude Code 不能用**：hook 指令先檢查腳本在不在，不在就直接放行。所以刪掉或搬走 `~/.no-errands` 也不會擋住任何工具呼叫。腳本出錯、政策檔壞掉或不存在、hook 逾時，一律放行。巢狀實測過這四種情況（permission_denials 都是 0）。移除 no-errands（`setup.py --uninstall`）時，這筆 hook 和規則會一起拿掉。
+限制和權限規則一樣：把路徑拆開再組、用萬用字元或另一支程式去讀，hook 看不到；失效放行時當然也就不擋。
+**副作用**：只看路徑欄位（Read／Edit／Write 的檔案路徑、Grep／Glob 的資料夾）和殼層指令。Edit／Write 寫進去的內容、Grep 的搜尋字串提到 token 檔名，不算讀檔。但**殼層指令裡只要出現 token 檔名就會被擋**，例如 `grep -rn <token 檔名> docs/`，或在 heredoc 裡寫一段提到它的腳本。開發 no-errands 的 session 實測：2169 次工具呼叫中有 11 次（0.5%，全是 Bash）會被擋。避開方式：要寫這種腳本就用 Write 工具，或把開發用的專案資料夾加進 token 白名單（要你同意）。
 
 聊天 app 的守門（`chat_guard.py`）**不加詢問**：授權與白名單由它自己把關，白名單內的對話可以直接匯出、同步，無人在場也跑得完；白名單外的一律被它拒絕。
 
