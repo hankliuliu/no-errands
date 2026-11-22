@@ -10,6 +10,7 @@
   gather.py import --target <id> <手機匯出的 txt>            # 桌面版拿不到的更早歷史，一次補齊
   gather.py targets                                         # 列出目標（id、服務、起始；不印聊天室名稱）
   gather.py config --target <id> [--photos on|off] [--videos on|off]   # 照片／影片預設不收（量大）
+  gather.py rebuild [--target <id> | --all]                 # 離線：修正已存資料的發話者名字、重建附件索引與未收清單
   gather.py fetch --target <id> [--kind photo|video|file|audio] [--from D] [--to D] [--item <編號>]   # 依未收清單補收
 附件：看到的每一筆都進 <目標>/files/index.jsonl（status received|missing＋原因）；人看的清單是 files/未收清單.md。
 Mattermost 另存頻道標題／用途與釘選貼文（announcements.json）；read 會一併回傳公告與記事本。
@@ -115,6 +116,52 @@ def parse_line_export(text):
         elif msgs:
             msgs[-1]["text"] += "\n" + line   # 多行訊息的續行
     return msgs
+
+
+# ---- 發話者名字含空白（真機 2026-11-22）：LINE 桌面版匯出用空白分隔「時間 名字 內文」，「Amy Chen 你好」會被切成
+# 發話者「Amy」、內文「Chen 你好」。實測 47 位發話者裡 10 位有這個樣子（某人的訊息全部以同一個詞開頭）。
+# 修法：從資料學出多段名字（某發話者 ≥4 則、九成以上以同一個詞開頭 → 那個詞屬於名字，最多三段），
+# 新匯出先套用已存資料學到的名字再合併（合併鍵含發話者，兩邊要一致），合併後再學一次。
+def _apply_names(msgs, names):
+    names = sorted(names, key=len, reverse=True)
+    for m in msgs:
+        line = m["sender"] + " " + m["text"]
+        for nm in names:
+            if m["sender"] != nm and nm.startswith(m["sender"] + " ") and line.startswith(nm + " "):
+                m["sender"], m["text"] = nm, line[len(nm) + 1:]
+                break
+    return msgs
+
+
+def learn_split_names(msgs, min_n=4, share=0.9):
+    """回 (修正後的 msgs, 學到的多段名字)。可重複呼叫（已修正的不會再動）。"""
+    names = set()
+    for _ in range(3):
+        by = {}
+        for m in msgs:
+            by.setdefault(m["sender"], []).append(m)
+        found = set()
+        for s, ms in by.items():
+            if len(ms) < min_n:
+                continue
+            firsts = {}
+            for m in ms:
+                if " " in m["text"]:
+                    t = m["text"].split(" ", 1)[0]
+                    firsts[t] = firsts.get(t, 0) + 1
+            if firsts:
+                tok, n = max(firsts.items(), key=lambda kv: kv[1])
+                if n >= min_n and n / len(ms) >= share:
+                    found.add(s + " " + tok)
+        if not found:
+            break
+        names |= found
+        msgs = _apply_names(msgs, found)
+    return msgs, names
+
+
+def known_names(msgs):
+    return {m["sender"] for m in msgs if " " in m["sender"]}
 
 
 def key(m):
@@ -376,13 +423,17 @@ def _mm_fetcher():
     return lambda fid: mmc.get_bytes(base, tok, "/files/%s" % fid, gi.MAX_BYTES)
 
 
-def update_items(tid, t, d, msgs):
+def update_items(tid, t, d, msgs, offline=False):
     """訊息同步完之後：附件進索引（看到的每一筆都留紀錄）、Mattermost 下載該收的、寫未收清單。"""
     items = gi.load_items(d)
     new = gi.from_line_messages(t, msgs) if t["service"] == "line" else gi.from_mm_files(t, msgs)
+    if t["service"] == "line":
+        # 訊息 id 會因修正發話者而變：舊索引裡對不到現存訊息的佔位項目（未收的）直接換成新的，不留孤兒
+        live = {"m:" + m["id"] for m in msgs}
+        items = [it for it in items if it["id"] in live or it["status"] == "received" or not it["id"].startswith("m:")]
     items, added = gi.merge_items(items, new)
     dl = None
-    if t["service"] == "mattermost":
+    if t["service"] == "mattermost" and not offline:
         if any(it["status"] == "pending" for it in items):
             dl = gi.download_mm(d, items, _mm_fetcher())
         gi.save_announcements(d, _mm_extras(t))
@@ -398,9 +449,9 @@ def sync_one(tid, t, load_hist=False):
         text, info = _line_export(t["chat"], load_hist)
         if text is None:
             return {"target": tid, "ok": False, "error": str(info.get("error", ""))[:200]}
-        new = since_filter(parse_line_export(text), t["since"])
+        new = _apply_names(since_filter(parse_line_export(text), t["since"]), known_names(stored))
         merged, mi = merge(stored, new)
-        merged = assign_ids(merged)
+        merged = assign_ids(learn_split_names(merged)[0])
         if mi.get("gap"):
             st.setdefault("gaps", []).append(dict(mi["gap"], found=time.strftime("%Y-%m-%dT%H:%M:%S")))
         res = {"mode": mi["mode"], "added": mi["added"]}
@@ -482,6 +533,33 @@ def cmd_read(a):
          "notes": notes})
 
 
+def cmd_rebuild(a):
+    """離線重建（不連網、不動 LINE 畫面）：LINE 修正已存資料的發話者名字（含空白的名字）並重算 id、改寫 --dest；
+    所有目標從已存訊息重建附件索引與未收清單。"""
+    ts = load_targets()
+    ids = list(ts) if "--all" in a else [arg(a, "--target")]
+    if not ids or ids == [None] or any(i not in ts for i in ids):
+        out({"ok": False, "error": "需要 --target <id> 或 --all"}, 2)
+    res = []
+    for tid in ids:
+        t = ts[tid]; d = tdir(tid, t)
+        ms = load_msgs(d)
+        row = {"target": tid, "before": len(ms)}
+        if t["service"] == "line":
+            old_senders = {m["sender"] for m in ms}
+            ms, names = learn_split_names(ms)
+            ms = assign_ids(ms)
+            row.update(renamed_senders=len(names), senders_before=len(old_senders), senders_after=len({m["sender"] for m in ms}),
+                       ids_unique=len({m["id"] for m in ms}) == len(ms))
+            save_msgs(d, ms)
+            write_dest(tid, t, ms)
+        row["after"] = len(ms)
+        row["items"] = update_items(tid, t, d, ms, offline=True)
+        res.append(row)
+    ledger(cmd="rebuild", targets=len(res))
+    out({"ok": True, "results": res})
+
+
 def cmd_config(a):
     """每個目標的收集設定：--photos on|off、--videos on|off（預設都 off：量大）。"""
     ts = load_targets(); tid = arg(a, "--target")
@@ -526,9 +604,10 @@ def cmd_import(a):
     if tid not in ts or not files or ts[tid]["service"] != "line":
         out({"ok": False, "error": "用法：gather.py import --target <LINE 目標 id> <手機匯出的 txt>"}, 2)
     t = ts[tid]; d = tdir(tid, t); st = load_state(d)
-    new = since_filter(parse_line_export(open(files[0], encoding="utf-8-sig").read()), t["since"])
-    merged, mi = merge(load_msgs(d), new)
-    merged = assign_ids(merged)
+    stored = load_msgs(d)
+    new = _apply_names(since_filter(parse_line_export(open(files[0], encoding="utf-8-sig").read()), t["since"]), known_names(stored))
+    merged, mi = merge(stored, new)
+    merged = assign_ids(learn_split_names(merged)[0])
     if mi.get("gap"):
         st.setdefault("gaps", []).append(dict(mi["gap"], found=time.strftime("%Y-%m-%dT%H:%M:%S")))
     save_msgs(d, merged); save_state(d, st); write_dest(tid, t, merged)
@@ -547,7 +626,7 @@ def main():
     if not a or a[0] in ("-h", "--help"):
         print(__doc__); sys.exit(2)
     {"add": cmd_add, "sync": cmd_sync, "status": cmd_status, "read": cmd_read, "import": cmd_import,
-     "targets": cmd_targets, "config": cmd_config, "fetch": cmd_fetch}.get(a[0], lambda _: out({"ok": False, "error": "沒有這個子指令"}, 2))(a)
+     "targets": cmd_targets, "config": cmd_config, "fetch": cmd_fetch, "rebuild": cmd_rebuild}.get(a[0], lambda _: out({"ok": False, "error": "沒有這個子指令"}, 2))(a)
 
 
 if __name__ == "__main__":

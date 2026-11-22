@@ -137,5 +137,25 @@ check("4 targets 不印聊天室名稱", "測試群組" not in json.dumps(o, ens
 led = open(os.path.join(home, "gather-ledger.jsonl"), encoding="utf-8").read()
 check("4 ledger 只記筆數、不含訊息內容與聊天室名稱", "早安" not in led and "測試群組" not in led)
 shutil.rmtree(home, ignore_errors=True)
+# 6 發話者名字含空白（LINE 桌面版用空白分隔）：學名字、舊資料＋新匯出合併不重複不報缺口
+import copy  # noqa: E402
+EXP1 = chr(10).join(['2026.11.03 星期二', '09:00 Amy Chen 早安', '09:01 Bob 早', '09:02 Amy Chen 今天開會', '09:03 Amy Chen 貼圖', '09:04 Bob 收到', '09:05 Amy Chen 會議紀錄.docx', '09:06 Li Wei Ming 大家好', '09:07 Li Wei Ming 我是新來的', '09:08 Li Wei Ming 請多指教', '09:09 Li Wei Ming 圖片', '09:10 Bob 歡迎']) + chr(10)
+EXP2 = EXP1 + chr(10).join(['09:11 Amy Chen 補充一下', '09:12 Bob 好']) + chr(10)
+old = gather.assign_ids(gather.parse_line_export(EXP1))      # 舊解析：名字被切開
+check("6 舊解析確實把名字切開（前提）", any(m["sender"] == "Amy" for m in old) and not any(" " in m["sender"] for m in old))
+fixed, names = gather.learn_split_names(copy.deepcopy(old))
+check("6 學出多段名字（兩段與三段）", names >= {"Amy Chen", "Li Wei Ming"} and {m["sender"] for m in fixed} == {"Amy Chen", "Bob", "Li Wei Ming"}, names)
+check("6 修正後內文不再帶名字的後半", next(m for m in fixed if m["time"] == "09:01" or m["time"] == "09:00")["text"] in ("早安", "早"))
+check("6 單字名字的人不受影響（Bob 的訊息不動）", [m["text"] for m in fixed if m["sender"] == "Bob"] == ["早", "收到", "歡迎"])
+again, n2 = gather.learn_split_names(copy.deepcopy(fixed))
+check("6 重複學習不再變動（冪等）", [gather.key(m) for m in again] == [gather.key(m) for m in fixed] and not n2)
+for label, stored in (("沒遷移：舊解析的資料", old), ("遷移後的資料", gather.assign_ids(fixed))):
+    new = gather._apply_names(gather.parse_line_export(EXP2), gather.known_names(stored))
+    merged, mi = gather.merge(copy.deepcopy(stored), new)
+    merged = gather.assign_ids(gather.learn_split_names(merged)[0])
+    check("6 %s＋新匯出：只加 2 則、不報缺口、不重複、名字正確" % label,
+          mi["added"] == 2 and not mi.get("gap") and len(merged) == 13 and len({m["id"] for m in merged}) == 13
+          and {m["sender"] for m in merged} == {"Amy Chen", "Bob", "Li Wei Ming"}, (mi, len(merged)))
+
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
 sys.exit(0 if all(R) else 1)
