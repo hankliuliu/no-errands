@@ -567,8 +567,30 @@ UI_WORDS = re.compile(r"^(記事本|公告|檔案|照片|影片|照片・影片|
                       r"Like|Reply|Pin|Open|Cancel|OK)$")
 
 
+def _shape_of(name):
+    """名稱的「形狀」：數字→9、中日韓字→字、拉丁字母→a、空白→_，標點保留；只看得出格式（例如 9999.99.99 是日期），看不到內容。
+    只用在 12 字以內的短名稱；更長的一律只給字數。"""
+    out = []
+    for ch in name:
+        if ch.isdigit():
+            out.append("9")
+        elif "一" <= ch <= "鿿" or "぀" <= ch <= "ヿ":
+            out.append("字")
+        elif ch.isalpha():
+            out.append("a")
+        elif ch.isspace():
+            out.append("_")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _mask(name):
-    return name if UI_WORDS.match(name or "") else (len(name) if name else 0)
+    if UI_WORDS.match(name or ""):
+        return name
+    if not name:
+        return 0
+    return {"len": len(name), "shape": _shape_of(name)} if len(name) <= 12 else len(name)
 
 
 def _shape(node, depth=0, maxd=14):
