@@ -353,6 +353,7 @@ def write_outputs(tdir, t, items, title=None, msgs=None, tid=None):
         ns = gather_notes.missing_section(tdir)
         if ns:
             md = md.replace("沒有未收的東西。", "附件沒有未收的東西。")
+            md = re.sub(r"(還沒收下來的照片、影片和檔案（已收 \d+、未收 \d+）)。", r"\1；最後一節是記事本。", md)
             cut = md.find("\n---\n")
             md = (md[:cut + 1] + "\n".join(ns) + "\n" + md[cut + 1:]) if cut >= 0 else md.rstrip("\n") + "\n\n" + "\n".join(ns) + "\n"
     open(os.path.join(items_dir(tdir), "未收清單.md"), "w", encoding="utf-8").write(md)

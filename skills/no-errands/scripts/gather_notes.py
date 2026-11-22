@@ -319,6 +319,10 @@ def finish(tdir, title=None):
             st["older_not_captured"] = False
             st.pop("resume_skip_notches", None)
         shutil.rmtree(rdir, ignore_errors=True)
+    try:
+        os.rmdir(shots_root(tdir))   # 都轉完了：連空的暫存資料夾也拿掉（還有別的 run 就刪不掉，照留）
+    except OSError:
+        pass
     number(notes)
     save_notes(tdir, notes)
     st["notes"] = len(notes)
@@ -374,16 +378,18 @@ def missing_section(tdir, notes=None):
     trunc = [n for n in notes if n.get("truncated")]
     review = [n for n in notes if n.get("needs_review")]
     imgs = [n for n in notes if n.get("images")]
-    row = lambda n, extra: "| #%d | %s | %s | %s | %s |" % (n["no"], (n.get("posted_at") or n.get("posted_at_raw") or "")[:16],
-                                                          n.get("author") or "", (norm_text(n.get("text"))[:30] or "（無文字）"), extra)
+    # 顯示用原文（只把換行與連續空白收成一格，不做全形半形轉換）；編號寫成「記事 N」，和附件的 #N 分開
+    show = lambda t: re.sub(r"\s+", " ", t or "").strip()
+    row = lambda n, extra: "| 記事 %d | %s | %s | %s | %s |" % (n["no"], (n.get("posted_at") or n.get("posted_at_raw") or "")[:16],
+                                                             n.get("author") or "", (show(n.get("text"))[:30] or "（無文字）"), extra)
     if trunc:
         L += ["### 內文未完整（%d）" % len(trunc), "", "畫面上只顯示前段（要按「顯示更多」才看得到全文，工具不按）。", "",
-              "| # | 時間 | 作者 | 開頭 | 說明 |", "|---|---|---|---|---|"] + [row(n, "內文未完整") for n in trunc] + [""]
+              "| 編號 | 時間 | 作者 | 開頭 | 說明 |", "|---|---|---|---|---|"] + [row(n, "內文未完整") for n in trunc] + [""]
     if imgs:
         L += ["### 記事本內的附圖（%d 則，共 %d 張）" % (len(imgs), sum(n["images"] for n in imgs)), "",
               "照片預設不收（和聊天室的照片同一個規則）。", "",
-              "| # | 時間 | 作者 | 開頭 | 附圖 |", "|---|---|---|---|---|"] + [row(n, "%d 張" % n["images"]) for n in imgs] + [""]
+              "| 編號 | 時間 | 作者 | 開頭 | 附圖 |", "|---|---|---|---|---|"] + [row(n, "%d 張" % n["images"]) for n in imgs] + [""]
     if review:
         L += ["### 待人看（%d）" % len(review), "", "同一則在相鄰兩張圖上轉出來的文字不一樣，或那張圖的則數對不上：請對照 LINE 原文。", "",
-              "| # | 時間 | 作者 | 開頭 | 說明 |", "|---|---|---|---|---|"] + [row(n, "轉寫不一致" if n.get("alt_text") else "則數對不上") for n in review] + [""]
+              "| 編號 | 時間 | 作者 | 開頭 | 說明 |", "|---|---|---|---|---|"] + [row(n, "轉寫不一致" if n.get("alt_text") else "則數對不上") for n in review] + [""]
     return L
