@@ -24,9 +24,12 @@ import stage_layout as L  # noqa: E402
 import nowin  # noqa: E402,F401
 
 BG, FG, DIM, ACCENT, LOOK = "#0b0d12", "#f4f4f4", "#7d8794", "#2f7de1", "#ffcc33"
-CAP_ALPHA = 0.62                                        # 字幕底板的不透明度（字本身完全不透明）
+CAP_ALPHA = 0.8                                         # 字幕底板的不透明度（字本身完全不透明）
 PAD_ALPHA = 3 / 255.0                                   # 字幕的輸入墊片：看不見，但會接到點擊（alpha 0 會穿透；
                                                         # 不用 1/255：換算成整數時可能被捨入成 0 而整個穿透）
+SHIELD_ALPHA = 3 / 255.0                                # 隔離層：肉眼看不出，但不是 0（同墊片：不用 1/255）
+CURSOR_IDLE_S = 2.0                                     # 真的游標在舞台上不動這麼久就隱藏
+PTR_KEY = "#010204"                                     # 示範游標視窗的透明色鍵
 FONT = "Microsoft JhengHei UI"
 OFF = -32000                                            # 移到螢幕外
 EXIT_HINT = "要離開這個畫面：按 Esc 或 Ctrl+Shift+F12，或雙擊背景"
@@ -269,7 +272,7 @@ class Stage:
         #   底板 capbg：黑色、整窗 CAP_ALPHA 透明度（看得到底下的頁面）、圓角（SetWindowRgn）
         #   字   capw ：色鍵透明（KEY 色的像素完全透明、點擊穿到底板），字本身完全不透明 → 白字清楚
         # 兩層一律同時設定位置（tick 與拖動都走 place_caption），不會錯開。
-        CAPBG, KEY = "#000000", "#010203"
+        CAPBG, KEY = "#2a2f38", "#010203"                  # 深灰（不是純黑）：深色頁面上也看得出是浮在上面的一塊
         self.cap_key = KEY
         self.capbg = self._top(0, 0, 10, 10)
         self.capbg.configure(bg=CAPBG)
@@ -286,8 +289,14 @@ class Stage:
         cp = lay["cap_pad"]
         self.cap = tk.Label(self.capw, text="", font=(FONT, px(lay["cap_font"]), "bold"), fg=FG, bg=KEY,
                             justify="center", wraplength=lay["cap_max_w"] - 2 * cp, padx=cp, pady=max(4, cp // 2))
-        self.cap.pack()
-        self.cap_x = tk.Label(self.capw, text="×", font=(FONT, px(max(12, lay["cap_font"] // 2))), fg="#dddddd", bg="#000000")
+        self.cap.pack(side="left")
+        # × 關字幕：在字幕塊「內」右上角，但字幕塊右側永遠多留一格 xs 寬的空位給它——不壓到字（CI 擷圖：
+        # 原本疊在最後一個字上），也不另開視窗（外側的獨立小視窗在測試機上有時沒顯示，20 輪第 0 輪就失敗）。
+        # 滑鼠停在字幕上才顯示；點擊由墊片判定（x_hit），從哪裡點都接得到、不會穿到頁面。
+        xs = max(20, round(lay["cap_font"] * 0.9))
+        self.xbtn_size = xs
+        self.cap_x = tk.Label(self.capw, text="×", font=(FONT, px(max(12, round(xs * 0.75))), "bold"), fg="#e6e6e6", bg="#1b2029")
+        self._x_on = False
         self.cap_on, self.cap_user, self.cap_drag0, self._cap_rgn = True, load_caption_pos(), None, None
         self.cap_geom, self._force_place = None, False
         # 輸入墊片：疊在字幕兩層之上、同一個位置大小、透明度 1/255。字幕上的所有滑鼠操作（拖動、按兩下回預設、
@@ -303,8 +312,6 @@ class Stage:
         self.cappad.bind("<B1-Motion>", self.cap_move)
         self.cappad.bind("<ButtonRelease-1>", self.cap_release)
         self.cappad.bind("<Double-Button-1>", self.cap_reset)
-        self.cappad.bind("<Enter>", lambda e: self.cap_x.place(relx=1.0, x=-4, y=2, anchor="ne"))
-        self.cappad.bind("<Leave>", lambda e: self.cap_x.place_forget())
         self.cappad.withdraw()
         # 遮罩：頁面底色的一塊，蓋住訊息區頂端被切一半的那則訊息露出的殘段（引擎算好位置，now.json 的 mask）
         self.maskw = self._top(0, 0, 1, 1)
@@ -333,15 +340,51 @@ class Stage:
         self.state = tk.Label(self.hintw, text="", font=(FONT, px(max(11, lay["ctl_font"] - 1))), fg=ACCENT, bg=CTLBG, anchor="e")
         self.state.pack(fill="both", expand=True, padx=8)
         self.ctl_shown, self._cur, self._moved_t = True, None, None
-        # 外框：四條置頂細窗
+        # 外框（讀內容的拍子）：四條置頂細窗，很淡、1.2 秒後淡出（真實畫面不會變暗，也沒有粗框）
         self.edges = [self._top(0, 0, 1, 1) for _ in range(4)]
         for e in self.edges:
             e.configure(bg=LOOK)
             e.withdraw()
+        self.look_key, self.look_t, self.look_a = None, 0.0, None
+        # 隔離層（F-3）：蓋住台上的頁面，吃掉真的滑鼠的點擊、滾輪、移動——頁面收不到，不會誤點、不會有提示泡泡；
+        # 字幕與控制列在它之上照常可用。引擎的操作走瀏覽器的控制通道（CDP），不受它影響。
+        self.shield = self._top(0, 0, 1, 1)
+        self.shield.configure(bg="#000000")
+        try:
+            self.shield.attributes("-alpha", SHIELD_ALPHA)
+        except Exception:
+            pass
+        for ev in ("<Button>", "<ButtonRelease>", "<MouseWheel>", "<Double-Button>"):
+            self.shield.bind(ev, lambda e: "break")
+        self.shield.withdraw()
+        self.cursor_hidden = False
+        # 示範游標（F-3）：畫出來的箭頭（色鍵透明、滑鼠穿透、不取得焦點）。系統游標完全不動。
+        s = max(1.0, self.H / 1080.0)
+        self.ptr_R = R = int(26 * s)
+        self.ptr_size = (R + int(24 * s), R + int(30 * s))
+        self.ptrw = self._top(0, 0, R + self.ptr_size[0], R + self.ptr_size[1])
+        self.ptrw.configure(bg=PTR_KEY)
+        try:
+            self.ptrw.attributes("-transparentcolor", PTR_KEY)
+        except Exception:
+            pass
+        self.ptrc = tk.Canvas(self.ptrw, bg=PTR_KEY, highlightthickness=0, width=2 * R + int(24 * s), height=2 * R + int(30 * s))
+        self.ptrc.pack()
+        k = 1.25 * s
+        pts = [(0, 0), (0, 17), (4.2, 13.2), (7, 19.6), (9.6, 18.6), (6.8, 12.2), (12.2, 12.2)]
+        self.ptrc.create_polygon(*[(R + x * k, R + y * k) for x, y in pts], fill="#ffffff", outline="#111111",
+                                 width=max(1, round(1.4 * s)), joinstyle="miter")
+        self.ripple = self.ptrc.create_oval(R, R, R, R, outline=ACCENT, width=max(2, round(3 * s)), state="hidden")
+        self.ptrw.withdraw()
+        self.ptr_pos, self.ptr_anim, self.ptr_seq, self.press_seq, self.press_t = None, None, None, None, 0.0
+        self.ptr_alpha_t = 0.0
+        self.root.after(400, self.clickthrough)
+        self.root.after(16, self.anim)
         self.menu = tk.Menu(r, tearoff=0, font=(FONT, px(lay["ctl_font"])))
         self.menu.add_command(label="自動／逐步", command=self.toggle_mode)
         self.menu.add_command(label="備案畫面", command=self.planb)
-        self.menu.add_command(label="停止示範", command=self.stop)
+        self.menu.add_command(label="結束示範（片尾、還原）", command=self.end_now)
+        self.menu.add_command(label="立刻停止", command=self.stop)
         self.hotkeys()
         r.after(300, self.take_front)                    # 上場時舞台取得前景（背板蓋住一切；勿擾也靠這個）
         if os.environ.get("NE_STAGE_MAX_S"):             # 測試：最多活這麼久（CI 不會因為一個沒關的視窗卡住整個 job）
@@ -357,11 +400,30 @@ class Stage:
         except Exception:
             pass
 
+    def xbtn_rect(self):
+        """× 的螢幕位置：字幕塊右上角（預留的空位裡）。"""
+        g = self.cap_geom
+        if not g:
+            return None
+        xs = self.xbtn_size
+        return (g[0] + g[2] - xs - 2, g[1] + 2, xs, xs)
+
+    def update_xbtn(self, cur):
+        """滑鼠停在字幕上才顯示 ×（拖動中不顯示）。"""
+        hot = bool(cur and self.cap_geom and getattr(self, "_cap_shown", False) and not self.cap_drag0
+                   and L.inside((cur[0], cur[1], 0, 0), self.cap_geom))
+        if hot != self._x_on:
+            self._x_on = hot
+            if hot:
+                self.cap_x.place(relx=1.0, x=-2, y=2, anchor="ne", width=self.xbtn_size, height=self.xbtn_size)
+            else:
+                self.cap_x.place_forget()
+
     def x_hit(self, e):
         """按在字幕右上角的 × 上（墊片座標）。"""
         w = self.cappad.winfo_width()
-        s = max(18, self.lay["cap_font"])
-        return e.x >= w - s - 4 and e.y <= s + 4
+        xs = self.xbtn_size
+        return e.x >= w - xs - 6 and e.y <= xs + 6
 
     def cap_press(self, e):
         if self.x_hit(e):
@@ -400,6 +462,22 @@ class Stage:
                 self._cap_rgn = (bw, bh)
             except Exception:
                 pass
+
+    def cap_resync(self):
+        """字幕三層的實際位置和 cap_geom 不一致就重擺（最多連續 3 次，避免座標系不一致時每格重擺）。"""
+        g = self.cap_geom
+        if not g or not getattr(self, "_cap_shown", False) or self.cap_drag0:
+            return
+        off = [w for w in (self.capbg, self.capw, self.cappad)
+               if w.winfo_viewable() and (w.winfo_x(), w.winfo_y()) != (g[0], g[1])]
+        if not off:
+            self._cap_resync_n = 0
+            return
+        self._cap_resync_n = getattr(self, "_cap_resync_n", 0) + 1
+        if self._cap_resync_n <= 3:
+            for w in off:
+                w.geometry("%dx%d+%d+%d" % (g[2], g[3], g[0], g[1]))
+            self.cap_resyncs = getattr(self, "cap_resyncs", 0) + 1
 
     def cap_box(self):
         """字幕塊目前（這一格要擺）的螢幕矩形；沒顯示回 None。"""
@@ -512,6 +590,11 @@ class Stage:
     def stop(self):
         write_control(self.run_dir, state="stopped")
 
+    def end_now(self):
+        """中途結束：引擎停下目前的動作、顯示片尾、還原資料、收掉舞台。"""
+        self.toast("已收到：結束示範")
+        write_control(self.run_dir, state="ending")
+
     def more(self):
         b = self.b_more
         self.menu.tk_popup(b.winfo_rootx(), b.winfo_rooty() - 10)
@@ -542,7 +625,16 @@ class Stage:
                     elif msg.wParam == 5:
                         self.root.after(0, self.toggle_caption)
                     elif msg.wParam == 4:
-                        self.root.after(0, lambda: self.drop("esc"))
+                        # 離開鍵不能靠主迴圈：先排好 1.5 秒後的緊急出口（不碰 Tk），再在另一條執行緒請主迴圈正常撤下——
+                        # 從別的執行緒呼叫 Tk 會等主執行緒處理，主執行緒卡住時連熱鍵執行緒也會卡死（CI：F12 沒效、是看門收的）
+                        threading.Timer(1.5, lambda: self.emergency("hotkey")).start()
+
+                        def ask_drop():
+                            try:
+                                self.root.after(0, lambda: self.drop("esc"))
+                            except Exception:
+                                pass
+                        threading.Thread(target=ask_drop, daemon=True).start()
             for i in keys:
                 u32.UnregisterHotKey(None, i)
         self.hk = threading.Thread(target=loop, daemon=True)
@@ -579,9 +671,16 @@ class Stage:
             if self.placed.get(acct) == key:
                 continue
             wr, cr = _rect(h), content_rect(h)
-            if not cr:
+            shells = self.__dict__.setdefault("shells", {})
+            if cr and cr[2] > 100 and cr[3] > 100:
+                shell = (cr[0] - wr[0], cr[1] - wr[1], (wr[0] + wr[2]) - (cr[0] + cr[2]), (wr[1] + wr[3]) - (cr[1] + cr[3]))
+                shells[acct] = shell
+            elif acct in shells:
+                # 從螢幕外（-32000＝系統當成最小化的位置）回到台上時可能量不到頁面範圍：用上次量到的殼尺寸照樣擺回來，
+                # 不能因為量不到就一直不擺（瀏覽器回不到台上、游標也一直判定不在台上）
+                shell = shells[acct]
+            else:
                 continue
-            shell = (cr[0] - wr[0], cr[1] - wr[1], (wr[0] + wr[2]) - (cr[0] + cr[2]), (wr[1] + wr[3]) - (cr[1] + cr[3]))
             x, y, w, hh = L.browser_rect(self.lay["stage"], shell, crop, float(now.get("zoom") or 1.5), dpr_of(h))
             u32.SetWindowPos(h, HWND_NOTOPMOST if probe else HWND_TOPMOST, x, y, w, hh,
                              SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING)
@@ -624,6 +723,143 @@ class Stage:
         except OSError:
             pass
 
+    def draw_shield(self, now, cur):
+        """隔離層：台上有瀏覽器時蓋住舞台；真的游標不動 2 秒就隱藏（隔離層與背板上），一動就出現。
+        鍵盤焦點：前景變成我們的瀏覽器時拿回舞台（使用者按鍵不會打進頁面）。"""
+        fx = now.get("effects") or {}
+        on = bool(not now.get("card") and now.get("account") and self.placed.get(now.get("account")) not in (None, "off")
+                  and fx.get("shield", True))
+        if on:
+            sx, sy, sw, sh = self.lay["stage"]
+            g = "%dx%d+%d+%d" % (sw, sh, sx, sy)
+            if getattr(self, "_shield_g", None) != g:
+                self.shield.geometry(g)
+                self._shield_g = g
+            if not self.shield.winfo_viewable():
+                self.shield.deiconify()
+        elif self.shield.winfo_viewable():
+            self.shield.withdraw()
+        idle = self._moved_t is None or time.time() - self._moved_t >= CURSOR_IDLE_S
+        if idle != self.cursor_hidden:
+            self.cursor_hidden = idle
+            for w in (self.shield, self.root, self.card):
+                try:
+                    w.configure(cursor="none" if idle else "")
+                except Exception:
+                    pass
+        if os.name == "nt" and on and time.time() - getattr(self, "_fg_t", 0) >= 1.0:
+            self._fg_t = time.time()
+            h = getattr(self, "active_hwnd", None)
+            if h and u32.GetForegroundWindow() == h:
+                self.take_front()
+
+    def clickthrough(self):
+        """示範游標視窗：滑鼠穿透、不取得焦點（WS_EX_LAYERED|TRANSPARENT|NOACTIVATE|TOOLWINDOW）。"""
+        if os.name != "nt":
+            return
+        try:
+            self.ptrw.update_idletasks()
+            h = int(self.ptrw.frame(), 16)
+            ex = u32.GetWindowLongW(h, -20)
+            u32.SetWindowLongW(h, -20, ex | 0x80000 | 0x20 | 0x08000000 | 0x80)
+        except Exception:
+            pass
+
+    def ptr_screen(self, now, p):
+        return L.css_point(p, self.lay["stage"], now.get("crop") or {}, float(now.get("zoom") or 1.5), getattr(self, "dpr", 1.0))
+
+    def update_pointer(self, now):
+        """示範游標：卡片（片頭、轉場、片尾）時淡出；新畫面開始時從舞台中間偏下淡入，再平順移到目標。"""
+        p = now.get("pointer") or {}
+        acct = now.get("account")
+        onstage = bool(not now.get("card") and acct and self.placed.get(acct) not in (None, "off") and p.get("seq") is not None
+                       and (now.get("effects") or {}).get("pointer", True))
+        if not onstage:
+            if self.ptrw.winfo_viewable():
+                self.ptrw.withdraw()
+            self.ptr_pos, self.ptr_anim, self._ptr_shown, self.ptr_seq = None, None, False, None
+            return
+        bk = ((now.get("beat") or {}).get("i"), now.get("step_id"))
+        if bk != getattr(self, "_ptr_beat", None):
+            self._ptr_beat = bk
+            if not self.ptrw.winfo_viewable():                # 保底（5c）：每一拍開始時游標該在台上卻沒顯示 → 重新處理一次
+                self.ptr_seq, self._ptr_shown = None, False
+        if p.get("seq") != self.ptr_seq:
+            self.ptr_seq = p["seq"]
+            dst = self.ptr_screen(now, (p["x"], p["y"]))
+            if self.ptr_pos is None:                     # 這個畫面的第一個位置：從中間偏下出發、淡入
+                sx, sy, sw, sh = self.lay["stage"]
+                self.ptr_pos = (sx + sw // 2, sy + int(sh * 0.7))
+                self.ptr_alpha_t = time.time()
+            self.ptr_anim = (self.ptr_pos, dst, time.time(), max(0.0, float(p.get("dur") or 0)))
+        if now.get("press") and now["press"] != self.press_seq:
+            self.press_seq, self.press_t = now["press"], time.time()
+            self.ptrc.itemconfigure(self.ripple, state="normal")      # 漣漪這一格就畫出來
+            R = self.ptr_R
+            self.ptrc.coords(self.ripple, R - 4, R - 4, R + 4, R + 4)
+            try:
+                self.ptrw.update_idletasks()
+                p_ = os.path.join(self.run_dir, "stage_ack.json")    # 回報引擎：按下的效果已經畫出來（引擎等到這個才點擊）
+                json.dump({"press": self.press_seq, "t": round(time.time(), 3)}, open(p_ + ".tmp", "w"))
+                os.replace(p_ + ".tmp", p_)
+            except OSError:
+                pass
+        if not getattr(self, "_ptr_shown", False) and self.ptr_pos is not None:
+            self._ptr_shown = True
+            self.place_ptr(*self.ptr_pos)
+            self.ptrw.deiconify()
+            self.clickthrough()
+
+    def place_ptr(self, x, y):
+        R = self.ptr_R
+        self.ptrw.geometry("+%d+%d" % (int(x) - R, int(y) - R))
+
+    def anim(self):
+        """約 60 fps：示範游標的移動（加減速、弧線）、淡入、按下的漣漪；外框淡出。暫停時引擎不發新目標，游標停在原地。"""
+        try:
+            now_t = time.time()
+            # 游標目標與「按下」不等 200 ms 的 tick：now.json 一更新就處理（引擎發出按下後 0.18 秒就點擊，
+            # 晚 200 ms 才讀到會讓漣漪出現在點擊之後；游標也會晚出發）。用另一份副本，不動 tick 判斷卡片切換用的 self.now。
+            try:
+                mt = os.stat(os.path.join(self.run_dir, "now.json")).st_mtime_ns
+            except OSError:
+                mt = None
+            if mt and mt != getattr(self, "_now_mt", None):
+                self._now_mt = mt
+                nf = read_json(os.path.join(self.run_dir, "now.json"))
+                if nf:
+                    self.update_pointer(nf)
+            if self.ptr_anim:
+                p0, p1, t0, dur = self.ptr_anim
+                t = 1.0 if dur <= 0 else (now_t - t0) / dur
+                x, y = L.pointer_path(p0, p1, t)
+                self.ptr_pos = (x, y)
+                if getattr(self, "_ptr_shown", False):
+                    self.place_ptr(x, y)
+                if t >= 1.0:
+                    self.ptr_pos, self.ptr_anim = p1, None
+            if getattr(self, "_ptr_shown", False):
+                fa = min(1.0, (now_t - self.ptr_alpha_t) / 0.25)
+                if getattr(self, "_ptr_a", None) != round(fa, 2):
+                    self._ptr_a = round(fa, 2)
+                    try:
+                        self.ptrw.attributes("-alpha", max(0.05, fa))
+                    except Exception:
+                        pass
+            age = now_t - self.press_t
+            R = self.ptr_R
+            if age < 0.35:
+                r = 4 + (R - 6) * (age / 0.35)
+                self.ptrc.coords(self.ripple, R - r, R - r, R + r, R + r)
+                self.ptrc.itemconfigure(self.ripple, state="normal")
+            else:
+                self.ptrc.itemconfigure(self.ripple, state="hidden")
+            if self.now.get("look") and not self.now.get("card"):
+                self.draw_look(self.now)
+        except Exception:
+            pass
+        self.root.after(16, self.anim)
+
     def draw_mask(self, now):
         """訊息區頂端的殘段遮罩（頁面底色）：CSS 方框 → 舞台座標；沒有就收起來。"""
         m = now.get("mask") or {}
@@ -650,19 +886,32 @@ class Stage:
         if box and not now.get("card") and acct and self.placed.get(acct) not in (None, "off"):
             rect = L.css_to_screen(box, self.lay["stage"], now.get("crop") or {}, float(now.get("zoom") or 1.5),
                                    getattr(self, "dpr", 1.0))
-        self.look_rect = rect
-        if not rect:
+        self.look_rect = rect                            # 字幕避開外框用的位置：淡出後也保留到這一拍結束（字幕不跳）
+        key = (now.get("look") or {}).get("seq")
+        if key != self.look_key:
+            self.look_key, self.look_t = key, time.time()
+        faint = (now.get("effects") or {}).get("faint_look", True)
+        a = L.look_alpha(time.time() - self.look_t) if faint else 1.0       # 淡外框關掉：原本的粗框、不淡出
+        if not rect or a <= 0:
             for e in self.edges:
-                e.withdraw()
+                if e.winfo_viewable():
+                    e.withdraw()
             return
         x, y, w, h = rect
-        t = max(3, round(self.H * 0.0045))
-        pad = t + 4
+        t = max(2, round(self.H * 0.0025)) if faint else max(3, round(self.H * 0.0045))
+        pad = t + 6
         x, y, w, h = x - pad, y - pad, w + 2 * pad, h + 2 * pad
         for e, (ex, ey, ew, eh) in zip(self.edges, ((x, y, w, t), (x, y + h - t, w, t), (x, y, t, h), (x + w - t, y, t, h))):
             e.geometry("%dx%d+%d+%d" % (max(1, ew), max(1, eh), ex, ey))
             if not e.winfo_viewable():
                 e.deiconify()                                # 上下順序只由 restack 決定（不在這裡拉到最上面）
+        if self.look_a != round(a, 2):
+            self.look_a = round(a, 2)
+            for e in self.edges:
+                try:
+                    e.attributes("-alpha", a)
+                except Exception:
+                    pass
 
     # ---------- 背板上的卡片
     def draw_card(self, now):
@@ -679,6 +928,9 @@ class Stage:
                 c.create_text(W // 2, H * 0.42, text=d["subtitle"], fill="#c9d1dc", font=(FONT, px(mid)), width=W * 0.8)
             if d.get("mode"):                              # 現在是哪個模式（講者開場前一眼確認）
                 c.create_text(W // 2, H * 0.86, text=d["mode"], fill=DIM, font=(FONT, px(small)))
+            # 講者要知道可以提早結束（5c）：時間不夠時從右下角收掉，片尾與還原照常
+            c.create_text(W // 2, H * 0.905, text="時間不夠時：右下角「⋯」→「結束示範」，會顯示片尾並還原資料",
+                          fill="#5b6472", font=(FONT, px(small - 4)))
             c.create_text(W * 0.98, H * 0.97, text=EXIT_HINT, fill="#4a5260", font=(FONT, px(small - 6)), anchor="e")
             self.card_texts = [d.get("subtitle", ""), d.get("mode", "")]
             y = H * 0.54
@@ -718,7 +970,83 @@ class Stage:
                               font=(FONT, px(small + 2)))
 
     # ---------- 每 200 ms
+    def emergency(self, why):
+        """緊急出口（從任何執行緒呼叫都可以，不靠 Tk 的主迴圈）：瀏覽器取消置頂、把我們所有的頂層視窗藏起來、
+        寫入停止，然後結束行程。絕不留下蓋住螢幕的背板（A16）。"""
+        try:
+            print("stage emergency exit: %s" % why, file=sys.stderr, flush=True)
+        except Exception:
+            pass
+        if os.name == "nt":
+            try:
+                h = getattr(self, "active_hwnd", None)
+                if h:                                      # 0x4000＝SWP_ASYNCWINDOWPOS：不等對方的訊息迴圈
+                    u32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | 0x4000)
+            except Exception:
+                pass
+            try:
+                me = os.getpid()
+                mine = []
+
+                def f(hw, _):
+                    pid = wintypes.DWORD()
+                    u32.GetWindowThreadProcessId(hw, ctypes.byref(pid))
+                    if pid.value == me:
+                        mine.append(hw)
+                    return True
+                u32.EnumWindows(EnumProc(f), 0)
+                for hw in mine:
+                    # ShowWindowAsync：只送出、不等。ShowWindow 會等視窗所屬的執行緒處理——那就是卡住的主執行緒，
+                    # 緊急出口會跟著卡死、永遠走不到結束（CI：log 有「watchdog」但行程沒結束）
+                    u32.ShowWindowAsync(hw, 0)                 # SW_HIDE
+            except Exception:
+                pass
+        try:
+            write_control(self.run_dir, state="stopped", dropped=why)
+        except Exception:
+            pass
+        os._exit(3)
+
+    def watchdog(self):
+        """看門執行緒（和更新迴圈無關）：超過 NE_STAGE_WATCHDOG_S（預設 20；主執行緒偶爾會等 PowerShell 查行程，不能太短）秒沒有更新一格，就判定舞台卡死、走緊急出口。"""
+        try:
+            limit = float(os.environ.get("NE_STAGE_WATCHDOG_S") or 20)
+        except ValueError:
+            limit = 20.0
+        while True:
+            time.sleep(1.0)
+            if time.time() - getattr(self, "_last_tick", time.time()) > limit:
+                self.emergency("watchdog: %.0f 秒沒有更新" % (time.time() - self._last_tick))
+
+    def safe(self, name, fn, *a):
+        """舞台的一個部分：出錯就記下（數量寫進幾何紀錄、訊息寫到 stderr＝engine.log），其他部分照常更新（A33）。"""
+        try:
+            return fn(*a)
+        except Exception as e:
+            self.errors = getattr(self, "errors", 0) + 1
+            if getattr(self, "_err_logged", 0) < 20:
+                self._err_logged = getattr(self, "_err_logged", 0) + 1
+                import traceback
+                print("stage error in %s: %r\n%s" % (name, e, traceback.format_exc()[-600:]), file=sys.stderr, flush=True)
+            return None
+
     def tick(self):
+        """每 200 ms：不管裡面哪一段出錯，一定排下一格（排練 2：游標的一個例外讓整個舞台停住，字幕、安全出口都不再更新）。"""
+        self._last_tick = time.time()
+        if not getattr(self, "_wd", None):
+            self._wd = threading.Thread(target=self.watchdog, daemon=True)
+            self._wd.start()
+        hang = os.environ.get("NE_STAGE_TEST_HANG")             # 測試掛鉤：N 秒後讓主執行緒卡住（驗證看門與離開鍵）
+        if hang and time.time() - self.t_start > float(hang):
+            time.sleep(3600)
+        self.safe("tick", self._tick)
+        try:
+            if self.root.winfo_exists():
+                self.root.after(200, self.tick)
+        except Exception:
+            pass
+
+    def _tick(self):
         now = read_json(os.path.join(self.run_dir, "now.json"))
         ctl = read_json(os.path.join(self.run_dir, "control.json"))
         changed_card = now.get("card") != self.now.get("card") or now.get("card_data") != self.now.get("card_data")
@@ -740,7 +1068,6 @@ class Stage:
                 self.toast("示範已經停止，畫面即將關閉")
             elif time.time() - self._closing_at >= 1.5:
                 return self.drop("stopped")
-            self.root.after(200, self.tick)
             return
         if changed_card:
             self.draw_card(now)
@@ -784,14 +1111,16 @@ class Stage:
         toast_on = bool(tt and time.time() - tt[1] < 1.5)
         show_ctl = (cs["visible"] or toast_on) and now.get("card") != "checklist"
         if show_ctl != self.ctl_shown:
-            for w in (self.ctlw, self.hintw):
-                w.deiconify() if show_ctl else w.withdraw()
+            self.ctlw.deiconify() if show_ctl else self.ctlw.withdraw()
             self.ctl_shown = show_ctl
         self.b_next.configure(text="結束" if now.get("card") == "end" else "下一步 →",
                               bg=ACCENT if cs["next_hot"] else "#1b2029", fg="#fff" if cs["next_hot"] else "#9aa4b2")
         self.b_pause.configure(text="▶" if paused else "⏸")
         if not toast_on:
             self.state.configure(text=("● " + cs["hint"]) if cs["hint"] else "", fg="#d29922" if paused or slow else ACCENT)
+        hint_on = show_ctl and bool(self.state.cget("text"))     # 提示列有字才顯示（沒字時不留一塊空的深色方塊）
+        if hint_on != self.hintw.winfo_viewable():
+            self.hintw.deiconify() if hint_on else self.hintw.withdraw()
         if cs["planb"] and not self.b_planb.winfo_ismapped():
             self.b_planb.pack(side="right", padx=3, pady=4, before=self.b_more)
             self.b_planb.configure(bg="#b8860b", fg="#fff")
@@ -808,9 +1137,25 @@ class Stage:
         if self.cap.cget("text") != (text or ""):
             self.cap.configure(text=text or "")
         if text and self.cap_on:
-            self.capw.update_idletasks()
-            bw, bh = self.cap.winfo_reqwidth(), self.cap.winfo_reqheight()
             look = getattr(self, "look_rect", None)
+            # 外框幾乎佔滿高度（對話框、長卡片）而旁邊空位比字幕窄：字幕縮窄改排兩行，放進旁邊的空位（5c）
+            cp_ = self.lay["cap_pad"]
+            wrap = self.lay["cap_max_w"] - 2 * cp_
+            sx_, sy_, sw_, sh_ = self.lay["stage"]
+            if look and look[3] > 0.6 * sh_:
+                gap = max(look[0] - sx_, sx_ + sw_ - (look[0] + look[2])) - 24 - self.xbtn_size - 4 - 2 * cp_
+                if gap >= 260:
+                    try:
+                        import tkinter.font as tkfont
+                        one_line = tkfont.Font(font=self.cap.cget("font")).measure(text)
+                    except Exception:
+                        one_line = 10 ** 6
+                    if one_line <= 2 * gap * 0.92:                # 兩行放得下才縮窄（A2：最多兩行）；放不下維持原寬、選重疊最少的位置
+                        wrap = min(wrap, gap)
+            if int(float(self.cap.cget("wraplength"))) != int(wrap):
+                self.cap.configure(wraplength=wrap)
+            self.capw.update_idletasks()
+            bw, bh = self.cap.winfo_reqwidth() + self.xbtn_size + 4, self.cap.winfo_reqheight()   # 右側預留 × 的空位
             box0 = self.cap_box()
             hover = bool(cur and box0 and L.inside((cur[0], cur[1], 0, 0), box0))
             if hover or self.cap_drag0:
@@ -834,6 +1179,8 @@ class Stage:
             self.show_caption(True)
         else:
             self.show_caption(False)
+        self.safe("update_xbtn", self.update_xbtn, cur)
+        self.safe("cap_resync", self.cap_resync)
         # 控制列：和字幕重疊時往上讓到字幕上方（字幕不動）
         cx_, cy_, cw_, ch_ = L.controls_pos(self.lay, self.cap_box() if (text and self.cap_on) else None)
         # 控制列顯示中（使用者可能正要按）只往上讓、不往下跳回：例如按 × 收起字幕時，按鈕不會在游標底下移走；
@@ -854,12 +1201,11 @@ class Stage:
             self.ctlw.geometry("%dx%d+%d+%d" % (cw_, ch_, cx_, cy_))
             self.hintw.geometry("%dx%d+%d+%d" % (cw_, hh_, cx_, cy_ - hh_))
             self._ctl_xy = (cx_, cy_)
-        try:
-            self.place_browsers(now)
-        except Exception:
-            pass
-        self.draw_look(now)
-        self.draw_mask(now)
+        self.safe("place_browsers", self.place_browsers, now)
+        self.safe("draw_look", self.draw_look, now)
+        self.safe("draw_mask", self.draw_mask, now)
+        self.safe("draw_shield", self.draw_shield, now, cur)
+        self.safe("update_pointer", self.update_pointer, now)
         # 有視窗剛出現或收起（控制列、字幕、外框、遮罩…）：立刻重排——隱藏時沒被排進去的視窗，出現時可能停在
         # 瀏覽器（或隔離層）下面，看不到也點不到（F-3 CI：× 出現後點下去沒反應）
         sig = tuple(bool(w.winfo_viewable()) for w in self.overlays())
@@ -867,20 +1213,16 @@ class Stage:
             self._z_sig = sig
             self._z_t = 0
         if time.time() - getattr(self, "_z_t", 0) >= 1.0:
-            try:
-                if os.name == "nt":
-                    self.check_fit(now)
-            except Exception:
-                pass
-            self.restack()
-            self.write_geom()
+            if os.name == "nt":
+                self.safe("check_fit", self.check_fit, now)
+            self.safe("restack", self.restack)
+            self.safe("write_geom", self.write_geom)
         if os.environ.get("NE_STAGE_GEOM"):
-            self.dump_geom()
-        self.root.after(200, self.tick)
+            self.safe("dump_geom", self.dump_geom)
 
     def overlays(self):
         """我們疊在瀏覽器之上的視窗，由下到上。"""
-        return [self.maskw, self.band] + self.edges + [self.capbg, self.capw, self.cappad, self.ctlw, self.hintw]
+        return [self.shield, self.maskw, self.band] + self.edges + [self.ptrw, self.capbg, self.capw, self.cappad, self.ctlw, self.hintw]
 
     def restack(self):
         """實際的上下順序（都在置頂層；工作列、通知被壓在下面），由上到下：控制列…字幕（墊片在字之上）→ 外框 →
@@ -916,7 +1258,8 @@ class Stage:
             return []
         names = {}
         for n, w in (("hint", self.hintw), ("controls", self.ctlw), ("pad", self.cappad), ("captext", self.capw),
-                     ("plate", self.capbg), ("band", self.band), ("mask", self.maskw), ("backdrop", self.root)):
+                     ("plate", self.capbg), ("band", self.band), ("mask", self.maskw), ("backdrop", self.root),
+                     ("shield", self.shield), ("pointer", self.ptrw)):
             try:
                 names[int(w.frame(), 16)] = n
             except Exception:
@@ -938,12 +1281,17 @@ class Stage:
 
     def geom(self):
         box = lambda w: [w.winfo_x(), w.winfo_y(), w.winfo_width(), w.winfo_height()] if w.winfo_viewable() else None
-        return {"z_order": self.z_order(),
+        acct_ = self.now.get("account")
+        return {"z_order": self.z_order(), "errors": getattr(self, "errors", 0), "cap_resyncs": getattr(self, "cap_resyncs", 0),
+                "ptr_dbg": {"seq": self.ptr_seq, "shown": getattr(self, "_ptr_shown", False), "pos": self.ptr_pos,
+                            "placed": self.placed.get(acct_) if acct_ else None, "now_seq": (self.now.get("pointer") or {}).get("seq")},
                 "cap_btn": [self.b_cap.winfo_rootx() + self.b_cap.winfo_width() // 2, self.b_cap.winfo_rooty() + self.b_cap.winfo_height() // 2]
                 if self.ctl_shown and self.b_cap.winfo_ismapped() else None,
-                "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad),
+                "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": list(self.xbtn_rect()) if getattr(self, "_cap_shown", False) and self.xbtn_rect() else None, "x_shown": self._x_on, "hint_visible": bool(self.hintw.winfo_viewable()),
                 "caption_on": self.cap_on, "controls_rect": box(self.ctlw), "controls_want": list(getattr(self, "_ctl_xy", None) or []),
                 "controls_moves": getattr(self, "ctl_moves", 0), "controls_stuck": getattr(self, "_ctl_retry", 0) > 3,
+                "shield": box(self.shield), "pointer": [round(v) for v in self.ptr_pos] if self.ptr_pos and self.ptrw.winfo_viewable() else None,
+                "cursor_hidden": self.cursor_hidden, "ripple_on": self.ptrc.itemcget(self.ripple, "state") == "normal", "look_alpha": self.look_a if any(e.winfo_viewable() for e in self.edges) else 0,
                 "look_rect": list(self.look_rect) if getattr(self, "look_rect", None) else None,
                 "mask_rect": list(self.mask_rect) if getattr(self, "mask_rect", None) else None,
                 "fit": self.fit, "card": self.now.get("card"), "beat": (self.now.get("beat") or {}).get("text"),

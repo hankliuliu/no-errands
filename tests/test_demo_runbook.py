@@ -49,6 +49,29 @@ elif sub == "eval":
     js = a[1]
     obj = rd("login.json", None) if "password" in js and "querySelectorAll" in js else rd("focus.json", None)
     print(json.dumps(json.dumps(obj)))
+elif sub == "keyboard" and a[1:2] == ["inserttext"]:
+    # 逐步輸入：附加到焦點欄位；prog-hook.json 模擬頁面在第 n 段之後把焦點移走或改了內容
+    f = rd("focus.json", None) or {}
+    f["value"] = (f.get("value") or "") + a[2]
+    cp = os.path.join(d, "inserts.txt")
+    n = (int(open(cp).read()) if os.path.exists(cp) else 0) + 1
+    open(cp, "w").write(str(n))
+    hook = rd("prog-hook.json", {})
+    if hook.get("after") == n:
+        if hook.get("action") == "blur":
+            f["names"] = ["搜尋"]
+        elif hook.get("action") == "modify":
+            f["value"] += "＊"
+    json.dump(f, open(os.path.join(d, "focus.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    print("ok")
+elif sub == "focus":
+    print("ok")
+elif sub == "press" and a[1:2] == ["Enter"] and os.path.exists(os.path.join(d, "simulate-field")):
+    # 舞台段落：模擬真的輸入框——按 Enter 送出後欄位清空
+    f = rd("focus.json", None) or {}
+    f["value"] = ""
+    json.dump(f, open(os.path.join(d, "focus.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    print("did press")
 elif sub == "batch":
     open(os.path.join(d, "batch-stdin.txt"), "a", encoding="utf-8").write(sys.stdin.read() + "\n"); print("ok")
 elif sub == "screenshot":
@@ -327,6 +350,120 @@ def main():
         os.remove(os.path.join(home, "focus.json"))
         rc, o = neb("demo_a", "press", "Enter", "--runbook-approval", aid, "--step", "s1")
         check("讀不到焦點 → Enter 拒", rc == 3, o)
+
+        # ---------- 逐步輸入（F-3；守門自己切段、每段前後讀回、插入文字不產生按鍵事件）
+        sys.path.insert(0, os.path.dirname(NEB))
+        import neb as NB
+        ch = NB.progressive_chunks("要建一張新的工單，打 /ticket new")
+        check("切段：中文 2–4 字一段、英數逐字、接起來等於原文",
+              "".join(ch) == "要建一張新的工單，打 /ticket new" and all(1 <= len(c) <= 4 for c in ch)
+              and all(2 <= len(c) <= 4 or k_ == len(ch) - 1 or not NB.is_cjk(ch[k_ + 1][0]) for k_, c in enumerate(ch) if NB.is_cjk(c[0]))
+              and len(ch) <= NB.PROG_MAX_CHUNKS and NB.progressive_chunks("ab c") == ["a", "b", " ", "c"], ch)
+        long_ = "這是一段很長的範例文字。" * 12
+        ch2 = NB.progressive_chunks(long_)
+        check("長文：段數不超過上限（自動加快），接起來仍等於原文", len(ch2) <= NB.PROG_MAX_CHUNKS and "".join(ch2) == long_, len(ch2))
+        ch3 = NB.progressive_chunks(long_, NB.PROG_LONG_MAX_CHUNKS)
+        check("超過 40 字的長欄位：最多 6 段、時間上限 2.5 秒，接起來仍等於原文",
+              len(ch3) <= 6 and "".join(ch3) == long_ and NB.PROG_LONG_BUDGET_S == 2.5 and NB.PROG_LONG_CHARS == 40, len(ch3))
+
+        def calls_since(n0):
+            lines = open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines()[n0:]
+            return [json.loads(x) for x in lines]
+
+        def ncalls():
+            return len(open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines())
+
+        def reset_prog(value="", hook=None):
+            focus(["訊息"], value)
+            for f_ in ("inserts.txt", "prog-hook.json"):
+                if os.path.exists(os.path.join(home, f_)):
+                    os.remove(os.path.join(home, f_))
+            if hook:
+                json.dump(hook, open(os.path.join(home, "prog-hook.json"), "w"))
+        neb("demo_a", "snapshot", "-i")
+        reset_prog()
+        n0 = ncalls()
+        rc, o = neb("demo_a", "fill", "@e1", "/case help", "--runbook-approval", aid, "--step", "s1", "--progressive")
+        cs = calls_since(n0)
+        ins = [c[2] for c in cs if c[:2] == ["keyboard", "inserttext"]]
+        fv = json.load(open(os.path.join(home, "focus.json"), encoding="utf-8"))["value"]
+        check("逐步輸入：正常打完，欄位內容和核准文字逐字相同；分段由守門算出", rc == 0 and fv == "/case help"
+              and "".join(ins) == "/case help" and len(ins) == len(NB.progressive_chunks("/case help")), (rc, o[-300:], ins))
+        check("逐步輸入：只用插入文字（沒有 type／keyboard type／press 這類會產生按鍵事件的呼叫）",
+              not any(c[:1] in (["type"], ["press"]) or c[:2] == ["keyboard", "type"] or c[:1] == ["fill"] for c in cs), cs)
+        check("逐步輸入：每一段之前都讀回焦點欄位（身分＋內容）", sum(1 for c in cs if c[:1] == ["eval"]) >= len(ins) + 1, len(cs))
+        reset_prog("殘留的草稿")
+        n0 = ncalls()
+        rc, o = neb("demo_a", "fill", "@e1", "/case help", "--runbook-approval", aid, "--step", "s1", "--progressive")
+        check("逐步輸入：開始前欄位不是空的 → 停，一個字都沒送", rc == 1 and "不是空的" in o
+              and not any(c[:2] == ["keyboard", "inserttext"] for c in calls_since(n0)), o[-300:])
+        reset_prog("", {"after": 3, "action": "blur"})
+        rc, o = neb("demo_a", "fill", "@e1", "/case help", "--runbook-approval", aid, "--step", "s1", "--progressive")
+        check("逐步輸入：打到一半頁面把焦點移走 → 停在第 3 段，之後沒有再送字",
+              rc == 1 and "焦點不在核准的欄位上" in o and open(os.path.join(home, "inserts.txt")).read() == "3", o[-300:])
+        reset_prog("", {"after": 2, "action": "modify"})
+        rc, o = neb("demo_a", "fill", "@e1", "/case help", "--runbook-approval", aid, "--step", "s1", "--progressive")
+        check("逐步輸入：打到一半頁面改了欄位內容 → 停在第 2 段",
+              rc == 1 and "不是核准文字的開頭" in o and open(os.path.join(home, "inserts.txt")).read() == "2", o[-300:])
+        rc, o = neb("demo_a", "press", "Enter", "--runbook-approval", aid, "--step", "s1")
+        check("逐步輸入停下來之後按送出 → 被整段比對擋下", rc == 3 and "焦點" in o, o[-300:])
+        if os.path.exists(os.path.join(home, "prog-hook.json")):
+            os.remove(os.path.join(home, "prog-hook.json"))
+        rc, o = neb("demo_a", "fill", "@e1", "/case", "--runbook-approval", aid, "--step", "s1", "--progressive")
+        check("劇本不能指定片段：只給一部分文字 → 整段比對不過、拒", rc == 3 and "需重新核准" in o, o[-300:])
+        rc, o = neb("demo_a", "keyboard", "inserttext", "/case help", "--runbook-approval", aid, "--step", "s1")
+        check("附加輸入不對劇本開放：keyboard inserttext 帶核准 → 拒", rc == 3, o[-300:])
+        rc, o = neb("demo_a", "fill", "@e1", "/case help", "--progressive")
+        check("沒有核准 → --progressive 拒", rc == 3 and "progressive" in o, o[-300:])
+        reset_prog()
+        rc, o = neb("demo_a", "fill", "@e1", "/case help", "--runbook-approval", aid, "--step", "s1", "--progressive",
+                    "--pace-file", os.path.join(home, "control.json"))
+        check("--pace-file 不在示範執行資料夾裡 → 拒", rc == 3 and "pace-file" in o, o[-300:])
+        rdir = os.path.join(home, "runs", "20261123-020000-live"); os.makedirs(rdir, exist_ok=True)
+        ctlp = os.path.join(rdir, "control.json")
+        json.dump({"owner_pid": os.getpid() + 999999}, open(os.path.join(rdir, "now.json"), "w"))
+        json.dump({"state": "playing"}, open(ctlp, "w"))
+        reset_prog()
+        rc, o = neb("demo_a", "fill", "@e1", "/case help", "--runbook-approval", aid, "--step", "s1", "--progressive",
+                    "--pace-file", ctlp)
+        check("--pace-file：執行資料夾不屬於呼叫 neb 的行程（now.json 的 owner_pid 不是它）→ 拒", rc == 3 and "pace-file" in o, o[-300:])
+        json.dump({"owner_pid": os.getpid()}, open(os.path.join(rdir, "now.json"), "w"))   # neb 的父行程＝這個測試
+        json.dump({"state": "paused"}, open(ctlp, "w"))
+        import threading
+        threading.Timer(1.5, lambda: json.dump({"state": "playing"}, open(ctlp, "w"))).start()
+        reset_prog()
+        rc, o = neb("demo_a", "fill", "@e1", "/case help", "--runbook-approval", aid, "--step", "s1", "--progressive",
+                    "--pace-file", ctlp)
+        m_ = re.search(r'"paused_s": ([\d.]+)', o)
+        fv = json.load(open(os.path.join(home, "focus.json"), encoding="utf-8"))["value"]
+        check("暫停：輸入停在原地，繼續後接著打完（不重打）、回報暫停秒數",
+              rc == 0 and fv == "/case help" and m_ and float(m_.group(1)) >= 0.5, o[-300:])
+        # 開始時就暫停，暫停期間焦點被移到別的欄位 → 恢復後停在 0 個字，沒有送出任何字（da 的審查）
+        json.dump({"state": "paused"}, open(ctlp, "w"))
+        reset_prog()
+
+        def blur_then_play():
+            focus(["搜尋"], "")
+            json.dump({"state": "playing"}, open(ctlp, "w"))
+        threading.Timer(1.0, blur_then_play).start()
+        rc, o = neb("demo_a", "fill", "@e1", "/case help", "--runbook-approval", aid, "--step", "s1", "--progressive",
+                    "--pace-file", ctlp)
+        check("暫停期間焦點被換走 → 恢復後第一段之前就停（0 個字、沒有送出）",
+              rc == 1 and "焦點不在核准的欄位上" in o and not os.path.exists(os.path.join(home, "inserts.txt")), o[-300:])
+        json.dump({"state": "paused"}, open(ctlp, "w"))
+        reset_prog()
+        rc, o = neb("demo_a", "fill", "@e1", "/case help", "--runbook-approval", aid, "--step", "s1", "--progressive",
+                    "--pace-file", ctlp, extra_env={"NE_PROG_PAUSE_MAX_S": "1"})
+        check("暫停超過上限 → 停下、原因「暫停過久」、沒有送字", rc == 1 and "暫停過久" in o
+              and not os.path.exists(os.path.join(home, "inserts.txt")), o[-300:])
+        rc, o = neb("demo_a", "fill", "#t", "/case help", "--runbook-approval", aid, "--step", "s1", "--progressive")
+        check("逐步輸入的目標不是 ref → 明確拒絕（不是例外結束）", rc == 3, o[-300:])
+        json.dump({"state": "stopped"}, open(ctlp, "w"))
+        reset_prog()
+        rc, o = neb("demo_a", "fill", "@e1", "/case help", "--runbook-approval", aid, "--step", "s1", "--progressive",
+                    "--pace-file", ctlp)
+        check("示範停止 → 逐步輸入停下、沒有送字", rc == 1 and "示範已停止" in o and not os.path.exists(os.path.join(home, "inserts.txt")),
+              o[-300:])
         focus(["訊息"], "/case help")
         rc, o = neb("demo_a", "press", "Tab", "--runbook-approval", aid, "--step", "s1")
         check("沒核准的按鍵 → 拒", rc == 3, o)
@@ -608,6 +745,12 @@ def main():
                                        {"say": "第二句", "at": 3, "s": 0.5}]
             sg["steps"][1]["beats"] = [{"say": "長官這邊", "at": 0, "s": 0.5}]
             sgp = os.path.join(rbdir, "stage.json"); json.dump(sg, open(sgp, "w", encoding="utf-8"), ensure_ascii=False)
+            # 舞台的 fill 走逐步輸入（守門逐段讀回焦點欄位）：假瀏覽器在這一段模擬真的輸入框（空的開始、插入附加、Enter 清空）
+            open(os.path.join(home, "simulate-field"), "w").write("1")
+            for f_ in ("inserts.txt", "prog-hook.json"):
+                if os.path.exists(os.path.join(home, f_)):
+                    os.remove(os.path.join(home, f_))
+            focus(["訊息"], "")
             # 預設像播影片：不按任何鍵也會自己播到片尾（片頭片尾才停）
             rc, o, txt = rbj("live", sgp, "--approval", aid, "--no-player")
             rda = o.get("run_dir") or ""
@@ -618,6 +761,7 @@ def main():
                   and {"第一句：看這裡", "第二句", "長官這邊"} <= seen, (now_of(rda).get("card"), seen))
             rbj("control", rda, "stop"); time.sleep(1)
             # 講者模式（逐步）：拍子自己往下走（hold 只是多留），每一「步」做完才停下等「下一步」
+            focus(["訊息"], "")
             rc, o, txt = rbj("live", sgp, "--approval", aid, "--no-player", "--step-mode")
             rds_ = o.get("run_dir") or ""
             t0 = time.time(); seen2 = []; cards_seen = set()
@@ -651,6 +795,23 @@ def main():
             check("舞台：片尾按「結束」→ 引擎自己跑還原、片尾卡顯示結果、收掉舞台",
                   n.get("status") == "closing" and "reset" in rj_ and (n.get("card_data") or {}).get("reset"), (n, rj_.get("reset")))
 
+            # 中途「結束示範」（control state=ending）：停下動作 → 片尾 → 還原 → 收掉（5c：時間不夠時任何一步都能收）
+            focus(["訊息"], "")
+            rc, o, txt = rbj("live", sgp, "--approval", aid, "--no-player")
+            rde = o.get("run_dir") or ""
+            wait_for(rde, lambda n: n.get("step_id") == "s1" and (n.get("beat") or {}).get("text"), 30)
+            cpath = os.path.join(rde, "control.json")             # 舞台的「結束示範」寫的就是這個
+            json.dump(dict(json.load(open(cpath, encoding="utf-8")), state="ending"), open(cpath, "w"))
+            n = wait_for(rde, lambda n: n.get("card") == "end", 30)
+            check("中途結束 → 停下動作、顯示片尾", n.get("card") == "end" and n.get("step_id") == "s1", (n.get("card"), n.get("step_id")))
+            n = wait_for(rde, lambda n: n.get("status") == "closing", 40)
+            rje = json.load(open(os.path.join(rde, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rde, "run.json")) else {}
+            check("中途結束 → 照常執行還原、最後收掉舞台（這一段的政策檔還沒有還原同意，所以只看有沒有執行）",
+                  n.get("status") == "closing" and rje.get("reset") is not None
+                  and (rje.get("stopped") or {}).get("ended_early") == "s1", (n.get("status"), rje.get("reset"), rje.get("stopped")))
+            # 舞台段落結束：假瀏覽器不再模擬輸入框，焦點欄位還原成後面的測試預期的狀態
+            os.remove(os.path.join(home, "simulate-field"))
+            focus(["訊息"], "/case help")
             # ---------- standby 成功路徑：開通道、清 profile、排好畫面停在第一步前；再跑一次會先關掉上一次
             PYF = sys.executable.replace("\\", "/")
             tp = free_port()

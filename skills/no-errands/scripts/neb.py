@@ -11,6 +11,9 @@
 - 使用者登記的敏感網域（policy.json 的 sensitive_domains，例：經 SSH 通道的示範主機 localhost:8065）同樣處理，
   而且連點擊都要有核准過的示範劇本。
 - 示範劇本的窄例外：`neb … <fill|type|press|click|check|uncheck> … --runbook-approval <id> --step <n>`。
+  逐步輸入（live demo 看起來像有人在打字）：`neb … fill @ref <整段文字> --runbook-approval <id> --step <n> --progressive
+  [--pace-file <這次執行資料夾>/control.json]`——只在劇本例外之下；整段先照常比對核准，再由 neb 自己切段、
+  每段前後讀回（焦點欄位的身分＋內容＝核准文字的開頭）、以「插入文字」（不產生按鍵事件）附加；任何一次不符就停。
   放行條件全部成立：核准有效（未到期、未撤銷、清單雜湊相符）；目前主機＝核准的目標主機；--profile 的資料夾名
   ＝該步核准的示範帳號；輸入的欄位名稱與文字逐字相符（或符合核准的變動規則）／按鍵與點擊的名稱在該步清單內。
   任一不符 → 拒絕並回「需重新核准」。沒帶核准時行為不變。
@@ -96,7 +99,7 @@ def app_for_host(host, pol):
     return None
 
 
-RB_INPUT = {"fill", "press", "check", "uncheck"}          # 不含 type（附加輸入；引擎只用 fill）
+RB_INPUT = {"fill", "press", "check", "uncheck"}          # 不含 type／keyboard（附加輸入只存在於 fill --progressive 內部）
 RB_CLICK = {"click", "check", "uncheck"}
 VAR_VALUE_RE = re.compile(r"[^\s]{1,64}")                 # 變數值硬上限：不含空白與換行、最長 64 字
 REUSE_GAP_S = 120                                         # 同一動作 120 秒內重複（就地重試）算同一次執行
@@ -115,6 +118,177 @@ LOGIN_JS = ("(()=>{const vis=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRec
             "return JSON.stringify({user_id:us[0].id||'',pw_id:pw[0].id||''})})()")
 WINDOW_ARGS_RE = re.compile(r"--window-(?:position|size)=\d{1,5},\d{1,5}(?:\n--window-(?:position|size)=\d{1,5},\d{1,5})?")
 ID_RE = re.compile(r"^[A-Za-z][\w\-]{0,80}$")
+RUN_DIR_RE = re.compile(r"^\d{8}-\d{6}-(live|rehearse)$")      # --pace-file 只接受示範執行資料夾裡的 control.json
+PROG_BUDGET_S = 5.0                                        # 一個欄位的逐步輸入總時間上限（長文自動加快）
+PROG_MAX_CHUNKS = 14                                       # 段數上限（每段要讀回兩次，段太多會超過時間上限）
+PROG_LONG_CHARS = 40                                       # 超過這個字數的長欄位：上限 2.5 秒、最多 6 段（5c：長欄位各打 5 秒太久）
+PROG_LONG_BUDGET_S = 2.5
+PROG_LONG_MAX_CHUNKS = 6
+PROG_PAUSE_MAX_S = 900                                     # 逐步輸入中途暫停的上限（15 分鐘）：到了就停，原因「暫停過久」
+
+
+def is_cjk(ch):
+    o = ord(ch)
+    return 0x2E80 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF or 0xFF00 <= o <= 0xFFEF or 0x3000 <= o <= 0x303F
+
+
+def progressive_chunks(text, max_chunks=PROG_MAX_CHUNKS):
+    """把核准的整段文字切成逐步輸入的段（只由守門呼叫；劇本與引擎不能指定）：中文 2–4 字一段、英數逐字；
+    段數超過上限就把相鄰的段合併（長文自動加快）。各段接起來一定等於原文。"""
+    import random
+    rng = random.Random(len(text))
+    out, i = [], 0
+    while i < len(text):
+        if is_cjk(text[i]):
+            n = rng.choice((2, 3, 3, 4))
+            j = i
+            while j < len(text) and j - i < n and is_cjk(text[j]):
+                j += 1
+            out.append(text[i:j])
+            i = j
+        else:
+            out.append(text[i])
+            i += 1
+    if len(out) > max_chunks:                                # 先把英數合成小段（中文維持 2–4 字一段）
+        n_cjk = sum(1 for c in out if is_cjk(c[0]))
+        ga = -(-(len(out) - n_cjk) // max(1, max_chunks - n_cjk))
+        merged, buf = [], ""
+        for c in out:
+            if is_cjk(c[0]):
+                if buf:
+                    merged.append(buf); buf = ""
+                merged.append(c)
+            else:
+                buf += c
+                if len(buf) >= ga:
+                    merged.append(buf); buf = ""
+        if buf:
+            merged.append(buf)
+        out = merged
+    if len(out) > max_chunks:                                # 還是太多（很長的中文）：相鄰的段合併
+        g = -(-len(out) // max_chunks)
+        out = ["".join(out[k:k + g]) for k in range(0, len(out), g)]
+    assert "".join(out) == text
+    return out
+
+
+def pace_state(path):
+    """--pace-file：只讀 state；檔案不存在或讀不懂＝沒有暫停。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return (json.load(f) or {}).get("state") or "playing"
+    except Exception:
+        return "playing"
+
+
+def pace_path_ok(path):
+    """--pace-file：檔名是 control.json、所在資料夾符合示範執行資料夾的命名，而且同資料夾 now.json 的 owner_pid
+    就是呼叫 neb 的那個行程（引擎）——只有擁有這次執行的引擎能把它的控制檔交給 neb（da 的建議：不接受任意位置的同名資料夾）。"""
+    if not path:
+        return True
+    rp = os.path.realpath(path)
+    d = os.path.dirname(rp)
+    if os.path.basename(rp) != "control.json" or not RUN_DIR_RE.match(os.path.basename(d)):
+        return False
+    try:
+        with open(os.path.join(d, "now.json"), encoding="utf-8") as f:
+            owner = int((json.load(f) or {}).get("owner_pid") or 0)
+    except Exception:
+        return False
+    return owner == os.getppid()
+
+
+def approved_input(aid, step, name, path, text):
+    """這一步核准的、符合欄位名稱＋頁面路徑＋整段文字的那一筆輸入（runbook_check 已通過後才呼叫）。"""
+    import outbox  # noqa: E402
+    ok, rec = outbox.runbook_approval(aid)
+    if not ok:
+        return None
+    doc = outbox.parse_runbook_body(rec["body"])
+    at = lambda x: (x.get("at") or "").rstrip("/") or "/"
+    for ent in doc["sends"]:
+        if str(ent.get("step")) == str(step):
+            for i in ent.get("inputs") or []:
+                if at(i) == path and name in (i.get("fields") or []) and text_ok(i, text):
+                    return i
+    return None
+
+
+def do_progressive(base_cmd, ref, text, inp, pace, sleep=time.sleep):
+    """逐步輸入（劇本例外已通過）。回 (ok, info)；info 不含輸入內容，只有段數、停在第幾個字、原因、暫停秒數。
+    1 聚焦該欄位；焦點欄位的身分（名稱）必須是核准的欄位、內容必須是空的。
+    2 每一段：讀回（身分＋內容＝前 k-1 段）→ 插入文字（keyboard inserttext：不產生 keydown/keyup）→ 下一段的讀回兼作驗證。
+    3 最後讀回＝整段。任何一次不符：立刻停止，不再送任何字，欄位裡留著什麼就留著。"""
+    fields = set(inp.get("fields") or [])
+
+    def ab(*a):
+        return subprocess.run(base_cmd + list(a), capture_output=True, text=True, encoding="utf-8", errors="replace").returncode
+
+    def focus_is(expect):
+        foc = ab_json(base_cmd, FOCUS_JS)
+        if not foc:
+            return "讀不到目前的焦點欄位"
+        if not (set(foc.get("names") or []) & fields):
+            return "焦點不在核准的欄位上"
+        if (foc.get("value") or "") != expect:
+            return "欄位內容不是核准文字的開頭一段"
+        return None
+    long_ = len(text) > PROG_LONG_CHARS
+    chunks = progressive_chunks(text, PROG_LONG_MAX_CHUNKS if long_ else PROG_MAX_CHUNKS)
+    budget = PROG_LONG_BUDGET_S if long_ else PROG_BUDGET_S
+    info = {"chunks": len(chunks), "paused_s": 0.0, "typed_chars": 0}
+    if ab("focus", ref) != 0:
+        info["why"] = "無法聚焦到該欄位"
+        return False, info
+    why = focus_is("")
+    if why:
+        info["why"] = "開始前：" + ("欄位不是空的" if why.startswith("欄位內容") else why)
+        return False, info
+    weights = [0.22 if is_cjk(c[0]) else 0.09 for c in chunks]
+    import random
+    rng = random.Random(len(text) * 7 + 1)
+    delays = [w * rng.uniform(0.7, 1.35) for w in weights]
+    try:
+        pause_max = min(PROG_PAUSE_MAX_S, float(os.environ.get("NE_PROG_PAUSE_MAX_S", PROG_PAUSE_MAX_S)))   # 只能調得更嚴
+    except ValueError:
+        pause_max = PROG_PAUSE_MAX_S
+    t0 = time.time()
+    done = ""
+    for k, c in enumerate(chunks):
+        if pace:
+            while True:
+                stt = pace_state(pace)
+                if stt == "stopped":
+                    info.update(why="示範已停止", typed_chars=len(done))
+                    return False, info
+                if stt != "paused":
+                    break
+                if info["paused_s"] >= pause_max:
+                    info.update(why="暫停過久", typed_chars=len(done))
+                    return False, info
+                tp = time.time()
+                sleep(0.2)
+                info["paused_s"] = round(info["paused_s"] + time.time() - tp, 2)
+        # 每一段送出前都重新確認（第一段也是：暫停期間焦點可能被換走——da 的審查）
+        why = focus_is(done)
+        if why:
+            info.update(why=why if k else "開始時：" + ("欄位不是空的" if why.startswith("欄位內容") else why),
+                        typed_chars=len(done))
+            return False, info
+        if ab("keyboard", "inserttext", c) != 0:
+            info.update(why="插入文字失敗", typed_chars=len(done))
+            return False, info
+        done += c
+        left = budget - (time.time() - t0 - info["paused_s"])
+        remain = sum(delays[k + 1:]) or 1.0
+        sleep(max(0.0, min(delays[k], delays[k] * left / remain if left > 0 else 0.0)))
+    why = focus_is(text)
+    info["typed_chars"] = len(done)
+    info["ms"] = int((time.time() - t0 - info["paused_s"]) * 1000)
+    if why:
+        info["why"] = "打完：" + why
+        return False, info
+    return True, info
 
 
 def ab_json(base_cmd, js):
@@ -388,6 +562,14 @@ def main():
         print(__doc__); sys.exit(2)
     sub, args = rest[0].lower(), rest[1:]
     rb_id, rb_step = pop_flag(args, "--runbook-approval"), pop_flag(args, "--step")
+    progressive = "--progressive" in args
+    if progressive:
+        args.remove("--progressive")
+    pace = pop_flag(args, "--pace-file")
+    if (progressive or pace is not None) and not (sub == "fill" and rb_id is not None):
+        refuse("--progressive／--pace-file 只用於示範劇本的 fill（--runbook-approval <id> --step <n>）", sub=sub)
+    if pace is not None and not pace_path_ok(pace):
+        refuse("--pace-file 只接受示範執行資料夾裡的 control.json", sub=sub)
     rest = [rest[0]] + args
     # 任何網站都適用的檢查（先於網域判斷）
     for j, tok in enumerate(a):
@@ -460,6 +642,23 @@ def main():
             if not ok:
                 refuse("需重新核准：" + why, app=app, sub=sub, runbook=rb_id, step=rb_step)
             rb_checked = True
+            if progressive:
+                m_ = REF_RE.match(args[0]) if args else None
+                if not m_ or len(args) < 2:
+                    refuse("逐步輸入只接受 neb snapshot 產生的 ref 與整段文字", app=app, sub=sub, runbook=rb_id, step=rb_step)
+                name = load_state().get(session, {}).get("refs", {}).get(m_.group(1))
+                path = (urllib.parse.urlparse(page_url).path or "/").rstrip("/") or "/"
+                inp = approved_input(rb_id, rb_step, name, path, args[1] if len(args) > 1 else "")
+                if not inp:
+                    refuse("找不到這一步核准的輸入（逐步輸入）", app=app, sub=sub, runbook=rb_id, step=rb_step)
+                ok, info = do_progressive(base_cmd, args[0], args[1], inp, pace)
+                ledger(runbook=rb_id, step=rb_step, app=app, sub="fill-progressive", host=host, progressive_ok=ok,
+                       chunks=info.get("chunks"), typed_chars=info.get("typed_chars"), why=info.get("why"), t=time.time())
+                print(json.dumps({"ok": ok, "tool": "neb", "progressive": info}
+                                 if ok else {"ok": False, "tool": "neb", "error": "逐步輸入停在第 %d 個字：%s"
+                                             % (info.get("typed_chars", 0), info.get("why")), "progressive": info},
+                                 ensure_ascii=False))
+                sys.exit(0 if ok else 1)
     if app and not rb_checked:
         if registered and sub in ("click", "dblclick", "tap", "check", "uncheck"):
             refuse("登記的敏感網域上的點擊要有核准過的示範劇本（--runbook-approval <id> --step <n>）", app=app, sub=sub)

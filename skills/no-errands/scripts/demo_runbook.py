@@ -321,6 +321,11 @@ class StopDemo(Exception):
     pass
 
 
+class EndDemo(StopDemo):
+    """講者在示範中途按「結束示範」（control state=ending）：停下動作 → 片尾 → 還原 → 收掉舞台（5c：時間不夠時任何一步都能收）。"""
+    pass
+
+
 def replace_retry(tmp, path, tries=40):
     """Windows：讀的一方（播放器每 0.25 秒、驗收驅動）剛好開著目標檔時 os.replace 會 PermissionError。
     總驗收實測：引擎「在等下一步」那一次寫入被這樣吞掉，播放器一直顯示舊狀態、沒人按下一步。→ 重試最多約 2 秒。"""
@@ -389,6 +394,8 @@ class Control:
             c = self.read()
             if c.get("state") == "stopped":
                 raise StopDemo()
+            if c.get("state") == "ending":
+                raise EndDemo()
             if c.get("state") != "paused":
                 break
             if t0 is None:
@@ -423,6 +430,8 @@ class Control:
             c = self.read()
             if c.get("state") == "stopped":
                 raise StopDemo()
+            if c.get("state") == "ending":
+                raise EndDemo()
             if int(c.get("next_seq", 0)) > self.next_seen:
                 self.next_seen = int(c["next_seq"])
                 break
@@ -536,6 +545,7 @@ class Browser:
         self.started.clear()
 
     def snapshot(self, acct, scope=None):
+        self._found = None                                  # 新的 snapshot 會換掉 ref：之前記住的目標作廢
         cmd = ["snapshot", "-i"] + (["-s", scope] if scope else [])
         rc, o, e = self.neb(acct, *cmd)
         items = []
@@ -549,9 +559,14 @@ class Browser:
         rc, o, e = self.neb(acct, "get", "text", scope or "body")
         return o if rc == 0 else ""
 
-    def find(self, acct, target):
+    def find(self, acct, target, reuse=False):
         """依序試每個 scope × 每個名稱；回 (ref, used) 或 (None, 試過的摘要)。
-        名稱要完全相同（neb 依名稱比對核准清單）；同名多個時取 pick（預設 last＝最新的卡片）。"""
+        名稱要完全相同（neb 依名稱比對核准清單）；同名多個時取 pick（預設 last＝最新的卡片）。
+        reuse：上一拍剛為同一個目標找到的 ref（10 秒內、之後沒有別的 snapshot）直接沿用，省一次 snapshot。"""
+        key = (acct, json.dumps(target, ensure_ascii=False, sort_keys=True))
+        f = getattr(self, "_found", None)
+        if reuse and f and f[0] == key and time.time() - f[3] < 10:
+            return f[1], f[2]
         scopes = target.get("scopes") or [None]
         tried = []
         for sc in scopes:
@@ -563,7 +578,9 @@ class Browser:
                 hits = [i for i in items if i["name"] == nm and (not target.get("role") or i["role"] == target["role"])]
                 if hits:
                     h = hits[0] if target.get("pick") == "first" else hits[-1]
-                    return h["ref"], {"scope": sc, "name": nm, "n_hits": len(hits)}
+                    used = {"scope": sc, "name": nm, "n_hits": len(hits)}
+                    self._found = (key, h["ref"], used, time.time())
+                    return h["ref"], used
             tried.append({"scope": sc, "n_items": len(items),
                           "near": [i["role"] + ":" + i["name"][:80] for i in items
                                    if any(n[:2] in i["name"] for n in names_of(target))][:6]})
@@ -633,16 +650,32 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
         ok = True
     elif d in ("fill", "click", "check"):
         settle = float(act.get("settle_s", 0))           # 先等目標出現／可操作（learn 依「就地重試才成功」的紀錄提出）
+        first_try = True
         while True:
-            ref, used = br.find(acct, act["target"])
+            ref, used = br.find(acct, act["target"], reuse=first_try)   # 第一次可以沿用拍子剛找到的目標；重試一律重新找
+            first_try = False
             info.pop("error", None)
             if ref and getattr(br, "look", None) is not None:
-                br.look.set(acct, "@" + ref, scroll=True)      # 舞台：agent 要動的元素先框住
-                time.sleep(float(act.get("show_s", 0.8)))
+                paused += br.look.act(acct, "@" + ref, press=d in ("click", "check")) or 0.0   # 舞台：示範游標移過去、按下效果
             if ref:
                 info["used"] = used
                 cmd = [d, "@" + ref] + ([subst(act["text"], vars_)] if d == "fill" else [])
-                rc, o, e = br.neb(acct, *cmd, approval=approval, step=st["id"])
+                # 舞台：逐步輸入（守門自己切段、每段前後讀回；暫停時停在原地、繼續時接著打）
+                prog = d == "fill" and getattr(br, "look", None) is not None and getattr(ctl, "dir", None)                     and effects_of(rb)["typing"]
+                if prog:
+                    cmd += ["--progressive", "--pace-file", os.path.join(ctl.dir, "control.json")]
+                rc, o, e = br.neb(acct, *cmd, approval=approval, step=st["id"], timeout=7200 if prog else 90)
+                if prog:
+                    for line in reversed((o or "").strip().splitlines()):
+                        try:
+                            pj = json.loads(line)
+                        except Exception:
+                            continue
+                        if isinstance(pj, dict) and isinstance(pj.get("progressive"), dict):
+                            pi = pj["progressive"]
+                            paused += float(pi.get("paused_s") or 0)      # 打字中途暫停的時間不算進這一步
+                            info["typing"] = {k: pi.get(k) for k in ("chunks", "typed_chars", "ms", "paused_s")}
+                            break
                 ok = rc == 0
                 if not ok:
                     info["error"] = err_of(rc, o)
@@ -669,15 +702,24 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
                 vars_.setdefault("__marks", {})[x] = marks[x]
         ok = True
     elif d == "press":
-        if getattr(br, "look", None) is not None and act.get("show_s", 1.0):
-            time.sleep(float(act.get("show_s", 1.0)))        # 舞台：打完先停一下讓觀眾看到內容，再送出
+        if getattr(br, "look", None) is not None and act.get("show_s", 0.7):
+            time.sleep(float(act.get("show_s", 0.7)))        # 舞台：打完先停一下讓觀眾看到內容，再送出（0.7 秒）
         rc, o, e = br.neb(act_acct(st, act), "press", act["key"], approval=approval, step=st["id"])
         ok = rc == 0
         if not ok:
             info["error"] = err_of(rc, o)
     elif d == "scroll":
-        rc, o, e = br.neb(acct, "scroll", act.get("dir", "down"), str(act.get("px", 600)))
-        ok = rc == 0
+        total = int(act.get("px", 600))
+        if getattr(br, "look", None) is not None:          # 舞台：滾輪式分段（看得出是捲過去的）
+            ok = True
+            for i in range(4):
+                part = total * (i + 1) // 4 - total * i // 4
+                rc, o, e = br.neb(acct, "scroll", act.get("dir", "down"), str(part))
+                ok = ok and rc == 0
+                time.sleep(0.1)
+        else:
+            rc, o, e = br.neb(acct, "scroll", act.get("dir", "down"), str(total))
+            ok = rc == 0
     elif d in ("wait_text", "expect_absent"):
         budget = float(act.get("budget_s", 30))
         scopes = act.get("scopes") or [None]
@@ -742,6 +784,20 @@ def stage_on(rb):
     return bool(rb.get("stage"))
 
 
+EFFECTS = ("pointer", "smooth_scroll", "typing", "shield", "faint_look")
+
+
+def effects_of(rb):
+    """F-3 的效果開關（劇本 stage.effects；預設全開）。任一項在真頁面上不穩就單獨關掉、退回前一種做法：
+    pointer＝示範游標與按下效果（關：外框框住目標、停 0.8 秒再動作）；smooth_scroll＝平順捲動（關：瞬間捲到）；
+    typing＝逐步輸入（關：一次填入、停一下再送出）；shield＝隔離層（關：沒有隔離層）；faint_look＝淡外框（關：原本的粗框、不淡出）。"""
+    e = dict.fromkeys(EFFECTS, True)
+    e.update({k: bool(v) for k, v in (((rb.get("stage") or {}).get("effects")) or {}).items() if k in EFFECTS})
+    if (rb.get("stage") or {}).get("typing") == "instant":
+        e["typing"] = False
+    return e
+
+
 def crop_of(rb, st):
     """這一步要藏到舞台外的頁面部分（CSS px）：步驟的 crop > 劇本 stage.views[步驟 view] > 不裁。"""
     if st.get("crop") is not None:
@@ -765,24 +821,136 @@ class Look:
     能往上捲就捲（被切的那則從開頭顯示、目標仍完整）；捲了會把目標擠出去就請舞台用頁面底色蓋住殘段。
     全部只用唯讀的 get box／get count 和 scroll。"""
 
-    def __init__(self, br, ctl, align=None):
+    def __init__(self, br, ctl, align=None, effects=None):
         self.br, self.ctl, self.acct, self.sel = br, ctl, None, None
+        self.fx = dict.fromkeys(EFFECTS, True)
+        self.fx.update(effects or {})
         self.align_cfg, self.align_on, self.box, self.anchor, self._align_t = align, False, None, None, 0.0
         self.color = (align or {}).get("color")
+        self.ptr, self.ptr_seq, self.press_seq, self.look_seq = None, 0, 0, 0
 
     def step(self, acct, on):
-        """換步驟：這一步要不要對齊；殘段遮罩清掉。"""
+        """換步驟：這一步要不要對齊；殘段遮罩清掉。換角色時示範游標從新畫面的中間偏下重新出發（舞台負責淡入）。"""
+        if acct != self.acct:
+            self.ptr = None
         self.acct, self.sel, self.box, self.anchor = acct, None, None, None
-        self.align_on = bool(self.align_cfg and on)
-        self.ctl.publish(mask=None, align=None)
+        self.align_on = bool(self.align_cfg and on and self.align_cfg.get("top_align", True))   # 5c：預設不對齊、不遮
+        self.ctl.publish(mask=None, align=None, look=None)
+
+    # ---- F-3：示範游標（畫在舞台上；系統游標不動）與平順捲動
+    def wait(self, secs):
+        """等 secs 秒；暫停的時間不算（游標停在原地）。回暫停了幾秒。"""
+        t, pz = time.time(), 0.0
+        while time.time() - t < secs:
+            time.sleep(0.04)
+            g = self.ctl.gate() or 0.0
+            t += g
+            pz += g
+        return pz
+
+    def point(self, x, y):
+        """示範游標移到頁面上的 CSS 點；回移動秒數（依距離 0.3–0.9 秒；第一次 0.6 秒）。"""
+        import math
+        if not self.fx["pointer"]:
+            return 0.0
+        if self.ptr is None:
+            dur = 0.6
+        else:
+            d = math.hypot(x - self.ptr[0], y - self.ptr[1])
+            dur = 0.0 if d < 2 else min(0.6, max(0.3, 0.3 + d / 2000.0))    # 5c：移動上限 0.6 秒
+        self.ptr, self.ptr_seq = (x, y), self.ptr_seq + 1
+        self.ctl.publish(pointer={"x": round(x, 1), "y": round(y, 1), "dur": round(dur, 2), "seq": self.ptr_seq})
+        return dur
+
+    def press(self, timeout=0.6):
+        """按下的效果：發布後等舞台回報「已畫出來」（stage_ack.json）才回來，之後才送出真正的點擊——
+        觀眾先看到按下、頁面才有反應（A22）。沒有舞台（--no-player）時最多等 timeout 秒。回暫停秒數。"""
+        if not self.fx["pointer"]:
+            return 0.0
+        self.press_seq += 1
+        self.ctl.publish(press=self.press_seq)
+        ack = os.path.join(getattr(self.ctl, "dir", "") or ".", "stage_ack.json")
+        t0, pz = time.time(), 0.0
+        while time.time() - t0 < timeout:
+            try:
+                if int(json.load(open(ack, encoding="utf-8")).get("press") or 0) >= self.press_seq:
+                    self.acked = getattr(self, "acked", 0) + 1
+                    break
+            except Exception:
+                pass
+            time.sleep(0.02)
+        return pz
+
+    def into_view(self, sel):
+        """目標不在可視範圍時平順地捲過去（訊息區：滾輪式分 3–4 段、約 0.4 秒）；其他地方用 scrollintoview。回目標方框。"""
+        box = self._box(sel)
+        if not box:
+            return None
+        cfg = self.align_cfg or {}
+        lst = self._box(cfg["list"]) if cfg.get("list") and cfg.get("scroller") and self.fx["smooth_scroll"] else None
+        if lst and lst[0] - 2 <= box[0] <= lst[0] + lst[2] and box[1] < lst[1] + lst[3] + 4000:
+            top, bot = lst[1] + 8, lst[1] + lst[3] - 8
+            delta = 0.0
+            if box[1] < lst[1] - 1 or box[1] + box[3] > lst[1] + lst[3] + 1:   # 不完整可見才捲；捲到訊息區上方約四分之一（5c）
+                want = lst[1] + 0.25 * lst[3] if box[3] <= 0.7 * lst[3] else top
+                delta = box[1] - want
+            if abs(delta) >= 4:
+                n = 4 if abs(delta) > 240 else 3
+                for i in range(n):
+                    part = int(round(abs(delta) * (i + 1) / n)) - int(round(abs(delta) * i / n))
+                    self.br.neb(self.acct, "scroll", "down" if delta > 0 else "up", str(part), "--selector", cfg["scroller"])
+                    time.sleep(0.1)
+                time.sleep(0.15)
+                box = self._box(sel) or box
+            return box
+        self.br.neb(self.acct, "scrollintoview", sel)
+        time.sleep(0.2)
+        return self._box(sel) or box
+
+    def aim(self, acct, sel, click=True):
+        """講某個動作的拍子：捲到目標、示範游標指到它上面（點擊＝元素中心、輸入＝框內左側），不畫外框、不按。
+        接著真的做這個動作時游標已經在位，直接按下（5c：每次點擊之前游標確實停在目標上）。"""
+        if not self.fx["pointer"]:
+            self.set(acct, sel, scroll=True)
+            return 0.0
+        self.acct, self.sel, self.box = acct, None, None
+        self.ctl.publish(look=None)
+        box = self.into_view(sel)
+        if not box:
+            return 0.0
+        x, y = (box[0] + box[2] / 2, box[1] + box[3] / 2) if click else (box[0] + min(36, box[2] / 2), box[1] + box[3] / 2)
+        return self.wait(self.point(x, y) + 0.2)
+
+    def act(self, acct, sel, press):
+        """動作的拍子：捲到目標 → 示範游標移過去（不畫外框，游標就是標示）→ 停 0.2 秒 → 點擊的話加按下效果。"""
+        if not self.fx["pointer"]:                           # 效果關掉：前一種做法——外框框住目標、停一下再動作
+            self.set(acct, sel, scroll=True)
+            return self.wait(0.8)
+        self.acct, self.sel, self.box = acct, None, None
+        self.ctl.publish(look=None)
+        box = self.into_view(sel)
+        if not box:
+            return 0.0
+        if press:
+            x, y = box[0] + box[2] / 2, box[1] + box[3] / 2      # 和真正點擊的位置（元素中心）一致
+        else:
+            x, y = box[0] + min(36, box[2] / 2), box[1] + box[3] / 2   # 輸入框：指在框內左側
+        pz = self.wait(self.point(x, y) + 0.2)
+        if press:
+            pz += self.press()
+            pz += self.wait(0.12)                                # 漣漪畫出來之後再停一下，才點擊
+        return pz
 
     def set(self, acct, sel, scroll=True):
+        """讀內容的拍子：捲到那一段 → 淡外框（舞台 1.2 秒後淡出）→ 游標指在那一段開頭的左邊、不蓋住字。"""
         self.acct, self.sel = acct, sel
+        self.look_seq += 1
         if sel and scroll:
-            self.br.neb(acct, "scrollintoview", sel)
-            time.sleep(0.3)
+            self.into_view(sel)
         self.refresh(realign=False)
         self.align()
+        if self.box:
+            self.point(max(2.0, self.box[0] - 18), self.box[1] + min(12.0, self.box[3] / 2))
 
     def clear(self):
         self.sel = self.box = None
@@ -793,7 +961,7 @@ class Look:
             rc, o, e = self.br.neb(self.acct, "get", "box", self.sel)
             box = parse_box(o) if rc == 0 else None
             self.box = box
-            self.ctl.publish(look={"box": box} if box else None)
+            self.ctl.publish(look={"box": box, "seq": self.look_seq} if box else None)
         if realign and self.align_on and self.anchor is not None and time.time() - self._align_t >= 1.0:
             b = self._box(self.align_cfg["item_nth"].format(k=1))       # 有新訊息、版面動了 → 重新對齊
             if b is None or abs(b[1] - self.anchor[1]) > 2 or abs(b[3] - self.anchor[3]) > 2:
@@ -852,7 +1020,7 @@ class Look:
     def refresh_box_only(self):
         rc, o, e = self.br.neb(self.acct, "get", "box", self.sel)
         self.box = parse_box(o) if rc == 0 else None
-        self.ctl.publish(look={"box": self.box} if self.box else None)
+        self.ctl.publish(look={"box": self.box, "seq": self.look_seq} if self.box else None)
 
     def page_color(self):
         """遮罩用的頁面底色：劇本寫的 > 頁面的 CSS 變數（例：--center-channel-bg）> 黑。"""
@@ -913,18 +1081,37 @@ def beat_secs(b, text):
     """這一拍留多久（像播影片：按一次開始就自己往下走）：1.5 秒＋每字 0.25 秒、最少 3.5 秒；hold（多留一會兒）再加 2.5 秒。"""
     if b.get("s") is not None:
         return float(b["s"])
-    return max(3.5, 1.5 + 0.25 * len(text)) + (2.5 if b.get("hold") else 0.0)
+    return max(3.0, 1.5 + 0.2 * len(text))     # 5c：最短 3 秒、每字 0.2 秒；重點拍不再加時（講者模式本來就每步停一次）
+
+
+def beat_target(st, b):  # noqa: C901
+    """這一拍要看的東西：劇本寫的 look（CSS 或 {"target": 角色＋名稱}）；沒寫（None）就用這一拍接著要做的那個動作的目標
+    （5c：每一拍都要有自己真正的目標，不沿用上一拍）。False＝不框。"""
+    lk = b.get("look")
+    if lk is None:
+        acts = st.get("actions") or []
+        i = int(b.get("at", 0))
+        if i < len(acts) and acts[i].get("do") in ("click", "fill", "check") and acts[i].get("target"):
+            return {"target": acts[i]["target"], "action": acts[i]["do"]}
+    return lk
 
 
 def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
-    """一拍：字幕＋看這裡。自動模式（預設）：留 beat_secs 秒、暫停時計時凍結；逐步模式：hold 的拍才停下等「下一步」。"""
-    ctl.publish(beat={"text": subst(b.get("say", ""), vars_), "i": k, "n": n})
-    t0 = time.time()                                          # 字幕一出來就開始計時（外框、對齊的查詢不拉長這一拍）
-    lk = b.get("look")
+    """一拍：先把這一拍的目標捲到看得見、框好，再出字幕（5c：先捲到再出字幕）。
+    自動模式（預設）：字幕留 beat_secs 秒、暫停時計時凍結；逐步模式：hold 的拍才停下等「下一步」。"""
+    lk = beat_target(st, b)
     if isinstance(lk, dict) and lk.get("css"):
         look.set(st["account"], subst(lk["css"], vars_), scroll=lk.get("scroll", True))
-    elif lk is False:                                     # 沒寫 look：保留上一個外框（例：剛勾好的勾選框）
+    elif isinstance(lk, dict) and lk.get("target"):
+        ref, _ = look.br.find(st["account"], lk["target"])
+        if ref and lk.get("action"):                          # 講接下來的動作：游標指到目標上（不框）
+            look.aim(st["account"], "@" + ref, click=lk["action"] in ("click", "check"))
+        elif ref:
+            look.set(st["account"], "@" + ref, scroll=lk.get("scroll", True))
+    elif lk is False:
         look.clear()
+    ctl.publish(beat={"text": subst(b.get("say", ""), vars_), "i": k, "n": n})
+    t0 = time.time()                                          # 字幕出來才開始計時
     dur = beat_secs(b, subst(b.get("say", ""), vars_))
     while time.time() - t0 < dur:                           # (停)＝多留一會兒；講者模式只在步與步之間停
         time.sleep(0.5)
@@ -986,7 +1173,7 @@ def run_step(br, rb, st, vars_, approval, shots_dir, ctl=None):
             ok, info = run_action(br, rb, st, act, vars_, approval, rec, ctl)
             info["i"], info["phase"] = base + i, tag
             rec["actions"].append(info)
-            if not ok and act["do"] in ("fill", "click", "check", "snapshot_ok", "capture"):
+            if not ok and act["do"] in ("fill", "click", "check", "snapshot_ok", "capture") and not act.get("optional"):
                 time.sleep(2)                                   # 一次就地重試（畫面可能還在更新）
                 ok, info2 = run_action(br, rb, st, act, vars_, approval, rec, ctl)
                 info2["i"], info2["phase"], info2["retry"] = base + i, tag, True
@@ -1200,7 +1387,8 @@ def execute(rb, mode, a):
     replay = (replay if os.path.isabs(replay) else os.path.join(rb["_dir"], replay)) if replay else None
     staged = mode == "live" and stage_on(rb)
     if staged:
-        br.look = Look(br, ctl, align=(rb.get("stage") or {}).get("align"))
+        br.look = Look(br, ctl, align=(rb.get("stage") or {}).get("align"), effects=effects_of(rb))
+        ctl.publish(effects=effects_of(rb))
         br.live = True
         ctl.publish(accounts=stage_accounts(rb, br), title=rb.get("title", ""), zoom=1.0, card=None)
     ctl.publish(steps_total=hi - lo, status="running", mode=mode, title=rb.get("title", ""),
@@ -1301,12 +1489,27 @@ def execute(rb, mode, a):
             if mode == "rehearse" and persist and rec.get("shot"):
                 os.makedirs(os.path.join(rb["_dir"], "planb"), exist_ok=True)
                 shutil.copyfile(os.path.join(shots, rec["shot"]), os.path.join(rb["_dir"], "planb", rec["shot"]))
+    except EndDemo:
+        # 中途結束：照常走片尾與還原（控制狀態改回 playing，片尾的等待才不會又被當成結束）
+        stopped = {"ended_early": steps[min(i, len(steps) - 1)]["id"]}
+        try:
+            write_control(run_dir, state="playing")
+        except Exception:
+            pass
+        ctl.publish(status="running", look=None, pointer=None)
     except StopDemo:
         stopped = {"user_stop": steps[min(i, len(steps) - 1)]["id"]}
         ctl.publish(status="stopped")
     finally:
-        if mode != "live" or not stopped or "user_stop" in (stopped or {}) or "stage_fit" in (stopped or {}):
+        if mode != "live" or not stopped or any(k in (stopped or {}) for k in ("user_stop", "stage_fit", "ended_early")):
             br.close_all()
+        if staged and stopped and "user_stop" in stopped:
+            # 緊急停止（Ctrl+Shift+F12、舞台被撤下）：沒有片尾，但資料照樣還原（不留給別人收）
+            try:
+                ok_, res_ = do_reset(rb)
+                state["reset"] = {"ok": ok_, "results": res_}
+            except Exception as e:
+                state["reset"] = {"ok": False, "results": [str(e)[:120]]}
         state["ended"] = now_s()
         state["stopped"] = stopped
         state["skipped_after_fail"] = skipped
@@ -1343,7 +1546,7 @@ def execute(rb, mode, a):
             except StopDemo:
                 pass
             ctl.publish(status="closing")
-    summary = {"ok": (stopped is None or "user_stop" in stopped) and not skipped, "mode": mode,
+    summary = {"ok": (stopped is None or "user_stop" in stopped or "ended_early" in stopped) and not skipped, "mode": mode,
                "skipped_after_fail": skipped, "run_dir": run_dir if persist else None,
                "steps_run": len(state["steps"]), "steps_ok": sum(1 for s in state["steps"] if s["ok"]),
                "recovered": [s["id"] for s in state["steps"] if s.get("recovered")],

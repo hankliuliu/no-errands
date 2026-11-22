@@ -6,7 +6,7 @@
   - 瀏覽器視窗位置：裁切後的頁面剛好填滿舞台；頁面方框換算到舞台、在舞台外不畫。
 用法：python tests/test_stage_layout.py
 """
-import os, sys
+import os, time, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills", "no-errands", "scripts"))
 import stage_layout as L  # noqa: E402
@@ -36,7 +36,12 @@ bw, bh = 700, 90
 dx, dy = L.caption_pos((bw, bh), lay)
 look = (dx + 100, dy + 10, 300, 40)
 ux, uy = L.caption_pos((bw, bh), lay, look=look)
-check("字幕和「看這裡」外框重疊 → 自動讓到上方（角色帶下面）", uy < lay["stage"][1] + 40 and uy < dy, (ux, uy))
+check("字幕和「看這裡」外框重疊 → 讓到離原位最近、不重疊的位置（這裡是右下）",
+      not L.overlaps((ux - 12, uy - 12, bw + 24, bh + 24), look) and uy == dy and ux > dx, (ux, uy))
+tall = (300, lay["stage"][1] + 40, 920, lay["stage"][3] - 60)            # 表單：外框幾乎佔滿整個高度
+tx_, ty_ = L.caption_pos((600, bh), lay, look=tall)
+check("外框幾乎佔滿整個高度 → 字幕放到旁邊的空位（不壓外框）", not L.overlaps((tx_, ty_, 600, bh), tall), (tx_, ty_))
+check("外框不重疊時字幕不動（優先穩定）", L.caption_pos((bw, bh), lay, look=(10, lay["stage"][1] + 10, 100, 30)) == (dx, dy))
 far = (10, lay["stage"][1] + 10, 100, 30)
 check("外框不重疊 → 留在預設位置", L.caption_pos((bw, bh), lay, look=far) == (dx, dy))
 ctl = lay["controls"]
@@ -179,6 +184,93 @@ c = FakeCtl(); lk = DR.Look(FakeBr(boxes, modal=1), c, align=AL); lk.step("a", T
 check("A9 Look：對話框開著 → 不捲、不遮（記為 skip）", c.now["align"]["how"] == "skip" and c.now.get("mask") is None, c.now)
 c = FakeCtl(); br3 = FakeBr(boxes); lk = DR.Look(br3, c, align=AL); lk.step("a", False); lk.set("a", "#t")
 check("這一步不對齊（劇本沒列這個檢視）→ 不做任何對齊查詢", c.now.get("align") is None and not any(x[0] == "scroll" for x in br3.calls))
+
+# ---- F-3：示範游標、捲動、外框淡出、不碰系統輸入
+st_ = lay["stage"] if False else L.layout(1920, 1080)["stage"]
+check("A21 CSS 點 → 螢幕（扣裁切、乘倍率、夾在舞台內）",
+      L.css_point((369, 184), st_, {"top": 84, "left": 269}, 1.0, 1.5) == (150, st_[1] + 150) and
+      L.css_point((0, 0), st_, {"top": 84, "left": 269}, 1.0, 1.5) == (st_[0], st_[1]))
+pts = [L.pointer_path((100, 900), (1500, 300), i / 60.0) for i in range(61)]
+steps = [((pts[i + 1][0] - pts[i][0]) ** 2 + (pts[i + 1][1] - pts[i][1]) ** 2) ** 0.5 for i in range(60)]
+check("A21 示範游標的路徑連續、有加減速（頭尾慢、中間快）、終點準確",
+      pts[0] == (100, 900) and abs(pts[-1][0] - 1500) < 0.01 and abs(pts[-1][1] - 300) < 0.01 and max(steps) < 60
+      and steps[0] < steps[30] / 4 and steps[-1] < steps[30] / 4, (max(steps), steps[0], steps[30]))
+mid = L.pointer_path((0, 0), (1000, 0), 0.5)
+check("A21 路徑略帶弧度（不是直線）", abs(mid[1]) > 20, mid)
+check("A25 讀內容的外框：1.2 秒內維持很淡（0.55），1.6 秒後完全淡出",
+      L.look_alpha(0.5) == 0.55 and 0 < L.look_alpha(1.4) < 0.55 and L.look_alpha(1.6) == 0)
+
+
+class FakeCtl2(FakeCtl):
+    def gate(self, on_resume=None):
+        return 0.0
+
+
+boxes3 = {"#post-list": [269, 141, 984, 354], nth(1): [269, 397, 984, 90.8], "@e9": [600, 700, 200, 40], "#t": [269, 397, 984, 90.8]}
+br4 = FakeBr(boxes3); c = FakeCtl2(); lk = DR.Look(br4, c, align=AL); lk.step("a", True)
+t_ = time.time(); lk.act("a", "@e9", press=True)
+sc = [x for x in br4.calls if x[0] == "scroll"]
+check("A24 目標在訊息區下方 → 分 3–4 段捲過去（每段不超過總量的一半）、捲到訊息區上方約四分之一",
+      3 <= len(sc) <= 4 and all(x[1] == "down" for x in sc) and abs(sum(int(x[2]) for x in sc) - (700 - (141 + 0.25 * 354))) <= 2
+      and max(int(x[2]) for x in sc) <= sum(int(x[2]) for x in sc) / 2, sc)
+check("A21/A22 動作：游標移到元素中心、停一下、按下效果，不畫外框",
+      c.now.get("pointer", {}).get("seq") == 1 and c.now.get("press") == 1 and c.now.get("look") is None
+      and abs(c.now["pointer"]["x"] - 700) < 0.01 and time.time() - t_ >= 0.6 + 0.2 + 0.18 - 0.05, c.now)
+c = FakeCtl2(); lk = DR.Look(FakeBr(boxes3), c, align=AL); lk.step("a", True); lk.set("a", "#t")
+check("A21/A25 讀內容：淡外框（帶這一拍的編號）＋游標指在那一段開頭的左邊、不蓋住字",
+      c.now["look"]["seq"] == 1 and c.now["pointer"]["x"] < 269 and c.now.get("press") is None, c.now)
+import tempfile as _tf, threading as _th, json as _js  # noqa: E402
+_ackd = _tf.mkdtemp()
+
+
+class FakeCtl3(FakeCtl2):
+    dir = _ackd
+
+
+def _ack_later():
+    time.sleep(0.3)
+    _ack_t[0] = time.time()
+    _js.dump({"press": 1, "t": _ack_t[0]}, open(os.path.join(_ackd, "stage_ack.json"), "w"))
+
+
+_ack_t = [None]
+c = FakeCtl3(); lk = DR.Look(FakeBr(boxes3), c, align=AL); lk.step("a", True)
+lk.ptr = (700, 720)                                          # 游標已在目標上（不用移動），只看按下與點擊的先後
+_th.Thread(target=_ack_later).start()
+t_ = time.time(); lk.act("a", "@e9", press=True); t_done = time.time()
+check("A22 點擊在「按下的效果已畫出」之後：舞台 0.3 秒後才回報 → 引擎等到回報、再停一下才回來送出點擊",
+      _ack_t[0] is not None and t_done >= _ack_t[0] + 0.1 and getattr(lk, "acked", 0) == 1, (_ack_t[0], t_done))
+# ---- 效果開關（真頁面上哪一項不穩就單獨關掉、退回前一種做法）
+fx = DR.effects_of({"stage": {}})
+check("效果開關：預設全開", all(fx.values()) and set(fx) == set(DR.EFFECTS), fx)
+fx = DR.effects_of({"stage": {"effects": {"pointer": False, "typing": False, "bogus": False}}})
+check("效果開關：只關指定的項目；不認得的名稱忽略", fx["pointer"] is False and fx["typing"] is False and fx["shield"] and "bogus" not in fx, fx)
+br5 = FakeBr(boxes3); c = FakeCtl2(); lk = DR.Look(br5, c, align=AL, effects={"pointer": False}); lk.step("a", True)
+lk.act("a", "@e9", press=True)
+check("示範游標關掉 → 動作前用外框框住目標（前一種做法），不發布游標與按下",
+      c.now.get("look") and c.now.get("pointer") is None and c.now.get("press") is None, c.now)
+br6 = FakeBr(boxes3); c = FakeCtl2(); lk = DR.Look(br6, c, align=AL, effects={"smooth_scroll": False}); lk.step("a", True)
+lk.act("a", "@e9", press=False)
+check("平順捲動關掉 → 瞬間捲到（scrollintoview），沒有分段捲動",
+      any(x[0] == "scrollintoview" for x in br6.calls) and not any(x[0] == "scroll" for x in br6.calls), br6.calls[-6:])
+st_b = {"actions": [{"do": "open"}, {"do": "click", "target": {"role": "button", "names": ["下修改指示"]}}, {"do": "wait_text"}]}
+check("每一拍都有自己的目標：look 沒寫 → 用這一拍接著要做的動作的目標",
+      DR.beat_target(st_b, {"at": 1}) == {"target": {"role": "button", "names": ["下修改指示"]}, "action": "click"})
+c = FakeCtl2(); lk = DR.Look(FakeBr(boxes3), c, align=AL); lk.step("a", True)
+lk.aim("a", "@e9", click=True)
+check("講動作的拍子：游標指到目標中心（不框、不按）", abs(c.now["pointer"]["x"] - 700) < 0.01 and c.now.get("look") is None
+      and c.now.get("press") is None, c.now)
+check("look 沒寫、接著的動作不是點擊或輸入 → 沒有目標；寫了 False → 不框；寫了 CSS → 照寫的",
+      DR.beat_target(st_b, {"at": 2}) is None and DR.beat_target(st_b, {"at": 1, "look": False}) is False
+      and DR.beat_target(st_b, {"at": 1, "look": {"css": "#x"}}) == {"css": "#x"})
+import re as _re  # noqa: E402
+bad = {}
+for fn in ("demo_stage.py", "demo_runbook.py", "neb.py", "stage_layout.py"):
+    src = open(os.path.join(os.path.dirname(L.__file__), fn), encoding="utf-8").read()
+    hit = _re.findall(r"\b(SendInput|mouse_event|keybd_event|SetCursorPos|SetPhysicalCursorPos)\b", src)
+    if hit:
+        bad[fn] = sorted(set(hit))
+check("A26 舞台、引擎、守門的程式裡沒有任何系統層的滑鼠鍵盤輸入呼叫", not bad, bad)
 
 import demo_stage as DS  # noqa: E402
 q = r'"C:\x\chrome.exe" "--remote-debugging-port=0" "--user-data-dir=C:\Users\u\p\demo_a" "--window-size=1280,720"'
