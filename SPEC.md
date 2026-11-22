@@ -27,7 +27,7 @@
 | `ned` | 桌面 app 代理（白名單，`docs/agent-desktop-command-audit.md`）：app 範圍鎖定（含 launch 目標、--surface）、敏感 app 閘門（三平台名稱）、背景模式擋搶焦點與實體輸入、發件匣頁面禁區 | `tests/test_ned.py` |
 | `neb` | 瀏覽器代理：敏感網域閘門；已授權的只讀（白名單：對 agent-browser 每個子指令與選項逐項對過，`docs/agent-browser-command-audit.md`）、不點送出類按鈕；繞過逐步檢查的指令與選項任何網站都拒 | `tests/test_neb.py` |
 | `chat_guard` | 聊天 app：精確定位、標頭驗證身分、禁區（輸入框／送出／貼圖／通話）、彈出選單只點完全相符的項目、另存新檔以預設檔名與首行驗身分、絕不覆寫、閒置閘門與交還前景 | `tests/test_chat_guard.py`、`tests/test_line_profile.py` |
-| 發件匣 `outbox` | 起草→固定頁面→使用者核准→伺服器送出；對象由伺服器解析、修訂雜湊防竄改、自動化瀏覽器不可核准、有上限的等待 | `tests/test_outbox.py`、`tests/selfhost/mm_flow.py` |
+| 發件匣 `outbox` | 起草→固定頁面→使用者核准→伺服器送出；一台一個核准頁面，只放要傳出去的訊息；對象由伺服器解析、修訂雜湊防竄改、自動化瀏覽器不可核准、有上限的等待。示範劇本兩種核准模式：`page`（預設，每份都看）／`standing`（使用者在頁面親自核准過同主機且帳號涵蓋的劇本後由伺服器自動核准、寫 decide-log；撤銷或退回即暫停；只限示範主機、內建敏感 app 不可） | `tests/test_outbox.py`、`tests/test_standing_approval.py`、`tests/selfhost/mm_flow.py` |
 | `mm_ro` | Mattermost 唯讀（只發 GET；讀貼文不動已讀） | `tests/test_mm_ro.py` |
 | `gather` | 聊天收集：起始時間＋增量同步；LINE 經 chat_guard 匯出、序列對齊合併、缺口明講；Mattermost 用 API 游標（含編輯與刪除）；可寫成 context-gather 格式 | `tests/test_gather.py`、`tests/selfhost/mm_flow.py`（f 段） |
 | `idle` | 使用者閒置偵測、途中有輸入就中止交還 | `tests/test_idle.py` |
