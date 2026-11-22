@@ -788,8 +788,15 @@ def beats_of(st):
     return st.get("beats") or []
 
 
+def beat_secs(b, text):
+    """這一拍留多久（像播影片：按一次開始就自己往下走）：1.5 秒＋每字 0.25 秒、最少 3.5 秒；hold（多留一會兒）再加 2.5 秒。"""
+    if b.get("s") is not None:
+        return float(b["s"])
+    return max(3.5, 1.5 + 0.25 * len(text)) + (2.5 if b.get("hold") else 0.0)
+
+
 def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
-    """一拍：字幕＋看這裡；hold → 等講者按下一步（外框持續跟著元素），否則停 s 秒。"""
+    """一拍：字幕＋看這裡。自動模式（預設）：留 beat_secs 秒、暫停時計時凍結；逐步模式：hold 的拍才停下等「下一步」。"""
     ctl.publish(beat={"text": subst(b.get("say", ""), vars_), "i": k, "n": n})
     lk = b.get("look")
     if isinstance(lk, dict) and lk.get("css"):
@@ -797,14 +804,14 @@ def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
     elif lk is None or lk is False:
         look.clear()
     waited = 0.0
-    if live and (b.get("hold") or ctl.step_mode()):
+    if live and b.get("hold") and ctl.step_mode():
         waited = ctl.wait_next(refresh=look.refresh)
     else:
-        t0 = time.time()
-        while time.time() - t0 < float(b.get("s", 2.5)):
+        t0, dur = time.time(), beat_secs(b, subst(b.get("say", ""), vars_))
+        while time.time() - t0 < dur:
             time.sleep(0.5)
             look.refresh()
-            ctl.gate()
+            t0 += ctl.gate()                                 # 暫停的時間不算
     return waited
 
 
@@ -1099,7 +1106,8 @@ def execute(rb, mode, a):
                 br.cur_url[acct] = url
             ctl.publish(step_index=0, role="", captions=[{"text": rb.get("ready_caption") or
                                                           "準備好了。按「下一步」開始示範。", "s": 600}],
-                        card="title" if staged else None)
+                        card="title" if staged else None,
+                        card_data={"subtitle": (rb.get("stage") or {}).get("subtitle", "")} if staged else None)
             ctl.wait_next(status="ready")
             held = True
         while i < hi:
@@ -1119,7 +1127,7 @@ def execute(rb, mode, a):
                         captions=captions_of(rb, st), on_fail=st.get("on_fail", ""), status="running", waited_s=0,
                         planb=pb if os.path.exists(pb) else None)
             cue_wait = 0.0
-            if mode == "live" and (st.get("advance") == "cue" or ctl.step_mode()) and not held:
+            if mode == "live" and ((st.get("advance") == "cue" and not staged) or ctl.step_mode()) and not held:
                 cue_wait = ctl.wait_next()                     # 播放器「下一步」或 control next
             held = False
             ctl.gate()
@@ -1158,6 +1166,11 @@ def execute(rb, mode, a):
         state["ended"] = now_s()
         state["stopped"] = stopped
         state["skipped_after_fail"] = skipped
+        if staged:
+            try:
+                _atomic_json(os.path.join(rb["_dir"], "stage-mode.json"), {"advance": ctl.read().get("advance", "auto")})
+            except OSError:
+                pass
         state["vars"].pop("__marks", None)
         state["vars_seen"] = sorted(state["vars"])           # 變數名；值（例如案件編號）也留在本機紀錄
         with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as f:
@@ -1167,7 +1180,9 @@ def execute(rb, mode, a):
         if staged and not (stopped and "user_stop" in stopped):
             # 片尾：停住讓講者可以回頭講；按「結束」由引擎自己還原，片尾卡顯示結果
             end = (rb.get("stage") or {}).get("end") or {}
-            ctl.publish(card="end", look=None, card_data={"heading": end.get("heading", "示範結束"), "text": end.get("text", "")})
+            ctl.publish(card="end", look=None, beat={"text": "", "i": 0, "n": 0},
+                        card_data={"heading": end.get("heading", "示範結束"), "text": end.get("text", ""),
+                                   "points": end.get("points") or []})
             try:
                 ctl.wait_next(status="done")
                 ok_, res_ = do_reset(rb)
@@ -1175,6 +1190,7 @@ def execute(rb, mode, a):
                 with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as f:
                     json.dump(state, f, ensure_ascii=False, indent=1)
                 ctl.publish(card="end", card_data={"heading": end.get("heading", "示範結束"), "text": end.get("text", ""),
+                                                   "points": end.get("points") or [],
                                                    "reset": "資料已還原" if ok_ else "還原沒有成功：請 agent 處理（%s）" % str(res_)[:60],
                                                    "reset_ok": ok_})
                 time.sleep(4)
@@ -1637,7 +1653,12 @@ def standby(rb, a):
         # 一雙擊就先蓋上舞台背板：觀眾看到的是乾淨的檢查清單，不是主控台或被排來排去的視窗
         persist = (policy.load().get("demo") or {}).get("persist", "on") == "on"
         run_dir = new_run_dir(runs_root(rb, persist), "live")
-        write_control(run_dir, state="playing", advance="auto", next_seq=0, hold_first=True)
+        last_mode = {}
+        try:
+            last_mode = json.load(open(os.path.join(rb["_dir"], "stage-mode.json"), encoding="utf-8"))
+        except Exception:
+            pass
+        write_control(run_dir, state="playing", advance=last_mode.get("advance", "auto"), next_seq=0, hold_first=True)
         br0 = Browser(rb, headed=False, log=None)
         base = {"card": "checklist", "status": "standby", "title": rb.get("title", ""),
                 "accounts": stage_accounts(rb, br0), "zoom": 1.0}

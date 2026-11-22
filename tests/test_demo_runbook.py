@@ -604,13 +604,30 @@ def main():
                            "end": {"heading": "示範結束", "text": "謝謝"}}
             sg["accounts"]["demo_a"]["role"] = "第一線人員"; sg["accounts"]["demo_b"]["role"] = "長官"
             sg["steps"][0]["section"] = "建檔"
-            sg["steps"][0]["beats"] = [{"say": "第一句：看這裡", "at": 0, "look": {"css": "#post-list"}, "hold": True},
+            sg["steps"][0]["beats"] = [{"say": "第一句：看這裡", "at": 0, "look": {"css": "#post-list"}, "hold": True, "s": 1},
                                        {"say": "第二句", "at": 3, "s": 0.5}]
             sg["steps"][1]["beats"] = [{"say": "長官這邊", "at": 0, "s": 0.5}]
             sgp = os.path.join(rbdir, "stage.json"); json.dump(sg, open(sgp, "w", encoding="utf-8"), ensure_ascii=False)
+            # 預設像播影片：不按任何鍵也會自己播到片尾（片頭片尾才停）
             rc, o, txt = rbj("live", sgp, "--approval", aid, "--no-player")
+            rda = o.get("run_dir") or ""
+            t0 = time.time(); seen = set()
+            while time.time() - t0 < 90 and now_of(rda).get("card") != "end":
+                seen.add((now_of(rda).get("beat") or {}).get("text")); time.sleep(0.3)
+            check("舞台（自動播放）：不按鍵就自己播到片尾，每一拍都出現過", now_of(rda).get("card") == "end"
+                  and {"第一句：看這裡", "第二句", "長官這邊"} <= seen, (now_of(rda).get("card"), seen))
+            rbj("control", rda, "stop"); time.sleep(1)
+            # 逐步模式：標 hold 的拍才真的停下來等「下一步」
+            rc, o, txt = rbj("live", sgp, "--approval", aid, "--no-player", "--step-mode")
             rds_ = o.get("run_dir") or ""
-            n = wait_for(rds_, lambda n: (n.get("beat") or {}).get("text") == "第一句：看這裡" and n.get("status") == "waiting_next", 30)
+            t0 = time.time()
+            while time.time() - t0 < 30:
+                n = now_of(rds_)
+                if (n.get("beat") or {}).get("text") == "第一句：看這裡" and n.get("status") == "waiting_next":
+                    break
+                if n.get("status") == "waiting_next":
+                    rbj("control", rds_, "next"); time.sleep(0.8)
+                time.sleep(0.2)
             check("舞台：拍子字幕＋停住等下一步、角色名牌與段落", n.get("role") == "第一線人員" and n.get("section") == "建檔"
                   and (n.get("beat") or {}).get("n") == 2 and n.get("crop") == {"top": 84, "bottom": 120}, n)
             check("舞台：看這裡的外框位置（get box 取得）", (n.get("look") or {}).get("box") == [10.0, 120.0, 300.0, 40.0], n.get("look"))

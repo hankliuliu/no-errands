@@ -171,6 +171,8 @@ class Stage:
         self.chip.pack(side="left", padx=(lay["pad"], 14), pady=6)
         self.sect = tk.Label(self.band, text="", font=(FONT, int(bf * 0.8)), fg=DIM, bg="#11151d")
         self.sect.pack(side="left")
+        self.where = tk.Label(self.band, text="", font=(FONT, int(bf * 0.62)), fg=DIM, bg="#11151d")
+        self.where.pack(side="right", padx=lay["pad"])        # 「5 / 13 · 現場操作」：這是現場操作，不是錄影
         self.rule = tk.Frame(self.band, height=3, bg=ACCENT)
         self.rule.place(relx=0, rely=1.0, anchor="sw", relwidth=1.0)
         # 字幕帶
@@ -343,8 +345,10 @@ class Stage:
         d = now.get("card_data") or {}
         big, mid, small = round(H * 0.06), round(H * 0.035), round(H * 0.026)
         if kind == "title":
-            c.create_text(W // 2, H * 0.36, text=now.get("title", ""), fill=FG, font=(FONT, big, "bold"), width=W * 0.8)
-            y = H * 0.52
+            c.create_text(W // 2, H * 0.32, text=now.get("title", ""), fill=FG, font=(FONT, big, "bold"), width=W * 0.8)
+            if d.get("subtitle"):
+                c.create_text(W // 2, H * 0.42, text=d["subtitle"], fill=DIM, font=(FONT, mid), width=W * 0.8)
+            y = H * 0.54
             for acct, info in (now.get("accounts") or {}).items():          # 角色圖例
                 col = info.get("color") or ACCENT
                 c.create_rectangle(W * 0.38, y - mid * 0.6, W * 0.38 + mid * 1.2, y + mid * 0.6, fill=col, width=0)
@@ -367,10 +371,16 @@ class Stage:
             c.create_rectangle(0, H * 0.42, W, H * 0.58, fill=col, width=0)
             c.create_text(W // 2, H // 2, text="換成：" + (now.get("role") or ""), fill="#fff", font=(FONT, big, "bold"))
         elif kind == "end":
-            c.create_text(W // 2, H * 0.40, text=d.get("heading", "示範結束"), fill=FG, font=(FONT, big, "bold"))
-            c.create_text(W // 2, H * 0.52, text=d.get("text", ""), fill=DIM, font=(FONT, mid), width=W * 0.7)
+            c.create_text(W // 2, H * 0.24, text=d.get("heading", "示範結束"), fill=FG, font=(FONT, big, "bold"))
+            y = H * 0.38
+            for pt in d.get("points") or []:                 # 三行重點（只用前面字幕講過的話）
+                c.create_text(W * 0.25, y, text="●", fill=ACCENT, font=(FONT, small))
+                c.create_text(W * 0.28, y, text=pt, fill=FG, font=(FONT, mid), anchor="w", width=W * 0.6)
+                y += mid * 2.0
+            if d.get("text"):
+                c.create_text(W // 2, y + mid, text=d["text"], fill=DIM, font=(FONT, small + 2), width=W * 0.7)
             if d.get("reset"):
-                c.create_text(W // 2, H * 0.62, text=d["reset"], fill="#3fb950" if d.get("reset_ok") else "#f47067",
+                c.create_text(W // 2, H * 0.80, text=d["reset"], fill="#3fb950" if d.get("reset_ok") else "#f47067",
                               font=(FONT, small + 2))
 
     # ---------- 每 200 ms
@@ -389,6 +399,8 @@ class Stage:
         self.chip.configure(text=now.get("role") or "", bg=col)
         self.rule.configure(bg=col)
         self.sect.configure(text=now.get("section") or "")
+        i_, n_ = now.get("step_index") or 0, now.get("steps_total") or 0
+        self.where.configure(text=("%d / %d　·　現場操作" % (i_, n_)) if i_ and not now.get("card") else "現場操作")
         if now.get("card") in ("title", "checklist", "transition"):
             self.band.withdraw() if now.get("card") == "checklist" else self.band.deiconify()
         else:
