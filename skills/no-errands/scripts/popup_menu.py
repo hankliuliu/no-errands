@@ -41,11 +41,51 @@ try {
   $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
   foreach ($e in $all) {
     $r = $e.Current.BoundingRectangle
-    $items += @{ name = $e.Current.Name; type = ($e.Current.ControlType.ProgrammaticName -replace 'ControlType.',''); rect = @([int]$r.Left, [int]$r.Top, [int]$r.Right, [int]$r.Bottom); enabled = $e.Current.IsEnabled }
+    $sel = $null; $p = $null
+    if ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$p)) { $sel = [bool]$p.Current.IsSelected }
+    elseif ($e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$p)) { $sel = ([string]$p.Current.ToggleState -eq 'On') }
+    $items += @{ name = $e.Current.Name; type = ($e.Current.ControlType.ProgrammaticName -replace 'ControlType.',''); rect = @([int]$r.Left, [int]$r.Top, [int]$r.Right, [int]$r.Bottom); enabled = $e.Current.IsEnabled; sel = $sel }
   }
   ConvertTo-Json -Compress -Depth 4 @{ ok = $true; items = $items; root = @([int]$rr.Left, [int]$rr.Top, [int]$rr.Right, [int]$rr.Bottom) }
 } catch { ConvertTo-Json -Compress @{ ok = $false; error = $_.Exception.Message } }
 """
+
+
+def capture_window(hwnd, path):
+    """單一視窗擷取（PrintWindow，PW_RENDERFULLCONTENT）：只取這個 hwnd 自己的內容，被擋住也一樣；不是螢幕擷取。
+    存成 PNG（純 stdlib 編碼）。回 (寬, 高)。"""
+    import ctypes.wintypes as wt, struct, zlib
+    u32, g32 = _u32(), ctypes.windll.gdi32
+    r = wt.RECT(); u32.GetWindowRect(hwnd, ctypes.byref(r))
+    w, h = r.right - r.left, r.bottom - r.top
+    if w <= 0 or h <= 0:
+        raise RuntimeError("window has no size")
+    hdc = u32.GetDC(hwnd); mdc = g32.CreateCompatibleDC(hdc); bmp = g32.CreateCompatibleBitmap(hdc, w, h)
+    g32.SelectObject(mdc, bmp)
+    try:
+        if not u32.PrintWindow(hwnd, mdc, 2):
+            raise RuntimeError("PrintWindow failed")
+
+        class BIH(ctypes.Structure):
+            _fields_ = [("biSize", wt.DWORD), ("biWidth", ctypes.c_long), ("biHeight", ctypes.c_long), ("biPlanes", wt.WORD),
+                        ("biBitCount", wt.WORD), ("biCompression", wt.DWORD), ("biSizeImage", wt.DWORD), ("biXPelsPerMeter", ctypes.c_long),
+                        ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", wt.DWORD), ("biClrImportant", wt.DWORD)]
+        bi = BIH(ctypes.sizeof(BIH), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+        buf = ctypes.create_string_buffer(w * h * 4)
+        g32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bi), 0)
+    finally:
+        g32.DeleteObject(bmp); g32.DeleteDC(mdc); u32.ReleaseDC(hwnd, hdc)
+    raw = buf.raw
+    rows = bytearray()
+    for y in range(h):
+        rows.append(0)
+        for px in range(y * w, (y + 1) * w):
+            rows += bytes((raw[px * 4 + 2], raw[px * 4 + 1], raw[px * 4]))
+    chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    sig = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    png = sig + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(bytes(rows), 6)) + chunk(b"IEND", b"")
+    open(path, "wb").write(png)
+    return w, h
 
 
 def _u32():

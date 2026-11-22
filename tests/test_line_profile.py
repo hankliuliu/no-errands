@@ -118,6 +118,18 @@ check("探索遮罩：短名稱只給形狀（日期看得出格式）", cg._mas
 check("探索遮罩：中文與英文名字只剩字形，不含任何原字", cg._mask("王小明") == {"len": 3, "shape": "字字字"}
       and "Ann" not in str(cg._mask("Ann Lee")))
 check("探索遮罩：介面用語照留、超過 12 字只給字數", cg._mask("記事本") == "記事本" and cg._mask("一" * 13) == 13)
+import time as _t, tempfile, shutil as _sh  # noqa: E402
+_ph = tempfile.mkdtemp(prefix="ne-peek-")
+try:
+    _old_home = cg.HOME; cg.HOME = _ph
+    _d = os.path.join(_ph, "gather", "line", "abc", "_peek"); os.makedirs(_d)
+    _old, _new = os.path.join(_d, "old.png"), os.path.join(_d, "new.png")
+    open(_old, "wb").write(b"x"); open(_new, "wb").write(b"x")
+    os.utime(_old, (_t.time() - 3600, _t.time() - 3600))
+    _n = cg.purge_old_peeks()
+    check("看一眼的兜底：超過 30 分鐘的截圖自動刪、新的留著", _n == 1 and not os.path.exists(_old) and os.path.exists(_new))
+finally:
+    cg.HOME = _old_home; _sh.rmtree(_ph, ignore_errors=True)
 emo = "Amy😀★"
 check("探索遮罩：表情符號與符號換成佔位，原字不出現", "😀" not in str(cg._mask(emo)) and "★" not in str(cg._mask(emo))
       and cg._mask(emo)["shape"] == "aaa??", cg._mask(emo))

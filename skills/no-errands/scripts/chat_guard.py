@@ -703,10 +703,61 @@ def _click_notes_tab(pid, before, view, res, app=None, chat=None):
     time.sleep(1.5)
     after = popup_menu.popup_items(titled[0]["hwnd"])
     res["tab_click"] = {"done": True}
+    tabname = lambda i: i.get("name") in NOTES_TABS[view] + TAB_PAIRS[view] and button_like(i)
+    # 分頁的選取狀態（只這兩顆；不含任何內容）：點擊前後哪一顆被選取
+    res["tab_state"] = {"before": {i["name"]: i.get("sel") for i in (it.get("items") or []) if tabname(i)},
+                        "after": {i["name"]: i.get("sel") for i in (after.get("items") or []) if tabname(i)}}
     res["notes_tab_items"] = [{"n": _mask(i.get("name")), "t": i.get("type")} for i in (after.get("items") or [])][:150]
 
 
-def cmd_probe(app, prof, chat, view, pol):
+def _peek_notes(pid, before, chat, res, app):
+    """看一眼（只限探索）：只截這次探索自己開出的記事本視窗（新出現的有標題視窗剛好一個、裡面有記事本分頁）。
+    單一視窗擷取；主視窗絕不截（聊天列表會露出白名單以外的名稱與預覽）。圖存在該目標收集資料夾底下的暫存處，
+    回傳路徑給執行的 agent 看完就刪；輸出不含任何內容。"""
+    import ctypes, hashlib
+    u32 = ctypes.windll.user32
+    titled = [w for w in popup_menu.popup_windows(pid, exclude=before)
+              if not w["class"].startswith("shadow_") and u32.GetWindowTextLengthW(w["hwnd"]) > 0]
+    ok = False
+    if len(titled) == 1:
+        names = {i.get("name") for i in (popup_menu.popup_items(titled[0]["hwnd"]).get("items") or [])}
+        if names & set(VIEW_MARKERS["notes"]):
+            # chat 已經是白名單裡的那筆名稱（main 先做了 canonical_chat）；代號算法與 gather 相同 → 落在同一個目標資料夾
+            tid = hashlib.sha256(("%s|%s" % (app, chat)).encode("utf-8")).hexdigest()[:12]
+            d = os.path.join(HOME, "gather", app, tid, "_peek")
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(d, "notes-%s.png" % time.strftime("%Y%m%d-%H%M%S"))
+            try:
+                popup_menu.capture_window(titled[0]["hwnd"], path)
+                res["peek"] = {"path": path, "note": "看完就刪（只在本機，不印內容、不進紀錄或回報）"}
+                ok = True
+            except Exception as e:
+                res["peek"] = {"error": type(e).__name__}
+        else:
+            res["peek"] = {"error": "新視窗裡沒有記事本分頁，不截"}
+    else:
+        res["peek"] = {"error": "新視窗不是剛好一個（%d），不截" % len(titled)}
+    ledger(app, "probe-peek", ok, "記事本視窗" if ok else res["peek"].get("error", ""), chat)
+
+
+PEEK_MAX_AGE_S = 30 * 60
+
+
+def purge_old_peeks(now=None):
+    """兜底：各目標 _peek 底下超過 30 分鐘的截圖一律刪掉（就算哪一次忘了刪或中途斷掉，記事本截圖也不會長期留在硬碟上）。"""
+    import glob
+    now = now or time.time()
+    n = 0
+    for f in glob.glob(os.path.join(HOME, "gather", "*", "*", "_peek", "*")):
+        try:
+            if now - os.path.getmtime(f) > PEEK_MAX_AGE_S:
+                os.remove(f); n += 1
+        except OSError:
+            pass
+    return n
+
+
+def cmd_probe(app, prof, chat, view, pol, peek=False):
     """只讀探索 UI 結構（Sprint E）：只限白名單對話，開著的必須是指名對話；可點一顆檢視按鈕（notes，必須在驗過的標頭工具列裡）
     或打開選單（menu）看項目。輸出只有角色、可用動作與名稱字數（介面用語除外）。不輸入、不點其他東西。
     收尾（成功或失敗都一樣）：新出現的視窗一律關掉；記事本若是在主視窗內原地切換，標明 left_open。"""
@@ -741,6 +792,8 @@ def cmd_probe(app, prof, chat, view, pol):
         time.sleep(1.5)
         if view in NOTES_TABS:
             _click_notes_tab(pid, before, view, res, app, chat)
+        if peek and view in ("notes", "notes-tab"):
+            _peek_notes(pid, before, chat, res, app)
         res["main_after"] = _shape(snapshot(win, interactive=False)["tree"])
         res["new_popups"], res["new_windows"] = [], []
         import ctypes
@@ -1251,6 +1304,10 @@ def main():
     app, sub = policy.canonical_app(a[0]), a[1]
     prof = PROFILES.get(app)
     try:
+        purge_old_peeks()
+    except Exception:
+        pass
+    try:
         if not prof:
             raise Refused("chat_guard 尚未支援這個 app（目前：fake-chat、line）")
         pol = policy.load(HOME)
@@ -1278,7 +1335,7 @@ def main():
         elif sub == "close":
             cmd_close(app, prof, cancel_late="--cancel-late-dialog" in a)
         elif sub == "probe":
-            cmd_probe(app, prof, arg(a, "--chat") or "", arg(a, "--view"), pol)
+            cmd_probe(app, prof, arg(a, "--chat") or "", arg(a, "--view"), pol, peek="--peek" in a)
         elif sub == "act" and len(a) >= 3 and a[2] in ("click", "set-value"):
             cmd_act(app, prof, a[2], arg(a, "--target") or "", arg(a, "--text", ""))
         else:
