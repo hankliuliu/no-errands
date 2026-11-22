@@ -187,6 +187,13 @@ def sends_doc(rb):
     return doc
 
 
+def stage_errors(rb):
+    if not stage_on(rb):
+        return []
+    import stage_layout
+    return stage_layout.caption_errors({st["id"]: [b.get("say", "") for b in beats_of(st)] for st in rb.get("steps", [])})
+
+
 def validate(rb):
     errs = []
     for k in ("title", "target", "accounts", "steps"):
@@ -210,6 +217,7 @@ def validate(rb):
                     errs.append("%s：變數 {%s} 沒有在 vars 宣告 pattern" % (st.get("id"), v))
         if st.get("resume_at") is not None and not 0 <= int(st["resume_at"]) <= len(st.get("actions") or []):
             errs.append("%s：resume_at 超出範圍" % st.get("id"))
+    errs += stage_errors(rb)
     return errs
 
 
@@ -400,12 +408,18 @@ class Control:
     def step_mode(self):
         return self.read().get("advance") == "step"
 
-    def wait_next(self, status="waiting_next"):
-        t0, last = time.time(), 0.0
+    def wait_next(self, status="waiting_next", refresh=None):
+        t0, last, last_r = time.time(), 0.0, 0.0
         while True:
             if time.time() - last >= 2:                    # 第一次與之後每 2 秒重寫狀態（某次寫入失敗也會自己補上）
                 self.publish(status=status)
                 last = time.time()
+            if refresh and time.time() - last_r >= 0.5:    # 舞台：外框跟著元素走（新訊息會把內容往上推）
+                try:
+                    refresh()
+                except Exception:
+                    pass
+                last_r = time.time()
             c = self.read()
             if c.get("state") == "stopped":
                 raise StopDemo()
@@ -427,7 +441,7 @@ class NoControl:
     def step_mode(self):
         return False
 
-    def wait_next(self, status="waiting_next"):
+    def wait_next(self, status="waiting_next", refresh=None):
         return 0.0
 
 
@@ -589,6 +603,10 @@ def subst(text, vars_):
     return VAR_RE.sub(lambda m: str(vars_.get(m.group(1), m.group(0))), text)
 
 
+def act_acct(st, act):
+    return st["account"]
+
+
 def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
     """回 (ok, info)。info 只含結構資訊，不含輸入文字。耗時（ms）不含暫停時間（另記 paused_ms）。"""
     ctl = ctl or NoControl()
@@ -618,6 +636,9 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
         while True:
             ref, used = br.find(acct, act["target"])
             info.pop("error", None)
+            if ref and getattr(br, "look", None) is not None:
+                br.look.set(acct, "@" + ref, scroll=True)      # 舞台：agent 要動的元素先框住
+                time.sleep(float(act.get("show_s", 0.8)))
             if ref:
                 info["used"] = used
                 cmd = [d, "@" + ref] + ([subst(act["text"], vars_)] if d == "fill" else [])
@@ -648,7 +669,9 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
                 vars_.setdefault("__marks", {})[x] = marks[x]
         ok = True
     elif d == "press":
-        rc, o, e = br.neb(acct, "press", act["key"], approval=approval, step=st["id"])
+        if getattr(br, "look", None) is not None and act.get("show_s", 1.0):
+            time.sleep(float(act.get("show_s", 1.0)))        # 舞台：打完先停一下讓觀眾看到內容，再送出
+        rc, o, e = br.neb(act_acct(st, act), "press", act["key"], approval=approval, step=st["id"])
         ok = rc == 0
         if not ok:
             info["error"] = err_of(rc, o)
@@ -713,6 +736,93 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
     return ok, info
 
 
+# ---------------------------------------------------------------- 舞台（rb["stage"] 存在時）
+
+def stage_on(rb):
+    return bool(rb.get("stage"))
+
+
+def crop_of(rb, st):
+    """這一步要藏到舞台外的頁面部分（CSS px）：步驟的 crop > 劇本 stage.views[步驟 view] > 不裁。"""
+    if st.get("crop") is not None:
+        return st["crop"]
+    views = (rb.get("stage") or {}).get("views") or {}
+    return views.get(st.get("view") or "read", {})
+
+
+def parse_box(o):
+    """agent-browser get box 的輸出 → (x, y, w, h)；讀不到回 None。"""
+    m = dict(re.findall(r"(x|y|width|height):\s*(-?[\d.]+)", o or ""))
+    try:
+        return [float(m["x"]), float(m["y"]), float(m["width"]), float(m["height"])]
+    except (KeyError, ValueError):
+        return None
+
+
+class Look:
+    """「看這裡」：記住目標（CSS 選取器或 ref），隨時重取位置發布到 now.json；找不到就不畫。"""
+
+    def __init__(self, br, ctl):
+        self.br, self.ctl, self.acct, self.sel = br, ctl, None, None
+
+    def set(self, acct, sel, scroll=True):
+        self.acct, self.sel = acct, sel
+        if sel and scroll:
+            self.br.neb(acct, "scrollintoview", sel)
+            time.sleep(0.3)
+        self.refresh()
+
+    def clear(self):
+        self.acct = self.sel = None
+        self.ctl.publish(look=None)
+
+    def refresh(self):
+        if not self.sel:
+            return
+        rc, o, e = self.br.neb(self.acct, "get", "box", self.sel)
+        box = parse_box(o) if rc == 0 else None
+        self.ctl.publish(look={"box": box} if box else None)
+
+
+def beats_of(st):
+    return st.get("beats") or []
+
+
+def beat_secs(b, text):
+    """這一拍留多久（像播影片：按一次開始就自己往下走）：1.5 秒＋每字 0.25 秒、最少 3.5 秒；hold（多留一會兒）再加 2.5 秒。"""
+    if b.get("s") is not None:
+        return float(b["s"])
+    return max(3.5, 1.5 + 0.25 * len(text)) + (2.5 if b.get("hold") else 0.0)
+
+
+def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
+    """一拍：字幕＋看這裡。自動模式（預設）：留 beat_secs 秒、暫停時計時凍結；逐步模式：hold 的拍才停下等「下一步」。"""
+    ctl.publish(beat={"text": subst(b.get("say", ""), vars_), "i": k, "n": n})
+    lk = b.get("look")
+    if isinstance(lk, dict) and lk.get("css"):
+        look.set(st["account"], subst(lk["css"], vars_), scroll=lk.get("scroll", True))
+    elif lk is False:                                     # 沒寫 look：保留上一個外框（例：剛勾好的勾選框）
+        look.clear()
+    waited = 0.0
+    if live and b.get("hold") and ctl.step_mode():
+        waited = ctl.wait_next(refresh=look.refresh)
+    else:
+        t0, dur = time.time(), beat_secs(b, subst(b.get("say", ""), vars_))
+        while time.time() - t0 < dur:
+            time.sleep(0.5)
+            look.refresh()
+            t0 += ctl.gate()                                 # 暫停的時間不算
+    return waited
+
+
+def stage_accounts(rb, br):
+    out = {}
+    for a, info in rb["accounts"].items():
+        out[a] = {"role": (info or {}).get("role") or a, "color": (info or {}).get("color") or "#2f7de1",
+                  "profile": br.prof(a)}
+    return out
+
+
 def captions_of(rb, st):
     """字幕：captions.txt（使用者用文字檔改；每行「步驟id | 句子 | 秒數(選填)」）> 步驟的 caption > say。
     字幕不在送出清單裡，改了不用重新核准。"""
@@ -741,8 +851,20 @@ def run_step(br, rb, st, vars_, approval, shots_dir, ctl=None):
            "fallback_used": False}
     t0 = time.time()
 
+    beats = beats_of(st) if getattr(br, "look", None) is not None else []
+    shown = set()
+
+    def beats_at(i):
+        for k, b in enumerate(beats, 1):
+            if int(b.get("at", 0)) == i and k not in shown:
+                shown.add(k)
+                rec["cue_wait_s"] = round(rec.get("cue_wait_s", 0) + show_beat(rb, st, b, k, len(beats), br.look, ctl, vars_,
+                                                                                 getattr(br, "live", False)), 1)
+
     def attempt(actions, tag, base=0):
         for i, act in enumerate(actions):
+            if tag == "main":
+                beats_at(i)
             ok, info = run_action(br, rb, st, act, vars_, approval, rec, ctl)
             info["i"], info["phase"] = base + i, tag
             rec["actions"].append(info)
@@ -776,6 +898,8 @@ def run_step(br, rb, st, vars_, approval, shots_dir, ctl=None):
             rec["actions"].append(ent)
 
     ok, failed_at = attempt(st.get("actions") or [], "main")
+    if ok and beats:
+        beats_at(len(st.get("actions") or []))                # 動作都做完之後的拍子（例：看結果）
     if not ok and st.get("fallback"):
         rec["fallback_used"] = True
         fok, _ = attempt(st["fallback"], "fallback")
@@ -925,8 +1049,8 @@ def execute(rb, mode, a):
                                        "--foreground", "--run-dir", run_dir] + passthru, stdout=log, stderr=log, **kw)
         pl = None
         if "--no-player" not in a:          # 播放器的 tk 視窗照常顯示；主控台不顯示
-            pl = nowin.popen_background([sys.executable, os.path.join(HERE, "demo_player.py"), run_dir],
-                                         stdout=log, stderr=log, **kw)
+            pl = nowin.popen_background([sys.executable, os.path.join(HERE, "demo_stage.py" if stage_on(rb) else "demo_player.py"),
+                                          run_dir], stdout=log, stderr=log, **kw)
         out({"ok": True, "mode": "live", "run_dir": run_dir, "engine_pid": eng.pid, "approval": aid,
              "renewed": renewed,
              "player_pid": pl.pid if pl else None,
@@ -956,6 +1080,11 @@ def execute(rb, mode, a):
     ctl = Control(run_dir, advance=advance)
     replay = rb.get("replay")
     replay = (replay if os.path.isabs(replay) else os.path.join(rb["_dir"], replay)) if replay else None
+    staged = mode == "live" and stage_on(rb)
+    if staged:
+        br.look = Look(br, ctl)
+        br.live = True
+        ctl.publish(accounts=stage_accounts(rb, br), title=rb.get("title", ""), zoom=1.0, card=None)
     ctl.publish(steps_total=hi - lo, status="running", mode=mode, title=rb.get("title", ""),
                 layout=br.layout and {"bar": br.layout["bar"], "mode": br.layout["mode"]},
                 planb_dir=os.path.join(rb["_dir"], "planb"), replay=replay if replay and os.path.exists(replay) else None)
@@ -964,26 +1093,41 @@ def execute(rb, mode, a):
     held = False
     try:
         if mode == "live" and ctl.read().get("hold_first") and i == lo:
-            # 上場前準備（standby）：先把每個帳號的瀏覽器開到首頁、排好位置，停在「按下一步開始」
-            ctl.publish(step_index=0, status="staging", captions=[{"text": "準備畫面中…", "s": 60}])
+            # 上場前準備（standby）：先把每個帳號的瀏覽器開到它第一步要用的頁面，停在「按下一步開始」
+            ctl.publish(step_index=0, status="staging", captions=[{"text": "準備畫面中…", "s": 60}],
+                        card="title" if staged else None)
             home = rb["target"]["base_url"].rstrip("/") + rb["target"].get("home_path", "/")
             for acct in rb["accounts"]:
                 br.ensure(acct)
-                br.neb(acct, "open", home)
-                br.cur_url[acct] = home
+                first = next((x for s_ in steps[lo:hi] if s_["account"] == acct for x in (s_.get("actions") or [])
+                              if x["do"] == "open"), None)
+                url = rb["target"]["base_url"].rstrip("/") + subst(first["url"], state["vars"]) if first and "{" not in first["url"] else home
+                br.neb(acct, "open", url)
+                br.cur_url[acct] = url
             ctl.publish(step_index=0, role="", captions=[{"text": rb.get("ready_caption") or
-                                                          "準備好了。按「下一步」開始示範。", "s": 600}])
+                                                          "準備好了。按「下一步」開始示範。", "s": 600}],
+                        card="title" if staged else None,
+                        card_data={"subtitle": (rb.get("stage") or {}).get("subtitle", "")} if staged else None)
             ctl.wait_next(status="ready")
             held = True
         while i < hi:
             st = steps[i]
             role = (rb["accounts"].get(st["account"]) or {}).get("role") or st["account"]
             pb = os.path.join(rb["_dir"], "planb", "%s.png" % st["id"])
+            if staged:
+                info_ = stage_accounts(rb, br)[st["account"]]
+                prev_acct = steps[i - 1]["account"] if i > lo else None
+                if prev_acct and prev_acct != st["account"]:          # 換角色：明確的轉場
+                    ctl.publish(card="transition", role=info_["role"], role_color=info_["color"], look=None,
+                                beat={"text": "", "i": 0, "n": 0})
+                    time.sleep(float((rb.get("stage") or {}).get("transition_s", 1.6)))
+                ctl.publish(card=None, role=info_["role"], role_color=info_["color"], section=st.get("section", ""),
+                            crop=crop_of(rb, st), look=None, beat={"text": "", "i": 0, "n": len(beats_of(st))})
             ctl.publish(step_index=i - lo + 1, step_id=st["id"], account=st["account"], role=role,
                         captions=captions_of(rb, st), on_fail=st.get("on_fail", ""), status="running", waited_s=0,
                         planb=pb if os.path.exists(pb) else None)
             cue_wait = 0.0
-            if mode == "live" and (st.get("advance") == "cue" or ctl.step_mode()) and not held:
+            if mode == "live" and ((st.get("advance") == "cue" and not staged) or ctl.step_mode()) and not held:
                 cue_wait = ctl.wait_next()                     # 播放器「下一步」或 control next
             held = False
             ctl.gate()
@@ -1022,12 +1166,37 @@ def execute(rb, mode, a):
         state["ended"] = now_s()
         state["stopped"] = stopped
         state["skipped_after_fail"] = skipped
+        if staged:
+            try:
+                _atomic_json(os.path.join(rb["_dir"], "stage-mode.json"), {"advance": ctl.read().get("advance", "auto")})
+            except OSError:
+                pass
         state["vars"].pop("__marks", None)
         state["vars_seen"] = sorted(state["vars"])           # 變數名；值（例如案件編號）也留在本機紀錄
         with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=1)
         if not stopped:
             ctl.publish(status="done")
+        if staged and not (stopped and "user_stop" in stopped):
+            # 片尾：停住讓講者可以回頭講；按「結束」由引擎自己還原，片尾卡顯示結果
+            end = (rb.get("stage") or {}).get("end") or {}
+            ctl.publish(card="end", look=None, beat={"text": "", "i": 0, "n": 0},
+                        card_data={"heading": end.get("heading", "示範結束"), "text": end.get("text", ""),
+                                   "points": end.get("points") or []})
+            try:
+                ctl.wait_next(status="done")
+                ok_, res_ = do_reset(rb)
+                state["reset"] = {"ok": ok_, "results": res_}
+                with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as f:
+                    json.dump(state, f, ensure_ascii=False, indent=1)
+                ctl.publish(card="end", card_data={"heading": end.get("heading", "示範結束"), "text": end.get("text", ""),
+                                                   "points": end.get("points") or [],
+                                                   "reset": "資料已還原" if ok_ else "還原沒有成功：請 agent 處理（%s）" % str(res_)[:60],
+                                                   "reset_ok": ok_})
+                time.sleep(4)
+            except StopDemo:
+                pass
+            ctl.publish(status="closing")
     summary = {"ok": (stopped is None or "user_stop" in stopped) and not skipped, "mode": mode,
                "skipped_after_fail": skipped, "run_dir": run_dir if persist else None,
                "steps_run": len(state["steps"]), "steps_ok": sum(1 for s in state["steps"] if s["ok"]),
@@ -1074,13 +1243,15 @@ def run_check(chk):
     return ok, (o.splitlines()[-1] if o else e.strip()[-150:])
 
 
-def preflight(rb, a, fix=False, say=None):
+def preflight(rb, a, fix=False, say=None, item=None):
     res = []
 
     def add(name, ok, detail=""):
         res.append({"check": name, "ok": bool(ok), "detail": str(detail)[:200]})
         if say:
             say(("✓ " if ok else "✗ ") + name + ("" if ok else "：" + str(detail)[:120]))
+        if item:
+            item(name, ok, detail)
 
     for chk in rb.get("preflight") or []:
         ok, det = run_check(chk)
@@ -1452,6 +1623,20 @@ def stop_previous_standby(rb):
     return None
 
 
+def notification_state():
+    """Windows 的通知狀態（SHQueryUserNotificationState）：2 忙碌（全螢幕 app）、3 D3D 全螢幕、4 簡報模式 → 通知被壓住。"""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        v = ctypes.c_int(0)
+        if ctypes.windll.shell32.SHQueryUserNotificationState(ctypes.byref(v)) == 0:
+            return v.value
+    except Exception:
+        pass
+    return None
+
+
 def standby(rb, a):
     t0 = time.time()
     lines = []
@@ -1462,6 +1647,47 @@ def standby(rb, a):
 
     say("上場前準備：%s" % rb.get("title", ""))
     old = stop_previous_standby(rb)
+    staged = stage_on(rb)
+    run_dir, stage_p, items = None, None, []
+    if staged:
+        # 一雙擊就先蓋上舞台背板：觀眾看到的是乾淨的檢查清單，不是主控台或被排來排去的視窗
+        persist = (policy.load().get("demo") or {}).get("persist", "on") == "on"
+        run_dir = new_run_dir(runs_root(rb, persist), "live")
+        last_mode = {}
+        try:
+            last_mode = json.load(open(os.path.join(rb["_dir"], "stage-mode.json"), encoding="utf-8"))
+        except Exception:
+            pass
+        write_control(run_dir, state="playing", advance=last_mode.get("advance", "auto"), next_seq=0, hold_first=True)
+        br0 = Browser(rb, headed=False, log=None)
+        base = {"card": "checklist", "status": "standby", "title": rb.get("title", ""),
+                "accounts": stage_accounts(rb, br0), "zoom": 1.0}
+
+        def show(heading="上場前準備"):
+            _atomic_json(os.path.join(run_dir, "now.json"), dict(base, card_data={"heading": heading, "items": items}))
+        show()
+        if "--no-player" not in a:
+            lg = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")
+            stage_p = nowin.popen_background([sys.executable, os.path.join(HERE, "demo_stage.py"), run_dir],
+                                             stdin=subprocess.DEVNULL, stdout=lg, stderr=lg,
+                                             env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8"))
+        labels = (rb.get("stage") or {}).get("checklist") or {}
+
+        def item(name, ok, detail="", warn=False):
+            # 背板上只寫乾淨的名稱與一句講者看得懂的話（不含主機、帳號、路徑）
+            lab = labels.get(name) or {}
+            if name.startswith("登入有效且身分正確："):
+                acct = name.split("：", 1)[1]
+                role = ((rb["accounts"].get(acct) or {}).get("role")) or "示範帳號"
+                lab = {"name": "示範帳號已登入：" + role, "say": "登入已過期：請在上場前請 agent 重新登入，再雙擊一次。"}
+            nm = lab.get("name") or name
+            items[:] = [x for x in items if x["name"] != nm]
+            items.append({"name": nm, "state": "ok" if ok else ("warn" if warn else "fail"),
+                          "say": "" if ok else lab.get("say") or "這一項沒有通過：處理後再雙擊一次。"})
+            show()
+    else:
+        def item(name, ok, detail="", warn=False):
+            pass
     if old:
         say("  已關掉上一次準備好的畫面（%s）" % os.path.basename(old))
     # 1. 通道
@@ -1479,6 +1705,7 @@ def standby(rb, a):
         say(("✓ " if tun_ok else "✗ ") + "通道（剛剛開啟）")
     else:
         say(("✓ " if tun_ok else "✗ ") + "通道")
+    item("通道", tun_ok)
     # 2–5. 檢查（可修的修一次）、登入、核准與次數（長期核准下自動續）
     aid = arg(a, "--approval") or (json.load(open(os.path.join(rb["_dir"], "standby.json"), encoding="utf-8")).get("approval")
                                    if os.path.exists(os.path.join(rb["_dir"], "standby.json")) else None) or rb.get("approval")
@@ -1493,7 +1720,7 @@ def standby(rb, a):
     pa = list(a)
     if aid and "--approval" not in pa:
         pa += ["--approval", aid]
-    ok, res, aid = preflight(rb, pa, fix=True, say=say)
+    ok, res, aid = preflight(rb, pa, fix=True, say=say, item=item)
     res.insert(0, {"check": "通道", "ok": tun_ok, "detail": ""})
     # 6. 備案檔
     missing = [st["id"] for st in rb["steps"] if not os.path.exists(os.path.join(rb["_dir"], "planb", "%s.png" % st["id"]))]
@@ -1503,6 +1730,7 @@ def standby(rb, a):
     res.append({"check": "備案畫面（每一步的截圖＋回放頁）", "ok": pb_ok,
                 "detail": ("缺：" + "、".join(missing)) if missing else ("" if pb_ok else "回放頁不存在")})
     say(("✓ " if pb_ok else "✗ ") + "備案畫面" + ("" if pb_ok else "：" + res[-1]["detail"]))
+    item("備案畫面", pb_ok)
     # 7. 瀏覽器乾淨狀態
     br = Browser(rb, headed=False, log=None)
     cl = [(acct,) + clean_profile(br.prof(acct)) for acct in rb["accounts"]]
@@ -1510,22 +1738,34 @@ def standby(rb, a):
     res.append({"check": "瀏覽器乾淨啟動（不跳還原分頁、通知、翻譯）", "ok": cok,
                 "detail": "；".join("%s %s" % (x[0], x[2]) for x in cl if x[2])})
     say(("✓ " if cok else "✗ ") + "瀏覽器乾淨啟動")
+    item("瀏覽器乾淨啟動", cok)
+    if staged and stage_p:
+        # 勿擾：舞台是前景全螢幕時，Windows 會把通知壓住（查得到就是一項檢查；查不到不擋上場，只提醒）
+        time.sleep(1.5)
+        qs = notification_state()
+        item("通知", qs in (2, 3, 4), warn=True)
+        res.append({"check": "系統通知會被擋下（勿擾）", "ok": qs in (2, 3, 4), "detail": "state=%s" % qs, "warn": True})
     allok = tun_ok and ok and pb_ok and cok
-    result = {"ok": allok, "checks": res, "approval": aid, "standby_s": None, "run_dir": None, "tunnel_pid": tun_pid}
+    result = {"ok": allok, "checks": res, "approval": aid, "standby_s": None, "run_dir": run_dir, "tunnel_pid": tun_pid}
+    if staged and not allok:
+        _atomic_json(os.path.join(run_dir, "now.json"),
+                     dict(base, card_data={"heading": "還沒準備好：照下面的說明處理後，再雙擊一次", "items": items},
+                          beat={"text": "按右下角「⋯」→「停止示範」可以關掉這個畫面。", "i": 0, "n": 0}))
     if allok:
         # 8. 依當下的螢幕排好視窗、引擎與播放器停在第一步前
         sw, sh = screen_size()
         say("  螢幕 %d×%d：開啟兩個瀏覽器與播放器…" % (sw, sh))
-        persist = (policy.load().get("demo") or {}).get("persist", "on") == "on"
-        run_dir = new_run_dir(runs_root(rb, persist), "live")
-        write_control(run_dir, state="playing", advance="step" if "--step-mode" in a else "auto", next_seq=0,
-                      hold_first=True)
+        if not run_dir:
+            persist = (policy.load().get("demo") or {}).get("persist", "on") == "on"
+            run_dir = new_run_dir(runs_root(rb, persist), "live")
+            write_control(run_dir, state="playing", advance="step" if "--step-mode" in a else "auto", next_seq=0,
+                          hold_first=True)
         kw = {"stdin": subprocess.DEVNULL, "env": dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8")}
         log = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")
         eng = nowin.popen_background([sys.executable, os.path.abspath(__file__), "live", rb["_path"], "--approval", aid,
                                       "--foreground", "--run-dir", run_dir], stdout=log, stderr=log, **kw)
-        pl = None if "--no-player" in a else nowin.popen_background(
-            [sys.executable, os.path.join(HERE, "demo_player.py"), run_dir], stdout=log, stderr=log, **kw)
+        pl = stage_p if staged else (None if "--no-player" in a else nowin.popen_background(
+            [sys.executable, os.path.join(HERE, "demo_player.py"), run_dir], stdout=log, stderr=log, **kw))
         st_ = None
         for _ in range(240):
             time.sleep(0.5)
@@ -1542,6 +1782,10 @@ def standby(rb, a):
         json.dump({"run_dir": run_dir, "approval": aid, "engine_pid": eng.pid, "player_pid": pl and pl.pid, "ts": now_s()},
                   open(os.path.join(rb["_dir"], "standby.json"), "w", encoding="utf-8"), ensure_ascii=False)
     result["standby_s"] = round(time.time() - t0, 1)
+    try:                                       # 從捷徑（pythonw，沒有主控台）啟動時也留下結果
+        _atomic_json(os.path.join(rb["_dir"], "standby-last.json"), result)
+    except OSError:
+        pass
     say(("就緒：上場時按播放器的「下一步」。" if result["ok"] else "沒有就緒：看上面打 ✗ 的項目。") +
         "（準備花了 %.0f 秒）" % result["standby_s"])
     out(result, 0 if result["ok"] else 1)

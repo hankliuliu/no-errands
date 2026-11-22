@@ -76,6 +76,7 @@ jobs:
           "$PY" tests/test_neb.py | tee neb.txt
           "$PY" tests/test_demo_runbook.py | tee runbook.txt
           "$PY" tests/test_standing_approval.py | tee standing.txt
+          "$PY" tests/test_stage_layout.py | tee stage.txt
           "$PY" tests/test_line_profile.py | tee lineprof.txt
           "$PY" tests/test_guard_rules.py | tee guard.txt
           "$PY" tests/test_coexist.py | tee coexist.txt
@@ -105,6 +106,7 @@ jobs:
           python tests/n4_positive_control.py --i-am-ci | tee n4pos.txt
           python tests/test_idle.py --i-am-ci | tee idle.txt
           python tests/test_player_ci.py --i-am-ci | tee player.txt
+          python tests/test_stage_ci.py --i-am-ci | tee stagewin.txt
 
       - name: uninstall
         if: always()
@@ -140,6 +142,7 @@ jobs:
             neb.txt
             runbook.txt
             standing.txt
+            stage.txt
             lineprof.txt
             guard.txt
             coexist.txt
@@ -148,6 +151,7 @@ jobs:
             gather.txt
             gather_items.txt
             player.txt
+            stagewin.txt
             nowin-pos.txt
             audit.txt
             codex.txt
