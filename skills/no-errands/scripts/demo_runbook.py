@@ -17,8 +17,15 @@
         只限政策檔登記為 agent_login 的示範帳號（policy.py domain add … --agent-login …）；由 neb 的 login 規則填入，
         密碼走 stdin（不進命令列參數）、只在記憶體裡，不輸出、不寫檔。
   demo_runbook.py reset     <runbook.json>                     # 執行還原指令：政策檔要有使用者對「這組指令雜湊」的同意
+  demo_runbook.py standby   <runbook.json> [--approval <id>]   # 上場前：把會失敗的事全部做完，引擎與播放器停在第一步前
+        通道（劇本 tunnel）→ 檢查指令（失敗且有 fix 就修一次再查；資料不是 demo-base → 還原）→ 帳號登入 →
+        核准與次數（長期核准下自動續）→ 備案檔 → 瀏覽器乾淨狀態 → 依當下螢幕排好視窗 → 停在「按下一步開始」。
+        登入失效不會自動重新登入（要密碼）：只報出來，上場前請 agent 跑 login。
+        任何一項不過就當場報出來、不啟動。劇本資料夾的「上場前準備.cmd」就是這個指令（不經 agent）。
 
-劇本裡的 preflight／reset 是會在本機執行的 shell 指令：validate 會全部列出；只跑自己寫的或看過的劇本。
+劇本裡的 preflight／reset／tunnel 是會在本機執行的指令：validate 會全部列出；只跑自己寫的或看過的劇本。
+這些指令照 POSIX 規則拆成「程式＋參數」直接執行、不經任何殼層（從 cmd、檔案總管、Git Bash 啟動結果都一樣）；
+本機不能有管線或重導向——要用就放進遠端指令的引號裡（例：ssh host 'a | b'）。Windows 上 ssh／curl 固定用系統內建的。
 
 長期核准（政策 domain set <主機> runbook_approval standing）：核准次數用完、到期或送出內容改了時，
 preflight／rehearse／live 會自動起草同一份清單，由發件匣伺服器依長期核准決定（不是 agent 去按）；
@@ -28,7 +35,7 @@ preflight／rehearse／live 會自動起草同一份清單，由發件匣伺服�
 政策 demo.persist=off → 一次性：紀錄寫在暫存資料夾、結束即刪，不更新 Plan B、不提出修改。
 紀錄只含結構與數字（步驟、耗時、選取方式、斷言結果）；截圖留本機（可能含系統畫面內容，分享前自己看過）。
 """
-import copy, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
+import copy, hashlib, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import policy  # noqa: E402
@@ -227,10 +234,61 @@ def loose_waits(rb):
     return warn
 
 
+def local_cmd_errors(rb):
+    errs = []
+    for c in shell_commands(rb):
+        try:
+            cmd_argv(c["cmd"])
+        except ValueError as e:
+            errs.append("%s：%s" % (c["where"], e))
+    return errs
+
+
 def shell_commands(rb):
     """劇本裡會在本機執行的 shell 指令（preflight／reset）：validate 一律列出來給人看。"""
     return [{"where": "preflight", "name": c.get("name"), "cmd": c.get("cmd")} for c in rb.get("preflight") or []] + \
            [{"where": "reset", "cmd": c} for c in (rb.get("reset") or {}).get("commands") or []]
+
+
+LOCAL_OP_CHARS = set("|&;<>()")
+
+
+def cmd_argv(cmd):
+    """劇本裡的本機指令 → argv。照 POSIX 規則拆（引號、跳脫與 bash 相同），不經任何殼層；
+    本機的管線／重導向／串接一律拒絕（放進遠端指令的引號裡）。Windows 的 ssh／curl 固定用系統內建的。"""
+    if isinstance(cmd, list):
+        argv = [str(x) for x in cmd]
+    else:
+        lex = shlex.shlex(str(cmd), posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        argv = list(lex)
+        bad = [t for t in argv if t and set(t) <= LOCAL_OP_CHARS]
+        if bad:
+            raise ValueError("本機指令不能有管線、重導向或串接（%s）；放進遠端指令的引號裡：%s" % (" ".join(bad), cmd))
+    if not argv:
+        raise ValueError("空的指令")
+    if os.name == "nt" and argv[0] in ("ssh", "curl"):
+        sysdir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+        cand = os.path.join(sysdir, "OpenSSH", "ssh.exe") if argv[0] == "ssh" else os.path.join(sysdir, "curl.exe")
+        if os.path.exists(cand):
+            argv[0] = cand
+    return argv
+
+
+def run_cmd(cmd, timeout=60):
+    """回 (rc, stdout, stderr)。"""
+    try:
+        argv = cmd_argv(cmd)
+    except ValueError as e:
+        return 2, "", str(e)
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=timeout, stdin=subprocess.DEVNULL)
+        return p.returncode, p.stdout, p.stderr
+    except FileNotFoundError:
+        return 127, "", "找不到程式：%s" % argv[0]
+    except subprocess.TimeoutExpired:
+        return 124, "", "逾時（%s 秒）" % timeout
 
 
 def in_git_tree(path):
@@ -327,8 +385,8 @@ class Control:
     def step_mode(self):
         return self.read().get("advance") == "step"
 
-    def wait_next(self):
-        self.publish(status="waiting_next")
+    def wait_next(self, status="waiting_next"):
+        self.publish(status=status)
         t0 = time.time()
         while True:
             c = self.read()
@@ -352,7 +410,7 @@ class NoControl:
     def step_mode(self):
         return False
 
-    def wait_next(self):
+    def wait_next(self, status="waiting_next"):
         return 0.0
 
 
@@ -602,10 +660,14 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
             if ok or waited >= budget:
                 break
             if waited > 3:
-                ctl.publish(status="waiting_system", waited_s=int(waited))
+                ctl.publish(status="waiting_system", waited_s=int(waited),
+                            wait_label=act.get("label") or st.get("wait_label") or "系統回應",
+                            expect_s=act.get("expect_s"), slow_s=act.get("slow_s"),
+                            slow_say=act.get("slow_say") or st.get("slow_say") or rb.get("slow_say") or
+                            "系統還在處理，通常再等一下就好；我們先看上一次跑出來的結果。")
             time.sleep(float(act.get("poll_s", 1.5)))
             paused += ctl.gate(on_resume=resume)           # 安全點：等待迴圈每一輪；暫停時預算凍結
-        ctl.publish(status="running", waited_s=0)
+        ctl.publish(status="running", waited_s=0, expect_s=None, slow_s=None)
         info["used"] = hit
         info["budget_s"] = budget
         if not ok:
@@ -875,19 +937,38 @@ def execute(rb, mode, a):
     i = max(state["next"], lo)
     br = Browser(rb, headed=(mode == "live"), log=None)
     ctl = Control(run_dir, advance=advance)
+    replay = rb.get("replay")
+    replay = (replay if os.path.isabs(replay) else os.path.join(rb["_dir"], replay)) if replay else None
     ctl.publish(steps_total=hi - lo, status="running", mode=mode, title=rb.get("title", ""),
                 layout=br.layout and {"bar": br.layout["bar"], "mode": br.layout["mode"]},
-                planb_dir=os.path.join(rb["_dir"], "planb"))
+                planb_dir=os.path.join(rb["_dir"], "planb"), replay=replay if replay and os.path.exists(replay) else None)
     stopped = None
+    skipped = []
+    held = False
     try:
+        if mode == "live" and ctl.read().get("hold_first") and i == lo:
+            # 上場前準備（standby）：先把每個帳號的瀏覽器開到首頁、排好位置，停在「按下一步開始」
+            ctl.publish(step_index=0, status="staging", captions=[{"text": "準備畫面中…", "s": 60}])
+            home = rb["target"]["base_url"].rstrip("/") + rb["target"].get("home_path", "/")
+            for acct in rb["accounts"]:
+                br.ensure(acct)
+                br.neb(acct, "open", home)
+                br.cur_url[acct] = home
+            ctl.publish(step_index=0, role="", captions=[{"text": rb.get("ready_caption") or
+                                                          "準備好了。按「下一步」開始示範。", "s": 600}])
+            ctl.wait_next(status="ready")
+            held = True
         while i < hi:
             st = steps[i]
             role = (rb["accounts"].get(st["account"]) or {}).get("role") or st["account"]
+            pb = os.path.join(rb["_dir"], "planb", "%s.png" % st["id"])
             ctl.publish(step_index=i - lo + 1, step_id=st["id"], account=st["account"], role=role,
-                        captions=captions_of(rb, st), on_fail=st.get("on_fail", ""), status="running", waited_s=0)
+                        captions=captions_of(rb, st), on_fail=st.get("on_fail", ""), status="running", waited_s=0,
+                        planb=pb if os.path.exists(pb) else None)
             cue_wait = 0.0
-            if mode == "live" and (st.get("advance") == "cue" or ctl.step_mode()):
+            if mode == "live" and (st.get("advance") == "cue" or ctl.step_mode()) and not held:
                 cue_wait = ctl.wait_next()                     # 播放器「下一步」或 control next
+            held = False
             ctl.gate()
             print(json.dumps({"step": st["id"]}, ensure_ascii=False), flush=True)
             rec = run_step(br, rb, st, state["vars"], aid, shots, ctl)
@@ -905,6 +986,12 @@ def execute(rb, mode, a):
                 if mode == "rehearse" and "--continue" in a:
                     stopped = None
                     continue
+                if mode == "live" and i < hi:
+                    # 台上：不反覆重試；停在這一步（字幕是備案說明），講者按「下一步」跳過、或看備案／回放、或停止
+                    ctl.wait_next(status="failed")
+                    skipped.append(st["id"])
+                    stopped = None
+                    continue
                 break
             if mode == "rehearse" and persist and rec.get("shot"):
                 os.makedirs(os.path.join(rb["_dir"], "planb"), exist_ok=True)
@@ -917,13 +1004,15 @@ def execute(rb, mode, a):
             br.close_all()
         state["ended"] = now_s()
         state["stopped"] = stopped
+        state["skipped_after_fail"] = skipped
         state["vars"].pop("__marks", None)
         state["vars_seen"] = sorted(state["vars"])           # 變數名；值（例如案件編號）也留在本機紀錄
         with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=1)
         if not stopped:
             ctl.publish(status="done")
-    summary = {"ok": stopped is None or "user_stop" in stopped, "mode": mode, "run_dir": run_dir if persist else None,
+    summary = {"ok": (stopped is None or "user_stop" in stopped) and not skipped, "mode": mode,
+               "skipped_after_fail": skipped, "run_dir": run_dir if persist else None,
                "steps_run": len(state["steps"]), "steps_ok": sum(1 for s in state["steps"] if s["ok"]),
                "recovered": [s["id"] for s in state["steps"] if s.get("recovered")],
                "failed": [s["id"] for s in state["steps"] if not s["ok"]],
@@ -961,21 +1050,35 @@ def control_cli(a):
 
 # ---------------------------------------------------------------- preflight
 
-def preflight(rb, a):
+def run_check(chk):
+    rc, o, e = run_cmd(chk["cmd"], chk.get("timeout_s", 60))
+    o = o.strip()
+    ok = rc == 0 and (not chk.get("expect") or bool(re.search(chk["expect"], o, re.M)))
+    return ok, (o.splitlines()[-1] if o else e.strip()[-150:])
+
+
+def preflight(rb, a, fix=False, say=None):
     res = []
 
     def add(name, ok, detail=""):
         res.append({"check": name, "ok": bool(ok), "detail": str(detail)[:200]})
+        if say:
+            say(("✓ " if ok else "✗ ") + name + ("" if ok else "：" + str(detail)[:120]))
 
     for chk in rb.get("preflight") or []:
-        try:
-            p = subprocess.run(chk["cmd"], shell=True, capture_output=True, text=True, encoding="utf-8",
-                               errors="replace", timeout=chk.get("timeout_s", 60))
-            o = p.stdout.strip()
-            ok = p.returncode == 0 and (not chk.get("expect") or re.search(chk["expect"], o, re.M))
-            add(chk["name"], ok, o.splitlines()[-1] if o else p.stderr.strip()[-150:])
-        except Exception as e:
-            add(chk["name"], False, e)
+        ok, det = run_check(chk)
+        if not ok and fix and chk.get("fix"):
+            # standby：可修的就修一次再查（資料不是 demo-base → 還原；模型沒載入 → 暖機）
+            if chk["fix"] == "reset":
+                fok, fdet = do_reset(rb)
+            else:
+                rc, fo, fe = run_cmd(chk["fix"], chk.get("fix_timeout_s", 300))
+                fok, fdet = rc == 0, (fo or fe).strip()[-150:]
+            if say:
+                say("  修復「%s」：%s" % (chk["name"], "完成" if fok else "失敗 " + str(fdet)[:100]))
+            ok, det = run_check(chk)
+            det = ("（已修復）" if ok else "") + det
+        add(chk["name"], ok, det)
     br = Browser(rb, headed=False, log=None)
     try:
         for acct in rb["accounts"]:
@@ -996,7 +1099,9 @@ def preflight(rb, a):
                     who = None
             want = (rb["accounts"][acct] or {}).get("username", acct)
             ok = logged and (who == want if me else True)
-            add("登入有效且身分正確：" + acct, ok, ("登入的是 %s" % who) if me else "（劇本沒設 whoami_path，只檢查不在登入頁）")
+            add("登入有效且身分正確：" + acct, ok,
+                "沒有登入（登入已失效）：上場前請 agent 重新登入這個帳號（demo_runbook.py login），standby 不會自動登入"
+                if not logged else ("登入的是 %s" % who) if me else "（劇本沒設 whoami_path，只檢查不在登入頁）")
     finally:
         br.close_all()
     aid = arg(a, "--approval")
@@ -1025,6 +1130,8 @@ def preflight(rb, a):
                 except ValueError:
                     add("預定示範時間格式", False, "要 YYYY-MM-DD HH:MM")
     allok = all(r["ok"] for r in res)
+    if fix:
+        return allok, res, aid
     out({"ok": allok, "checks": res, "approval": aid}, 0 if allok else 1)
 
 
@@ -1217,7 +1324,15 @@ def login(rb, a):
     dent = policy.sensitive_domain_entry(pol, host, port) or {}
     if acct not in (dent.get("agent_login") or []):
         out({"ok": False, "error": "使用者沒有在政策檔同意 agent 代為登入這個帳號（policy.py domain add … --agent-login …）"}, 3)
-    pw = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    # 和 preflight 一樣不經殼層（從 cmd／檔案總管啟動時引號與管線不會被拆錯）；本機不能有管線
+    rc_, pw, err_ = run_cmd(cmd, 60)
+    pw = pw.strip() if rc_ == 0 else ""
+    if rc_ == 2 and "管線" in err_:
+        out({"ok": False, "error": err_}, 2)
+    if rc_ in (124, 127):                  # 我們自己產生的訊息（找不到程式／逾時）：直接帶出
+        out({"ok": False, "error": "取不到密碼：" + err_}, 1)
+    if rc_ != 0:                           # 其他：只報結束碼，不印那個指令的 stderr（可能含機密）
+        out({"ok": False, "error": "取不到密碼：secret-cmd 結束碼 %d" % rc_}, 1)
     if not pw:
         out({"ok": False, "error": "取不到密碼（secret-cmd 沒有輸出）"}, 1)
     br = Browser(rb, headed=False, log=None)
@@ -1240,20 +1355,179 @@ def login(rb, a):
          "landed": cur.strip().splitlines()[-1] if cur.strip() else ""}, 0 if ok else 1)
 
 
-def reset(rb, a):
+def do_reset(rb):
+    """回 (ok, 結果或錯誤)。政策檔要有使用者對這組指令雜湊的同意。"""
     r = rb.get("reset") or {}
     consent = ((policy.load().get("demo") or {}).get("reset_consent") or {})
     if consent.get("commands_sha256") != reset_sha(rb):
-        out({"ok": False, "error": "政策檔沒有使用者對「這組」還原指令的同意（指令改過就要重新同意）",
-             "commands": r.get("commands"), "commands_sha256": reset_sha(rb),
-             "next": "把指令給使用者看；他同意後：policy.py set demo.reset_consent <sha256> --reason \"<原話>\""}, 3)
+        return False, "政策檔沒有使用者對「這組」還原指令的同意"
     res = []
     for c in r.get("commands") or []:
-        p = subprocess.run(c, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           timeout=300)
-        res.append({"rc": p.returncode, "tail": (p.stdout or p.stderr).strip().splitlines()[-1:] })
-    ok = all(x["rc"] == 0 for x in res)
+        rc, o, e = run_cmd(c, 300)
+        res.append({"rc": rc, "tail": (o or e).strip().splitlines()[-1:]})
+    return all(x["rc"] == 0 for x in res), res
+
+
+def reset(rb, a):
+    consent = ((policy.load().get("demo") or {}).get("reset_consent") or {})
+    if consent.get("commands_sha256") != reset_sha(rb):
+        out({"ok": False, "error": "政策檔沒有使用者對「這組」還原指令的同意（指令改過就要重新同意）",
+             "commands": (rb.get("reset") or {}).get("commands"), "commands_sha256": reset_sha(rb),
+             "next": "把指令給使用者看；他同意後：policy.py set demo.reset_consent <sha256> --reason \"<原話>\""}, 3)
+    ok, res = do_reset(rb)
     out({"ok": ok, "results": res}, 0 if ok else 1)
+
+
+# ---------------------------------------------------------------- standby（上場前準備）
+
+def http_ok(url, timeout=3):
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def clean_profile(prof):
+    """瀏覽器乾淨啟動：上次沒正常關也不跳「還原分頁」；擋掉網站通知請求與翻譯提示（不改其他設定）。"""
+    pp = os.path.join(prof, "Default", "Preferences")
+    try:
+        d = json.load(open(pp, encoding="utf-8"))
+    except FileNotFoundError:
+        return True, "（新 profile）"
+    except Exception as e:
+        return False, "讀不到 Preferences：%s" % e
+    d.setdefault("profile", {})["exit_type"] = "Normal"
+    d["profile"]["exited_cleanly"] = True
+    d["profile"].setdefault("default_content_setting_values", {})["notifications"] = 2
+    d.setdefault("translate", {})["enabled"] = False
+    d.setdefault("browser", {})["check_default_browser"] = False
+    tmp = pp + ".ne-tmp"
+    json.dump(d, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
+    os.replace(tmp, pp)
+    return True, ""
+
+
+def stop_previous_standby(rb):
+    """上一次 standby 留下、還停在第一步前的引擎：叫它停（它會關掉自己的瀏覽器），最多等 20 秒。"""
+    p = os.path.join(rb["_dir"], "standby.json")
+    try:
+        prev = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        return None
+    rd = prev.get("run_dir")
+    if rd and os.path.isdir(rd):
+        now = {}
+        try:
+            now = json.load(open(os.path.join(rd, "now.json"), encoding="utf-8"))
+        except Exception:
+            pass
+        if now.get("status") not in ("done", "stopped"):
+            write_control(rd, state="stopped")
+            for _ in range(80):
+                time.sleep(0.25)
+                try:
+                    if json.load(open(os.path.join(rd, "now.json"), encoding="utf-8")).get("status") in ("stopped", "done"):
+                        break
+                except Exception:
+                    pass
+            return rd
+    return None
+
+
+def standby(rb, a):
+    t0 = time.time()
+    lines = []
+
+    def say(x):
+        lines.append(x)
+        print(x, file=sys.stderr, flush=True)
+
+    say("上場前準備：%s" % rb.get("title", ""))
+    old = stop_previous_standby(rb)
+    if old:
+        say("  已關掉上一次準備好的畫面（%s）" % os.path.basename(old))
+    # 1. 通道
+    ping = rb["target"].get("ping_url") or rb["target"]["base_url"].rstrip("/") + rb["target"].get("ping_path", "/api/v4/system/ping")
+    tun_ok = http_ok(ping)
+    tun_pid = None
+    if not tun_ok and rb.get("tunnel"):
+        lf = open(os.path.join(rb["_dir"], "tunnel.log"), "a", encoding="utf-8")
+        tun_pid = nowin.popen_background(cmd_argv(rb["tunnel"]), stdin=subprocess.DEVNULL, stdout=lf, stderr=lf).pid
+        for _ in range(40):
+            time.sleep(0.5)
+            if http_ok(ping):
+                tun_ok = True
+                break
+        say(("✓ " if tun_ok else "✗ ") + "通道（剛剛開啟）")
+    else:
+        say(("✓ " if tun_ok else "✗ ") + "通道")
+    # 2–5. 檢查（可修的修一次）、登入、核准與次數（長期核准下自動續）
+    aid = arg(a, "--approval") or (json.load(open(os.path.join(rb["_dir"], "standby.json"), encoding="utf-8")).get("approval")
+                                   if os.path.exists(os.path.join(rb["_dir"], "standby.json")) else None) or rb.get("approval")
+    if not aid:
+        import outbox
+        best = None
+        for r in outbox.list_state("approved"):
+            if r.get("service") == "runbook" and (r.get("approval") or {}).get("sends_sha256") == sends_sha(sends_of(rb)):
+                if best is None or (r.get("decided") or "") > (best.get("decided") or ""):
+                    best = r
+        aid = best and best["id"]
+    pa = list(a)
+    if aid and "--approval" not in pa:
+        pa += ["--approval", aid]
+    ok, res, aid = preflight(rb, pa, fix=True, say=say)
+    res.insert(0, {"check": "通道", "ok": tun_ok, "detail": ""})
+    # 6. 備案檔
+    missing = [st["id"] for st in rb["steps"] if not os.path.exists(os.path.join(rb["_dir"], "planb", "%s.png" % st["id"]))]
+    rp = rb.get("replay")
+    rp = (rp if os.path.isabs(rp) else os.path.join(rb["_dir"], rp)) if rp else None
+    pb_ok = not missing and (not rp or os.path.exists(rp))
+    res.append({"check": "備案畫面（每一步的截圖＋回放頁）", "ok": pb_ok,
+                "detail": ("缺：" + "、".join(missing)) if missing else ("" if pb_ok else "回放頁不存在")})
+    say(("✓ " if pb_ok else "✗ ") + "備案畫面" + ("" if pb_ok else "：" + res[-1]["detail"]))
+    # 7. 瀏覽器乾淨狀態
+    br = Browser(rb, headed=False, log=None)
+    cl = [(acct,) + clean_profile(br.prof(acct)) for acct in rb["accounts"]]
+    cok = all(x[1] for x in cl)
+    res.append({"check": "瀏覽器乾淨啟動（不跳還原分頁、通知、翻譯）", "ok": cok,
+                "detail": "；".join("%s %s" % (x[0], x[2]) for x in cl if x[2])})
+    say(("✓ " if cok else "✗ ") + "瀏覽器乾淨啟動")
+    allok = tun_ok and ok and pb_ok and cok
+    result = {"ok": allok, "checks": res, "approval": aid, "standby_s": None, "run_dir": None, "tunnel_pid": tun_pid}
+    if allok:
+        # 8. 依當下的螢幕排好視窗、引擎與播放器停在第一步前
+        sw, sh = screen_size()
+        say("  螢幕 %d×%d：開啟兩個瀏覽器與播放器…" % (sw, sh))
+        persist = (policy.load().get("demo") or {}).get("persist", "on") == "on"
+        run_dir = new_run_dir(runs_root(rb, persist), "live")
+        write_control(run_dir, state="playing", advance="step" if "--step-mode" in a else "auto", next_seq=0,
+                      hold_first=True)
+        kw = {"stdin": subprocess.DEVNULL, "env": dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8")}
+        log = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")
+        eng = nowin.popen_background([sys.executable, os.path.abspath(__file__), "live", rb["_path"], "--approval", aid,
+                                      "--foreground", "--run-dir", run_dir], stdout=log, stderr=log, **kw)
+        pl = None if "--no-player" in a else nowin.popen_background(
+            [sys.executable, os.path.join(HERE, "demo_player.py"), run_dir], stdout=log, stderr=log, **kw)
+        st_ = None
+        for _ in range(240):
+            time.sleep(0.5)
+            try:
+                st_ = json.load(open(os.path.join(run_dir, "now.json"), encoding="utf-8")).get("status")
+            except Exception:
+                st_ = None
+            if st_ in ("ready", "failed", "stopped", "done") or eng.poll() is not None:
+                break
+        ready = st_ == "ready"
+        res.append({"check": "畫面就緒、停在第一步前", "ok": ready, "detail": "" if ready else "引擎狀態：%s" % st_})
+        say(("✓ " if ready else "✗ ") + "畫面就緒、停在第一步前")
+        result.update(ok=ready, run_dir=run_dir, engine_pid=eng.pid, player_pid=pl and pl.pid, screen=[sw, sh])
+        json.dump({"run_dir": run_dir, "approval": aid, "engine_pid": eng.pid, "player_pid": pl and pl.pid, "ts": now_s()},
+                  open(os.path.join(rb["_dir"], "standby.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    result["standby_s"] = round(time.time() - t0, 1)
+    say(("就緒：上場時按播放器的「下一步」。" if result["ok"] else "沒有就緒：看上面打 ✗ 的項目。") +
+        "（準備花了 %.0f 秒）" % result["standby_s"])
+    out(result, 0 if result["ok"] else 1)
 
 
 def main():
@@ -1277,6 +1551,7 @@ def main():
         except ValueError as ex:
             e.append(str(ex)); n = 0
         warn += loose_waits(rb)
+        e += local_cmd_errors(rb)
         out({"ok": not e, "errors": e, "warnings": warn, "steps": len(rb.get("steps", [])), "sends": n,
              "runbook_sha256": rb_sha(rb)[:16] if not e else None,
              "shell_commands": shell_commands(rb),
@@ -1312,6 +1587,8 @@ def main():
         login(rb, a)
     if sub == "reset":
         reset(rb, a)
+    if sub == "standby":
+        standby(rb, a)
     out({"ok": False, "error": "未知子指令"}, 2)
 
 

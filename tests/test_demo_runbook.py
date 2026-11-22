@@ -56,6 +56,20 @@ else:
 '''
 
 
+CMDARGV = r"""
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import demo_runbook as d
+bad = []
+for c in ("echo a | grep a", "ls > x", "a && b"):
+    try:
+        d.cmd_argv(c); bad.append(False)
+    except ValueError:
+        bad.append(True)
+print(json.dumps({"remote": d.cmd_argv("ssh demo-host 'a | sort | uniq -c'")[1:], "bad": bad, "ssh": d.cmd_argv("ssh x")[0]}))
+"""
+
+
 def check(n, c, d=""):
     R.append(bool(c)); print(("PASS " if c else "FAIL ") + n + ("" if c else "  -- " + str(d)[:400]))
 
@@ -524,6 +538,84 @@ def main():
             os.remove(os.path.join(rbdir, "captions.txt"))
             time.sleep(2)
 
+            # ---------- 台上失敗：不結束；停在該步（備案說明）、按「下一步」跳過；等待超過上限換成講者台詞
+            fb = json.loads(json.dumps(RUNBOOK))
+            fb["steps"][0]["actions"] = fb["steps"][0]["actions"] + [     # 保留抓案件編號（第二步要用），最後加一個一定逾時的等待
+                {"do": "wait_text", "text": "永遠不會出現", "budget_s": 9, "expect_s": 2, "slow_s": 4, "label": "AI 起草",
+                 "slow_say": "這次比較慢，我們先看上次的結果"}]
+            fb["steps"][0]["on_fail"] = "備案：打開上次的畫面"
+            fbp = os.path.join(rbdir, "fail.json"); json.dump(fb, open(fbp, "w", encoding="utf-8"), ensure_ascii=False)
+            rc, o, txt = rbj("live", fbp, "--approval", aid, "--no-player")
+            rdf = o.get("run_dir") or ""
+            n = wait_for(rdf, lambda n: n.get("status") == "waiting_system" and (n.get("waited_s") or 0) >= 4, 30)
+            check("等待時字幕資料：在等什麼、通常多久、上限與講者台詞", n.get("wait_label") == "AI 起草" and n.get("expect_s") == 2
+                  and n.get("slow_s") == 4 and n.get("slow_say") == "這次比較慢，我們先看上次的結果", n)
+            n = wait_for(rdf, lambda n: n.get("status") == "failed", 30)
+            time.sleep(2)
+            check("台上失敗 → 停在這一步（字幕是備案說明），引擎沒有結束", now_of(rdf).get("status") == "failed"
+                  and n.get("captions", [{}])[0].get("text") == "備案：打開上次的畫面" and not os.path.exists(os.path.join(rdf, "run.json")), n)
+            rbj("control", rdf, "next")
+            n = wait_for(rdf, lambda n: n.get("step_id") == "s2" and n.get("status") == "waiting_next", 30)
+            check("按「下一步」跳過失敗的步驟、接著跑下一步", n.get("step_id") == "s2", n)
+            rbj("control", rdf, "next")
+            t0 = time.time()                     # 像講者：停在「下一步」或某步失敗就按下一步，直到跑完
+            while time.time() - t0 < 60 and now_of(rdf).get("status") != "done":
+                if now_of(rdf).get("status") in ("waiting_next", "failed"):
+                    time.sleep(0.5); rbj("control", rdf, "next")
+                time.sleep(0.5)
+            time.sleep(1)
+            rjf = json.load(open(os.path.join(rdf, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rdf, "run.json")) else {}
+            check("紀錄寫下跳過的步驟", rjf.get("skipped_after_fail") == ["s1"] and len(rjf.get("steps", [])) == 3, rjf.get("skipped_after_fail"))
+
+            # ---------- standby 成功路徑：開通道、清 profile、排好畫面停在第一步前；再跑一次會先關掉上一次
+            PYF = sys.executable.replace("\\", "/")
+            tp = free_port()
+            sb = json.loads(json.dumps(RUNBOOK))
+            sb["target"]["ping_url"] = "http://127.0.0.1:%d/" % tp
+            sb["tunnel"] = "%s -m http.server %d --bind 127.0.0.1" % (PYF, tp)
+            sb["preflight"] = [{"name": "資料狀態", "cmd": "%s -c \"print('cases=10')\"" % PYF, "expect": "^cases=10$", "fix": "reset"}]
+            sdir = os.path.join(rbdir, "sb"); os.makedirs(os.path.join(sdir, "planb"))
+            for st_ in sb["steps"]:
+                open(os.path.join(sdir, "planb", st_["id"] + ".png"), "wb").write(b"PNG")
+            for acct in sb["accounts"]:
+                sb["accounts"][acct]["profile"] = os.path.join(rbdir, "profiles", acct)
+            os.makedirs(os.path.join(rbdir, "profiles", "demo_a", "Default"), exist_ok=True)
+            json.dump({"profile": {"exit_type": "Crashed", "exited_cleanly": False}, "keep": 1},
+                      open(os.path.join(rbdir, "profiles", "demo_a", "Default", "Preferences"), "w"))
+            sbp2 = os.path.join(sdir, "runbook.json"); json.dump(sb, open(sbp2, "w", encoding="utf-8"), ensure_ascii=False)
+            c0 = len(open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines())
+            p_ = subprocess.run([sys.executable, RB, "standby", sbp2, "--approval", aid, "--no-player"], capture_output=True, text=True,
+                                encoding="utf-8", env=env, timeout=240)
+            so = json.loads(p_.stdout[p_.stdout.find("{"):] or "{}")
+            rds = so.get("run_dir") or ""
+            check("standby：通道剛開好、全部通過、停在「按下一步開始」", so.get("ok") and now_of(rds).get("status") == "ready"
+                  and now_of(rds).get("step_index") == 0, (so, p_.stderr[-400:]))
+            calls = [json.loads(c) for c in open(os.path.join(home, "ab-calls.jsonl"), encoding="utf-8").read().splitlines()[c0:]]
+            check("standby：兩個帳號的瀏覽器都先開到首頁", sum(1 for c in calls if c[:2] == ["open", "http://localhost:8065/t"]) >= 2, calls[-8:])
+            pr = json.load(open(os.path.join(rbdir, "profiles", "demo_a", "Default", "Preferences"), encoding="utf-8"))
+            check("standby：profile 改成正常關閉（不跳還原分頁）、擋通知，其他設定不動",
+                  pr["profile"]["exit_type"] == "Normal" and pr["profile"]["default_content_setting_values"]["notifications"] == 2
+                  and pr.get("keep") == 1, pr)
+            p2 = subprocess.run([sys.executable, RB, "standby", sbp2, "--approval", aid, "--no-player"], capture_output=True, text=True,
+                                encoding="utf-8", env=env, timeout=240)
+            so2 = json.loads(p2.stdout[p2.stdout.find("{"):] or "{}")
+            check("再跑一次 standby：先關掉上一次準備好的畫面，只留一套", now_of(rds).get("status") == "stopped"
+                  and so2.get("ok") and so2.get("run_dir") != rds, (now_of(rds).get("status"), so2.get("ok")))
+            rbj("control", so2.get("run_dir") or rds, "next")
+            n = wait_for(so2.get("run_dir") or rds, lambda n: n.get("step_id") == "s1", 20)
+            check("standby 後按「下一步」→ 從第一步開始（不會多等一次）", n.get("step_id") == "s1", n)
+            rbj("control", so2.get("run_dir") or rds, "stop")
+            time.sleep(2)
+            for pid in (so.get("tunnel_pid"), so2.get("tunnel_pid")):
+                if pid:
+                    try:
+                        if os.name == "nt":
+                            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+                        else:
+                            os.kill(pid, 9)
+                    except Exception:
+                        pass
+
         # ---------- mark＋new_only、settle_s、寬鬆斷言警告、learn 的 settle 提議與結構過濾
         import threading
         rc, o, _ = rbj("validate", rbp)
@@ -679,6 +771,36 @@ def main():
         rc, o, _ = rbj("reset", rbp)
         check("還原指令改了 → 要重新同意", rc == 3, o)
         json.dump(RUNBOOK, open(rbp, "w", encoding="utf-8"), ensure_ascii=False)
+
+        # ---------- 本機指令：照 POSIX 規則拆、不經殼層（從 cmd／檔案總管啟動也一樣）
+        q = subprocess.run([sys.executable, "-c", CMDARGV, S], capture_output=True, text=True, encoding="utf-8", env=env)
+        ca = json.loads(q.stdout or "{}")
+        check("本機指令：遠端引號裡的管線原樣交給遠端", ca.get("remote") == ["demo-host", "a | sort | uniq -c"], ca)
+        check("本機指令：本機的管線、重導向、串接 → 拒", ca.get("bad") == [True, True, True], ca)
+        check("本機指令：Windows 上 ssh 固定用系統內建的", os.name != "nt" or ca.get("ssh", "").lower().endswith("openssh\\ssh.exe"), ca)
+        bad = json.loads(json.dumps(RUNBOOK)); bad["reset"]["commands"] = ["echo a | grep a"]
+        badp = os.path.join(rbdir, "bad.json"); json.dump(bad, open(badp, "w", encoding="utf-8"), ensure_ascii=False)
+        rc, o, _ = rbj("validate", badp)
+        check("validate：本機指令有管線 → 錯誤（上場環境不一定有殼層）", rc == 1 and any("管線" in e for e in o.get("errors", [])), o)
+
+        # ---------- standby：可修的修一次；任何一項不過就報出來、不啟動引擎
+        PYF = sys.executable.replace("\\", "/")
+        flag = os.path.join(home, "warm.flag").replace("\\", "/")
+        sb = json.loads(json.dumps(RUNBOOK))
+        sb["target"]["ping_url"] = "http://127.0.0.1:%d/" % free_port()          # 沒有人在聽：通道不通
+        sb["preflight"] = [{"name": "模型已載入", "cmd": "%s -c \"import os,sys;sys.exit(0 if os.path.exists('%s') else 1)\"" % (PYF, flag),
+                            "fix": "%s -c \"open('%s','w').write('x')\"" % (PYF, flag)},
+                           {"name": "資料狀態", "cmd": "%s -c \"print('cases=10')\"" % PYF, "expect": "^cases=10$", "fix": "reset"}]
+        sbp = os.path.join(rbdir, "standby.json.rb"); json.dump(sb, open(sbp, "w", encoding="utf-8"), ensure_ascii=False)
+        p_ = subprocess.run([sys.executable, RB, "standby", sbp, "--approval", aid], capture_output=True, text=True,
+                            encoding="utf-8", env=env, timeout=180)
+        so = json.loads(p_.stdout[p_.stdout.find("{"):] or "{}")
+        ck = {c["check"]: c for c in so.get("checks", [])}
+        check("standby：檢查失敗且有 fix → 修一次再查（模型暖機）", ck.get("模型已載入", {}).get("ok") and "已修復" in ck["模型已載入"]["detail"]
+              and os.path.exists(flag), so)
+        check("standby：通道不通 → 當場報出來、不啟動引擎與播放器", so.get("ok") is False and ck.get("通道", {}).get("ok") is False
+              and so.get("run_dir") is None and "✗ 通道" in p_.stderr, (so, p_.stderr[-300:]))
+        check("standby：講者看得懂的逐項進度（✓／✗）與花了幾秒", "✓ 模型已載入" in p_.stderr and so.get("standby_s") is not None, p_.stderr[-300:])
 
         # ---------- persist=off：一次性
         run(POL, "set", "demo.persist", "off", "--reason", "test")
