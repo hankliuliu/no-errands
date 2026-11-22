@@ -656,8 +656,11 @@ def _click_notes_tab(pid, before, view, res, app=None, chat=None):
         res["tab_click"] = {"done": False, "why": "新視窗不是剛好一個（%d）" % len(titled)}
         return
     it = popup_menu.popup_items(titled[0]["hwnd"])
-    tabs = [i for i in (it.get("items") or []) if i.get("name") in NOTES_TABS[view] and i.get("type") == "Button"]
-    pair = [i for i in (it.get("items") or []) if i.get("name") in TAB_PAIRS[view] and i.get("type") == "Button"]
+    def button_like(i):   # Qt 讀成 Button；WinForms 平面按鈕經 FromHandle 讀成 Pane（CI 實測）→ 只在按鈕大小時算
+        r = i.get("rect") or [0, 0, 0, 0]
+        return i.get("type") == "Button" or (i.get("type") == "Pane" and 0 < r[3] - r[1] <= 60 and 0 < r[2] - r[0] <= 300)
+    tabs = [i for i in (it.get("items") or []) if i.get("name") in NOTES_TABS[view] and button_like(i)]
+    pair = [i for i in (it.get("items") or []) if i.get("name") in TAB_PAIRS[view] and button_like(i)]
     if len(tabs) != 1 or len(pair) != 1:
         res["tab_click"] = {"done": False, "why": "分頁列對不上（記事本 %d、相簿 %d；兩顆都要剛好一顆）" % (len(tabs), len(pair))}
         ledger(app or "line", "probe-tab-click", False, res["tab_click"]["why"], chat)
