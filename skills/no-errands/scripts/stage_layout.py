@@ -15,21 +15,23 @@ MAX_CAPTION_LINES = 2
 
 
 def layout(W, H):
-    """回各區塊的矩形 (x, y, w, h) 與字級（像素）。"""
+    """回各區塊的矩形 (x, y, w, h) 與字級（像素）。Sprint F-2：沒有固定字幕帶——頁面用到角色帶以下的整個高度；
+    字幕是浮在舞台上的小方塊（大小跟著文字），控制列是右下角一小塊。"""
     band_h = max(40, round(H * 0.06))
-    cap_h = max(110, round(H * 0.15))
     pad = max(16, round(W * 0.017))
-    ctl_w = max(200, round(W * 0.17))                    # 右端控制：下一步、暫停、⋯、句數小圓點
-    cap_font = max(24, round(H * 0.0426))                # 1080p：46 px
+    cap_font = max(18, round(H * 0.025))                 # 1200 高→30、1080→27
+    stage = (0, band_h, W, H - band_h)
+    ctl_w, ctl_h = max(260, round(W * 0.2)), max(44, round(H * 0.05))
     return {
         "screen": (W, H),
         "band": (0, 0, W, band_h),
-        "stage": (0, band_h, W, H - band_h - cap_h),
-        "caption": (0, H - cap_h, W, cap_h),
-        "caption_text": (pad, H - cap_h, W - 2 * pad - ctl_w, cap_h),
-        "controls": (W - pad - ctl_w, H - cap_h, ctl_w, cap_h),
+        "stage": stage,
+        "controls": (W - pad - ctl_w, H - pad - ctl_h, ctl_w, ctl_h),
         "cap_font": cap_font,
-        "cap_line_h": round(cap_font * 1.3),
+        "cap_line_h": round(cap_font * 1.35),
+        "cap_pad": max(8, round(cap_font * 0.45)),
+        "cap_max_w": round(W * 0.62),
+        "cap_bottom": band_h + round((H - band_h) * 0.93),
         "band_font": max(16, round(band_h * 0.44)),
         "ctl_font": max(12, round(H * 0.0167)),
         "pad": pad,
@@ -58,7 +60,7 @@ def char_w(c, font):
 def caption_lines(text, W, H):
     """這句字幕在 W×H 上會排成幾行（逐字斷行，與舞台的 Label 一致）。"""
     lay = layout(W, H)
-    avail = lay["caption_text"][2] * 0.94               # 安全邊際：Label 內距、字型實際字寬略大於字級
+    avail = (lay["cap_max_w"] - 2 * lay["cap_pad"]) * 0.94   # 字幕塊最大寬度扣內距；安全邊際
     font = lay["cap_font"]
     lines, cur = 1, 0.0
     for c in str(text):
@@ -116,6 +118,46 @@ def css_to_screen(box, stage, crop, zoom, dpr):
     x0, y0 = max(X, sx), max(Y, sy)
     x1, y1 = min(X + Wp, sx + sw), min(Y + Hp, sy + sh)
     return int(x0), int(y0), int(x1 - x0), int(y1 - y0)
+
+
+def caption_pos(box_wh, lay, look=None, ctl=None, user=None, margin=12):
+    """字幕塊的左上角。user＝(rx, ry) 舞台比例（使用者拖過的位置；拖過就不自動讓開）；
+    否則預設下方置中，與「看這裡」外框重疊（含邊距）→ 改到上方；與控制列左右重疊 → 放在控制列上方。"""
+    bw, bh = box_wh
+    sx, sy, sw, sh = lay["stage"]
+    if user:
+        x = sx + user[0] * sw
+        y = sy + user[1] * sh
+    else:
+        x = sx + (sw - bw) / 2
+        y = lay["cap_bottom"] - bh
+        box = (x - margin, y - margin, bw + 2 * margin, bh + 2 * margin)
+        if look and overlaps(box, look):
+            y = sy + margin                               # 讓開外框：放到上方（角色帶下面）
+        elif ctl and overlaps((x, y, bw, bh), ctl):
+            y = ctl[1] - bh - margin                      # 和控制列重疊：放在控制列上方
+    x = min(max(x, sx), sx + sw - bw)                     # 拖不出舞台
+    y = min(max(y, sy), sy + sh - bh)
+    return int(x), int(y)
+
+
+def caption_ratio(pos, lay):
+    """左上角（像素）→ 舞台比例（存到本機，下次沿用；解析度不同也放在相同的相對位置）。"""
+    sx, sy, sw, sh = lay["stage"]
+    return round((pos[0] - sx) / sw, 4), round((pos[1] - sy) / sh, 4)
+
+
+def controls_state(presenter, status, paused, slow, moved_ago, fade_s=2.5):
+    """控制列要不要顯示、亮哪顆、旁邊寫什麼（像影片播放器）。
+    自動播放：滑鼠動過 fade_s 秒內才顯示；講者模式輪到他按：常駐、亮「下一步」；暫停：常駐；等待超時／失敗：出現並亮備案。"""
+    waiting = status in ("waiting_next", "ready", "failed")
+    if paused:
+        return {"visible": True, "hint": "已暫停", "next_hot": False, "planb": bool(slow or status == "failed")}
+    if slow or status == "failed":
+        return {"visible": True, "hint": "這一步比平常久" if slow else "這一步沒有完成", "next_hot": waiting, "planb": True}
+    if presenter and waiting:
+        return {"visible": True, "hint": "輪到你：按下一步", "next_hot": True, "planb": False}
+    return {"visible": moved_ago is not None and moved_ago < fade_s, "hint": "", "next_hot": False, "planb": False}
 
 
 def overlaps(a, b):

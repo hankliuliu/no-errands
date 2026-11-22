@@ -20,15 +20,45 @@ def check(n, c, d=""):
 
 for W, H in L.RESOLUTIONS:
     lay = L.layout(W, H)
-    b, s, c = lay["band"], lay["stage"], lay["caption"]
-    check("%d×%d：角色帶／舞台／字幕帶互不重疊" % (W, H), not L.overlaps(b, s) and not L.overlaps(s, c) and not L.overlaps(b, c), lay)
-    check("%d×%d：三塊剛好鋪滿整個螢幕（高度加總＝螢幕高、全寬）" % (W, H),
-          b[3] + s[3] + c[3] == H and b[2] == s[2] == c[2] == W and s[1] == b[3] and c[1] == s[1] + s[3], lay)
-    ct, ctl = lay["caption_text"], lay["controls"]
-    check("%d×%d：字幕文字區與控制區不重疊、都在字幕帶內" % (W, H),
-          not L.overlaps(ct, ctl) and ct[0] >= 0 and ctl[0] + ctl[2] <= W, (ct, ctl))
-    check("%d×%d：兩行字幕放得進字幕帶" % (W, H), 2 * lay["cap_line_h"] <= c[3], (lay["cap_line_h"], c[3]))
-    check("%d×%d：舞台至少佔螢幕高度的 75%%" % (W, H), s[3] >= 0.75 * H, s)
+    b, s_, c = lay["band"], lay["stage"], lay["controls"]
+    check("%d×%d：角色帶和舞台不重疊、合起來鋪滿整個螢幕（沒有固定字幕帶）" % (W, H),
+          not L.overlaps(b, s_) and b[3] + s_[3] == H and s_[1] == b[3] and b[2] == s_[2] == W, lay)
+    check("%d×%d：控制列在舞台右下角、在螢幕內" % (W, H),
+          c[0] + c[2] <= W and c[1] + c[3] <= H and c[0] > W / 2 and c[1] > H / 2, c)
+    check("%d×%d：字級＝螢幕高 2.5%%（下限 18）" % (W, H), lay["cap_font"] == max(18, round(H * 0.025)), lay["cap_font"])
+    check("%d×%d：字幕最大寬度＝舞台寬 62%%" % (W, H), lay["cap_max_w"] == round(W * 0.62), lay["cap_max_w"])
+    bw, bh = 600, 2 * lay["cap_line_h"] + 2 * lay["cap_pad"]
+    x, y = L.caption_pos((bw, bh), lay)
+    check("%d×%d：預設下方置中（底邊在舞台高 93%%）" % (W, H), abs((x + bw / 2) - W / 2) <= 1 and abs((y + bh) - lay["cap_bottom"]) <= 1, (x, y))
+
+lay = L.layout(1920, 1200)
+bw, bh = 700, 90
+dx, dy = L.caption_pos((bw, bh), lay)
+look = (dx + 100, dy + 10, 300, 40)
+ux, uy = L.caption_pos((bw, bh), lay, look=look)
+check("字幕和「看這裡」外框重疊 → 自動讓到上方（角色帶下面）", uy < lay["stage"][1] + 40 and uy < dy, (ux, uy))
+far = (10, lay["stage"][1] + 10, 100, 30)
+check("外框不重疊 → 留在預設位置", L.caption_pos((bw, bh), lay, look=far) == (dx, dy))
+ctl = lay["controls"]
+wide = (1500, bh)
+cx, cy = L.caption_pos(wide, lay, ctl=ctl)
+check("和控制列左右重疊 → 放在控制列上方", cy + bh <= ctl[1], (cy, ctl))
+user = (0.1, 0.2)
+check("拖過（使用者位置）→ 用使用者的位置，不再自動讓開",
+      L.caption_pos((bw, bh), lay, look=look, user=user) == (int(lay["stage"][0] + 0.1 * lay["stage"][2]), int(lay["stage"][1] + 0.2 * lay["stage"][3])))
+check("拖不出舞台範圍", L.caption_pos((bw, bh), lay, user=(1.5, -0.5)) == (lay["stage"][2] - bw, lay["stage"][1]))
+r = L.caption_ratio((192, 72 + 112), lay)
+check("位置以舞台比例記住（換解析度也在相同的相對位置）", r == (0.1, round(112 / lay["stage"][3], 4)), r)
+st = L.controls_state(False, "running", False, False, None)
+check("控制列：自動播放、滑鼠沒動 → 隱藏", st["visible"] is False, st)
+check("控制列：自動播放、滑鼠剛動過 → 出現，2.5 秒後隱藏",
+      L.controls_state(False, "running", False, False, 1.0)["visible"] and not L.controls_state(False, "running", False, False, 3.0)["visible"])
+st = L.controls_state(True, "waiting_next", False, False, None)
+check("控制列：講者模式輪到他按 → 常駐、亮下一步、寫「輪到你」", st["visible"] and st["next_hot"] and "輪到你" in st["hint"], st)
+st = L.controls_state(False, "running", True, False, None)
+check("控制列：暫停 → 常駐、寫已暫停", st["visible"] and st["hint"] == "已暫停", st)
+st = L.controls_state(False, "waiting_system", False, True, None)
+check("控制列：等待超時 → 自己出現並亮備案", st["visible"] and st["planb"], st)
 
 check("這台（1920×1200、150%%）：系統縮放已經夠 → 頁面維持 100%%", L.page_zoom(1200, 1.5) == 1.0, L.page_zoom(1200, 1.5))
 check("投影機 1920×1080、100%% → 頁面縮放 1.5", L.page_zoom(1080, 1.0) == 1.5, L.page_zoom(1080, 1.0))
