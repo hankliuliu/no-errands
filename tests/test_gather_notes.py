@@ -52,6 +52,8 @@ check("1 沒年份但比擷取時間晚 → 算前一年", v == ("2025-12-30 09:
 v = gn.norm_time("昨天 08:15", cap)
 check("1 昨天 → 相對擷取日、標推的", v == ("2026-11-22 08:15", True), v)
 check("1 看不懂的寫法 → None（原字串照留）", gn.norm_time("上週", cap) == (None, False))
+v = gn.norm_time("5月15日 上午 12:23", cap)
+check("1 上午 12 點 → 00 點（不是中午）", v == ("2026-05-15 00:23", True), v)
 
 td = tempfile.mkdtemp(prefix="ne-notes-")
 try:
@@ -142,6 +144,37 @@ try:
           and f["split_incomplete"] == 1, (jo, f))
     check("3d 未收清單把拼不起來的那則寫成「被切開、未完整」", "被切開、未完整" in "\n".join(gn.missing_section(tdir)))
 
+    # 3e 真機型態：每張頂端是前一則（已完整轉過）的尾巴；不可錯接到前一張最後那則
+    make_run(tdir, "20261123-150000", 4, stop="bottom")
+    gn.add(tdir, "20261123-150000/01", [N("Lu", "11/21 06:53", "完整的第一則，後面接很長的說明", truncated=True),
+                                         {"author": "Lu", "text": "超市採買", "truncated": False, "images": 2, "cut_bottom": True}], 2)
+    gn.add(tdir, "20261123-150000/02", [{"posted_at": "11/21 06:53", "text": "後面接很長的說明", "truncated": True, "images": 0, "cut_top": True},
+                                         {"author": "Lu", "text": "超市採買", "truncated": False, "images": 7, "cut_bottom": True}], 1)
+    gn.add(tdir, "20261123-150000/03", [{"posted_at": "11/21 06:53", "text": "", "truncated": False, "images": 0, "cut_top": True},
+                                         N("Lu", "11/20 18:50", "超市採買", images=7),
+                                         {"author": "Lu", "text": "課程說明", "truncated": False, "images": 2, "cut_bottom": True}], 2)
+    gn.add(tdir, "20261123-150000/04", [{"posted_at": "11/19 12:55", "text": "", "truncated": False, "images": 2, "cut_top": True},
+                                         N("Lu", "11/19 12:53", "週末行程", images=6)], 1)
+    before = len(gn.load_notes(tdir))
+    f = gn.finish(tdir)
+    ns = [n for n in gn.load_notes(tdir) if n.get("run") == "20261123-150000"]
+    texts = sorted(n["text"] for n in ns)
+    doc = next((n for n in ns if n["text"] == "課程說明"), None)
+    check("3e 尾巴不錯接：四則（第一則、超市採買、課程、週末），超市採買只有一則、日期正確",
+          texts == sorted(["完整的第一則，後面接很長的說明", "超市採買", "課程說明", "週末行程"])
+          and next(n for n in ns if n["text"] == "超市採買")["posted_at"] == "2026-11-20 18:50", (texts, f))
+    check("3e 被切開的那則接上後一張的日期（尾巴只有日期也能接）", doc and doc["posted_at"] == "2026-11-19 12:55" and doc.get("split"), doc)
+    check("3e 只有日期的尾巴碎片被丟掉、已有完整版的碎片被涵蓋", f.get("tail_dropped", 0) >= 1 and f.get("split_covered", 0) >= 2
+          and f["split_incomplete"] == 0, f)
+
+    # 3f 只有圖的記事：開頭在前一張被切到、下一張整則完整 → 前一張的碎片算已涵蓋，不另記一則
+    make_run(tdir, "20261123-160000", 2, stop="bottom")
+    gn.add(tdir, "20261123-160000/01", [N("Mo", "11/18 10:00", "有字的一則"), {"author": "Mo", "text": "", "truncated": False, "images": 1, "cut_bottom": True}], 2)
+    gn.add(tdir, "20261123-160000/02", [N("Mo", "11/17 06:33", "", images=1)], 1)
+    f = gn.finish(tdir)
+    ns = [n for n in gn.load_notes(tdir) if n.get("run") == "20261123-160000"]
+    check("3f 只有圖的記事不會多出一則「被切開」", len(ns) == 2 and f["split_incomplete"] == 0 and f.get("split_covered", 0) >= 1, (len(ns), f))
+
     # 5 過期
     old = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - 25 * 3600))
     rdir5 = make_run(tdir, "20261122-090000", 2, created=old)
@@ -151,10 +184,10 @@ try:
     # 6 給人看的
     line = gn.overview_line(tdir)
     check("6 總覽那一行：AI 轉寫、內文未完整、待人看、過期那段、留言不收",
-          all(x in line for x in ("由 AI 看圖轉寫；原文以 LINE 為準", "內文未完整 2 則", "待人看", "未收", "留言不收")), line)
+          all(x in line for x in ("由 AI 看圖轉寫；原文以 LINE 為準", "內文未完整 3 則", "待人看", "未收", "留言不收")), line)
     sec = "\n".join(gn.missing_section(tdir))
     check("6 未收清單記事本一節：來源說明、留言不收、內文未完整、附圖照片規則、待人看",
-          all(x in sec for x in ("AI 看圖轉寫", "留言不收", "### 內文未完整（2）", "記事本內的附圖", "照片預設不收", "### 待人看")), sec[:400])
+          all(x in sec for x in ("AI 看圖轉寫", "留言不收", "### 內文未完整（3）", "記事本內的附圖", "照片預設不收", "### 待人看")), sec[:400])
 finally:
     shutil.rmtree(td, ignore_errors=True)
 

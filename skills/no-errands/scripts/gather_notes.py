@@ -80,7 +80,7 @@ def norm_time(raw, captured):
     """畫面上的日期時間 → ("YYYY-MM-DD HH:MM" 或 None, 是否用推的)。captured 是擷取時間（datetime）。
     沒有年份：取擷取當年，若比擷取時間還晚就算前一年（推的）。今天／昨天：相對擷取日（推的）。"""
     s = norm_text(raw).replace("：", ":")
-    s = re.sub(r"(上午|AM)\s*(\d{1,2}):", lambda m: "%s:" % m.group(2), s, flags=re.I)
+    s = re.sub(r"(上午|AM)\s*(\d{1,2}):", lambda m: "%d:" % (int(m.group(2)) % 12), s, flags=re.I)   # 上午 12:xx＝00:xx
     s = re.sub(r"(下午|PM)\s*(\d{1,2}):", lambda m: "%d:" % (int(m.group(2)) % 12 + 12), s, flags=re.I)
     try:
         for rx in _FULL:
@@ -272,12 +272,23 @@ def _merge_splits(per, rep):
     """同一輪相鄰兩張：前一張最後一則 cut_bottom、後一張第一則 cut_top → 同一則記事被切開，合成一則
     （作者與開頭取前一張、日期取後一張）。合不起來的中段碎片照實留成「被切開、未完整」，不默默丟掉。
     第一張開頭的 cut_top（上一輪的延續）與最後一張結尾的 cut_bottom（下一輪接續會再拍到）不算。"""
+    def contains(x, frag, author=None):   # 完整的一則 x 涵蓋這段碎片（同作者時才算）
+        f = norm_text(frag)
+        return bool(f) and norm_text(x.get("text")).find(f) >= 0 and (not author or norm_text(x.get("author")) == norm_text(author))
+
     for i in range(len(per)):
         s, rows = per[i]
         if i + 1 < len(per) and rows and rows[-1].get("cut_bottom"):
             s2, rows2 = per[i + 1]
             if rows2 and rows2[0].get("cut_top"):
                 a, b = rows[-1], rows2[0]
+                # 真機實跑（2026-11-23）：每張頂端常是「前一則已經完整轉過」的尾巴（只有日期或表情列），
+                # 不能拿來接前一張最後那則。所以兩種情況不配對：
+                #   a 在後一張已經完整出現（重疊拍到了）；b 在前一張已被某則完整的涵蓋（是那一則的尾巴）
+                if a.get("text") and any("key" in x and contains(x, a["text"], a.get("author")) for x in rows2):
+                    continue
+                if b.get("text") and any("key" in x and contains(x, b["text"]) for x in rows):
+                    continue
                 cap = datetime.datetime.strptime(s2["ts"], "%Y-%m-%dT%H:%M:%S")
                 raw = b.get("posted_at_raw") or a.get("posted_at_raw") or ""
                 when, guessed = norm_time(raw, cap) if raw else (None, False)
@@ -298,11 +309,18 @@ def _merge_splits(per, rep):
             last_bottom = i == len(per) - 1 and j == len(rows) - 1 and r.get("cut_bottom")
             if first_top or last_bottom:
                 continue
-            # 相鄰那張已經有這一則的完整版本（重疊拍到了）：碎片已被涵蓋，不另記
-            frag = norm_text(r.get("text"))
-            near = [x for k in (i - 1, i + 1) if 0 <= k < len(per) for x in per[k][1] if "key" in x]
-            if frag and any(norm_text(x.get("text")).find(frag) >= 0 and (not r.get("author") or norm_text(x.get("author")) == norm_text(r.get("author")))
-                            for x in near):
+            # 只剩日期或表情列的尾巴（沒有內文也沒有作者）：那一則在別張已經轉過，不另記
+            if not norm_text(r.get("text")) and not norm_text(r.get("author")):
+                rep["tail_dropped"] = rep.get("tail_dropped", 0) + 1
+                continue
+            # 只有圖、沒有文字的開頭碎片：下一張有同作者、同樣只有圖的完整一則 → 就是它（重疊拍到了完整版）
+            if not norm_text(r.get("text")) and r.get("cut_bottom") and i + 1 < len(per) and any(
+                    "key" in x and not norm_text(x.get("text")) and norm_text(x.get("author")) == norm_text(r.get("author"))
+                    and (x.get("images") or 0) >= 1 for x in per[i + 1][1]):
+                rep["split_covered"] = rep.get("split_covered", 0) + 1
+                continue
+            # 這一輪任何一張已經有這一則的完整版本（重疊拍到了）：碎片已被涵蓋，不另記
+            if any("key" in x and contains(x, r.get("text"), r.get("author")) for _, rows_ in per for x in rows_):
                 rep["split_covered"] = rep.get("split_covered", 0) + 1
                 continue
             # 中段合不起來的碎片：照實留下看得到的部分，標「被切開、未完整」
