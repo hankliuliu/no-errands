@@ -70,6 +70,35 @@ print(json.dumps({"remote": d.cmd_argv("ssh demo-host 'a | sort | uniq -c'")[1:]
 """
 
 
+RACE = r"""
+import json, os, sys, threading, time, tempfile
+sys.path.insert(0, sys.argv[1])
+import demo_runbook as d
+t = tempfile.mkdtemp()
+p = os.path.join(t, "now.json")
+d._atomic_json(p, {"v": 0})
+h = open(p, encoding="utf-8")                      # 讀的一方開著（Windows 上 replace 會失敗）
+threading.Timer(0.4, h.close).start()
+d._atomic_json(p, {"v": 1})
+retry_ok = json.load(open(p, encoding="utf-8"))["v"] == 1
+d.write_control(t, state="playing", advance="auto", next_seq=0)
+c = d.Control(t)
+res = {}
+def w():
+    try:
+        c.wait_next(); res["done"] = True
+    except Exception as e:
+        res["err"] = str(e)
+th = threading.Thread(target=w); th.start()
+time.sleep(0.6)
+os.remove(os.path.join(t, "now.json"))             # 模擬「在等下一步」那次寫入遺失
+time.sleep(2.6)
+healed = json.load(open(os.path.join(t, "now.json"), encoding="utf-8")).get("status") == "waiting_next"
+d.write_control(t, next=True); th.join(5)
+print(json.dumps({"retry_ok": retry_ok, "healed": healed, "next_ok": res.get("done", False)}))
+"""
+
+
 def check(n, c, d=""):
     R.append(bool(c)); print(("PASS " if c else "FAIL ") + n + ("" if c else "  -- " + str(d)[:400]))
 
@@ -771,6 +800,12 @@ def main():
         rc, o, _ = rbj("reset", rbp)
         check("還原指令改了 → 要重新同意", rc == 3, o)
         json.dump(RUNBOOK, open(rbp, "w", encoding="utf-8"), ensure_ascii=False)
+
+        # ---------- 狀態檔：讀的一方開著時寫入要重試；等下一步期間定期重寫（總驗收實測漏寫一次就卡住）
+        q = subprocess.run([sys.executable, "-c", RACE, S], capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+        rr = json.loads(q.stdout or "{}")
+        check("狀態檔被讀的一方開著 → 寫入重試成功（不吞掉）", rr.get("retry_ok"), q.stdout + q.stderr[-300:])
+        check("「在等下一步」的狀態遺失 → 2 秒內自己補上；之後按下一步照常", rr.get("healed") and rr.get("next_ok"), rr)
 
         # ---------- 本機指令：照 POSIX 規則拆、不經殼層（從 cmd／檔案總管啟動也一樣）
         q = subprocess.run([sys.executable, "-c", CMDARGV, S], capture_output=True, text=True, encoding="utf-8", env=env)
