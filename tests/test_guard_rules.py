@@ -42,6 +42,12 @@ try:
         check("規則擋直接呼叫 %s（Bash 與 PowerShell）" % tool,
               "Bash(*%s*)" % tool in gr["deny"] and "PowerShell(*%s*)" % tool in gr["deny"], gr["deny"])
     check("neb／ned 本身不在擋的規則裡", not any("neb.py" in r or "ned.py" in r for r in gr["deny"]), gr["deny"])
+    # 「要詢問」只給改變同意範圍的指令；chat_guard 不詢問（白名單內的同步要能無人在場跑完）
+    for sub in ("grant", "set", "whitelist", "domain"):
+        check("policy.py %s 要詢問" % sub, any(("policy.py\" %s:*)" % sub) in r for r in gr["ask"]), gr["ask"])
+    check("chat_guard 不在詢問規則裡", not any("chat_guard" in r for r in gr["ask"] + gr["deny"]), gr["ask"])
+    check("詢問規則只有 policy.py 的 4 條", len(gr["ask"]) == 4 and all("policy.py" in r for r in gr["ask"]), gr["ask"])
+    check("revoke／show 不詢問（縮小範圍、唯讀）", not any(" revoke:" in r or " show:" in r for r in gr["ask"]), gr["ask"])
 finally:
     shutil.rmtree(td, ignore_errors=True)
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))

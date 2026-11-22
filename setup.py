@@ -260,11 +260,15 @@ def guard_rules(home):
     for tool in ("agent-browser", "agent-desktop"):
         deny.append("Bash(*%s*)" % tool)
         deny.append("PowerShell(*%s*)" % tool)
-    for app in ("line", "mattermost", "teams", "slack", "outlook", "messages", "mail"):
-        ask.append("Bash(%s \"%s\" %s:*)" % (py_bin, os.path.join(home, "bin", "chat_guard.py"), app))
-    ask.append("Bash(%s \"%s\" grant:*)" % (py_bin, os.path.join(home, "bin", "policy.py")))
-    ask.append("Bash(%s \"%s\" set:*)" % (py_bin, os.path.join(home, "bin", "policy.py")))
+    # 「要詢問」只留給會改變同意範圍的指令（授權 app、改設定、白名單、網域）。
+    # 不對 chat_guard 加詢問（2026-11-22 使用者：「白名單的聊天室都可以匯出」）：授權與白名單已由 chat_guard 自己把關，
+    # 再多一層詢問只會讓無人在場的同步卡住。
+    for sub in POLICY_ASK:
+        ask.append("Bash(%s \"%s\" %s:*)" % (py_bin, os.path.join(home, "bin", "policy.py"), sub))
     return {"deny": deny, "ask": ask}
+
+
+POLICY_ASK = ("grant", "set", "whitelist", "domain")
 
 
 def apply_rules(path, rules, remove=False):
