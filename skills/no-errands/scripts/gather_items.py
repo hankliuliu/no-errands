@@ -350,6 +350,7 @@ def write_outputs(tdir, t, items, title=None, msgs=None, tid=None):
     md = render_missing(items, title or t.get("label") or t.get("chat") or t.get("service"), msgs, tid, t.get("service"))
     if t.get("service") == "line":
         import gather_notes
+        gather_notes.write_readable(tdir, title or t.get("label") or t.get("chat") or "", t.get("dest"))
         ns = gather_notes.missing_section(tdir)
         if ns:
             md = md.replace("沒有未收的東西。", "附件沒有未收的東西。")

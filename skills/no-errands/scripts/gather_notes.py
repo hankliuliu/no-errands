@@ -479,6 +479,63 @@ def overview_line(tdir):
     return "；".join(parts)
 
 
+def render_notes(tdir, title):
+    """給人讀的「記事本.md」：收下來的每一則，依時間由新到舊；沒有收過記事本 → None（不寫檔）。
+    內容只在本機的收集資料夾。"""
+    st = load_state(tdir)
+    notes = load_notes(tdir)
+    if not notes and not st.get("last_run"):
+        return None
+    when = lambda n: n.get("posted_at") or ""
+    L = ["# 記事本：%s" % title, "",
+         "這裡是〈%s〉記事本收下來的內容，依時間由新到舊排列。內文是 AI 看圖轉寫的，可能有錯字，原文以 LINE 為準；記事本底下的留言不收。" % title,
+         ""]
+    rng = "共 %d 則" % len(notes)
+    if st.get("older_not_captured"):
+        rng += "；只收到 %s 以後的，更舊的還沒擷取（下次同步會接著往下補）" % (st.get("oldest_captured") or "最近幾則")
+    if st.get("updated"):
+        rng += "；更新於 %s" % st["updated"]
+    L += [rng + "。", ""]
+    for n in sorted(notes, key=lambda x: (when(x), x.get("no") or 0), reverse=True):
+        head = "## 記事 %d · %s · %s" % (n.get("no") or 0, (when(n) or n.get("posted_at_raw") or "時間不明")[:16], n.get("author") or "作者不明")
+        L += [head, ""]
+        text = (n.get("text") or "").strip()
+        if text:
+            L += [line.rstrip() + "  " for line in text.splitlines()] + [""]   # 行尾兩個空白：保留原本的換行
+        else:
+            L += ["（沒有文字）", ""]
+        notes_ = []
+        if n.get("split_incomplete"):
+            notes_.append("這一則被切在兩張圖之間、沒能拼完整，上面只有看得到的部分")
+        elif n.get("truncated"):
+            notes_.append("內文未完整：畫面上只顯示前段（要在 LINE 按「顯示更多」才看得到全文）")
+        if n.get("images"):
+            notes_.append("附圖 %d 張（照片預設不收）" % n["images"])
+        if n.get("needs_review"):
+            notes_.append("待人看：同一則在兩張圖上轉出來的字不一樣%s" % ("，另一個版本：「%s」" % n["alt_text"] if n.get("alt_text") else "，或那張圖的則數對不上"))
+        if n.get("split"):
+            notes_.append("這一則被切在兩張圖之間，由兩張拼起來")
+        for x in notes_:
+            L.append("> %s" % x)
+        if notes_:
+            L.append("")
+    return "\n".join(L)
+
+
+def write_readable(tdir, title, dest=None):
+    md = render_notes(tdir, title)
+    if md is None:
+        return None
+    d = os.path.join(tdir, "files")
+    os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, "記事本.md"), "w", encoding="utf-8").write(md)
+    if dest:
+        dd = os.path.join(dest, "files")
+        os.makedirs(dd, exist_ok=True)
+        open(os.path.join(dd, "記事本.md"), "w", encoding="utf-8").write(md)
+    return os.path.join(d, "記事本.md")
+
+
 def missing_section(tdir, notes=None):
     """未收清單裡的「記事本」一節（沒有要列的 → []）。"""
     st = load_state(tdir)
