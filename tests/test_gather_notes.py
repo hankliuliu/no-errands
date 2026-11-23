@@ -312,6 +312,24 @@ try:
     check("9 空的記事本：未收清單不另開記事本一節", gn.missing_section(t9) == [], gn.missing_section(t9))
     gn.save_state(t9, {"last_run": {"run": "r", "stop": "cap", "shots": 15}, "older_not_captured": True, "notes": 0})
     check("9 停在上限、0 則（不是確定空的）：不說「空的」", "空的" not in (gn.overview_line(t9) or "") and "空的" not in gn.render_notes(t9, "x"), gn.overview_line(t9))
+    # 10 真機型態（2026-11-23 第三個聊天室）：只有圖的長記事連續三張都看得到開頭、下一則有字的也連續兩張看得到開頭；
+    #    每張頂端是上一則只剩日期的尾巴 → 不可拼出假的記事
+    t10 = os.path.join(rd8, "line", "long1")
+    os.makedirs(t10)
+    make_run(t10, "20261123-170000", 6, stop="cap")
+    cb = lambda a, t, im=0, tr=False: {"author": a, "text": t, "truncated": tr, "images": im, "cut_bottom": True}
+    ct = lambda w, t, im=0, tr=False: {"author": "", "posted_at": w, "text": t, "truncated": tr, "images": im, "cut_top": True}
+    gn.add(t10, "20261123-170000/01", [N("Xu", "3月9日 下午 7:41", "很長的說明甲乙", truncated=True), cb("Xu", "", 1)], 2)
+    gn.add(t10, "20261123-170000/02", [ct("3月9日 下午 7:41", "說明甲乙", tr=True), cb("Xu", "", 1)], 1)
+    gn.add(t10, "20261123-170000/03", [ct("3月9日 下午 7:41", "", tr=True), cb("Xu", "", 1)], 1)
+    gn.add(t10, "20261123-170000/04", [ct("2月6日 上午 11:05", "", 1), cb("Xu", "第三則的開頭")], 1)
+    gn.add(t10, "20261123-170000/05", [ct("2月6日 上午 11:05", "", 1), cb("Xu", "第三則的開頭，後面更多", 2, True)], 1)
+    gn.add(t10, "20261123-170000/06", [ct("2025.11.30 上午 8:12", "第三則的開頭，後面更多", 2, True)], 0)
+    f10 = gn.finish(t10)
+    n10 = sorted(((n.get("posted_at") or "")[:10], n.get("text"), n.get("images")) for n in gn.load_notes(t10))
+    check("10 跨三張以上的記事不拼出假的：三則（3/9 有字、2/6 只有圖、2025-11-30 有字兩張圖），沒有被切開的碎片",
+          n10 == [("2025-11-30", "第三則的開頭，後面更多", 2), ("2026-02-06", "", 1), ("2026-03-09", "很長的說明甲乙", 0)]
+          and f10["split_incomplete"] == 0, (n10, f10))
 finally:
     shutil.rmtree(rd8, ignore_errors=True)
 

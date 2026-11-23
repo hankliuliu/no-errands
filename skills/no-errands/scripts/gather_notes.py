@@ -276,6 +276,13 @@ def _merge_splits(per, rep):
         f = norm_text(frag)
         return bool(f) and norm_text(x.get("text")).find(f) >= 0 and (not author or norm_text(x.get("author")) == norm_text(author))
 
+    def same_start(x, a):   # x 是 a 這個開頭碎片再被拍到一次（同作者；有字就看字涵蓋，只有圖就看也只有圖）
+        if norm_text(x.get("author")) != norm_text(a.get("author")) or not norm_text(a.get("author")):
+            return False
+        if norm_text(a.get("text")):
+            return contains(x, a["text"], a.get("author"))
+        return not norm_text(x.get("text")) and (x.get("images") or 0) >= 1 and (a.get("images") or 0) >= 1
+
     for i in range(len(per)):
         s, rows = per[i]
         if i + 1 < len(per) and rows and rows[-1].get("cut_bottom"):
@@ -288,6 +295,10 @@ def _merge_splits(per, rep):
                 if a.get("text") and any("key" in x and contains(x, a["text"], a.get("author")) for x in rows2):
                     continue
                 if b.get("text") and any("key" in x and contains(x, b["text"]) for x in rows):
+                    continue
+                # a 的開頭在後一張又出現一次（比 b 低）：一則跨了三張以上，b 是更上面那一則的尾巴，不是 a 的
+                # （真機 2026-11-23：只有圖的長記事連續三張都看得到開頭，b 是前一則只剩日期的尾巴，曾被拼成一則假的）
+                if any(same_start(x, a) for x in rows2[1:]):
                     continue
                 cap = datetime.datetime.strptime(s2["ts"], "%Y-%m-%dT%H:%M:%S")
                 raw = b.get("posted_at_raw") or a.get("posted_at_raw") or ""
@@ -313,12 +324,15 @@ def _merge_splits(per, rep):
             if not norm_text(r.get("text")) and not norm_text(r.get("author")):
                 rep["tail_dropped"] = rep.get("tail_dropped", 0) + 1
                 continue
-            # 只有圖、沒有文字的開頭碎片：下一張有同作者、同樣只有圖的完整一則 → 就是它（重疊拍到了完整版）
-            if not norm_text(r.get("text")) and r.get("cut_bottom") and i + 1 < len(per) and any(
-                    "key" in x and not norm_text(x.get("text")) and norm_text(x.get("author")) == norm_text(r.get("author"))
-                    and (x.get("images") or 0) >= 1 for x in per[i + 1][1]):
-                rep["split_covered"] = rep.get("split_covered", 0) + 1
-                continue
+            # 只有圖、沒有文字的開頭碎片：往後第一則完整的（含拼好的）是同作者、同樣只有圖 → 就是它（重疊拍到了完整版）
+            if not norm_text(r.get("text")) and r.get("cut_bottom"):
+                seen = {x["key"] for _, rows_ in per[:i + 1] for x in rows_ if "key" in x}   # 碎片上面已經完整的（後一張會再拍到）
+                nxt = next((x for _, rows_ in per[i + 1:] for x in rows_ if "key" in x and x["key"] not in seen), None)
+                if (nxt is not None and same_start(nxt, r)) or (i + 1 < len(per) and any(
+                        "key" in x and not norm_text(x.get("text")) and norm_text(x.get("author")) == norm_text(r.get("author"))
+                        and (x.get("images") or 0) >= 1 for x in per[i + 1][1])):
+                    rep["split_covered"] = rep.get("split_covered", 0) + 1
+                    continue
             # 這一輪任何一張已經有這一則的完整版本（重疊拍到了）：碎片已被涵蓋，不另記
             if any("key" in x and contains(x, r.get("text"), r.get("author")) for _, rows_ in per for x in rows_):
                 rep["split_covered"] = rep.get("split_covered", 0) + 1
