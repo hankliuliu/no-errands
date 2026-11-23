@@ -172,7 +172,8 @@ def main():
     fk = os.path.join(home, "fake_ab.py"); open(fk, "w", encoding="utf-8").write(FAKE)
     open(os.path.join(home, "page.txt"), "w", encoding="utf-8").write("使用說明 C-1234abcd 其他")
     json.dump({"outbox": {"port": port}}, open(os.path.join(home, "policy.json"), "w"))
-    env = dict(os.environ, NO_ERRANDS_HOME=home, NE_FAKE_AB_PY=fk, NE_FAKE_DIR=home, PYTHONIOENCODING="utf-8")
+    env = dict(os.environ, NO_ERRANDS_HOME=home, NE_FAKE_AB_PY=fk, NE_FAKE_DIR=home, PYTHONIOENCODING="utf-8",
+               NE_TEST_SCREEN_LOCKED="0")             # 測試機的工作階段狀態不一定像真的桌面：鎖定判斷固定成「沒鎖」，另有一段專測鎖定
     rbdir = os.path.join(home, "demo"); os.makedirs(rbdir)
     rbp = os.path.join(rbdir, "runbook.json")
     json.dump(RUNBOOK, open(rbp, "w", encoding="utf-8"), ensure_ascii=False)
@@ -630,6 +631,11 @@ def main():
         rc, o, _ = rbj("request-approval", sgp)
         check("建議值超出 1–10 → 發件匣拒收", rc == 2, o)
 
+        # A36：電腦鎖定時 standby 一開始就停、明講要先解鎖（不開舞台、不開瀏覽器、不往下跑）
+        rc, o, txt = run(RB, "standby", sgp, "--approval", aid, "--no-player", extra_env={"NE_TEST_SCREEN_LOCKED": "1"})
+        check("A36 鎖定中 → standby 立刻停、說「請先解鎖」，沒有開任何東西",
+              rc == 1 and o.get("locked") is True and any(c_.get("check") == "電腦沒有鎖定" and "解鎖" in c_.get("detail", "")
+                                                          for c_ in o.get("checks") or []) and not o.get("run_dir"), (rc, o))
         bg_ok = os.name != "nt" or os.environ.get("GITHUB_ACTIONS") or "--allow-background" in sys.argv
         if not bg_ok:
             print("SKIP live 背景執行段落：Windows 本機不跑會分離啟動行程的測試（CI 跑；本機要跑加 --allow-background）")

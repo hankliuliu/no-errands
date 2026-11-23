@@ -286,6 +286,10 @@ class Stage:
                 ctypes.windll.shcore.SetProcessDpiAwareness(2)   # 實體像素（和瀏覽器視窗座標一致）
             except Exception:
                 pass
+            try:                                               # 舞台在的期間螢幕不關、不鎖（ES_CONTINUOUS|SYSTEM|DISPLAY；
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000003)   # 候選二：螢幕 20 分鐘無輸入關閉並鎖定，之後全部失敗）
+            except Exception:
+                pass
         import tkinter as tk
         self.tk, self.run_dir = tk, run_dir
         self.now, self.wins, self.placed = {}, {}, {}
