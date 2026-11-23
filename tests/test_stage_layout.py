@@ -173,17 +173,11 @@ AL = {"list": "#post-list", "scroller": ".s", "item_nth": "#p :nth-last-child({k
       "skip_if": ".modal-content", "color_var": "--center-channel-bg"}
 nth = lambda k: AL["item_nth"].format(k=k)
 boxes = {"#post-list": [269, 141, 984, 354], nth(1): [269, 397, 984, 90.8], nth(2): [269, -14.4, 984, 411.4], "#t": [269, 397, 984, 90.8]}
-c = FakeCtl(); lk = DR.Look(FakeBr(boxes), c, align=AL); lk.step("a", True); lk.set("a", "#t")
-check("A9 Look：被切 155 px、捲了會擠掉目標 → 發布遮罩（頁面底色取自 CSS 變數）",
-      c.now["align"]["how"] == "mask" and c.now["mask"]["color"] == "#111827" and c.now["mask"]["box"][1] == 141, c.now)
-boxes2 = {"#post-list": [269, 141, 984, 354], nth(1): [269, 330, 984, 100], nth(2): [269, 120, 984, 200], "#t": [269, 330, 984, 100]}
-br2 = FakeBr(boxes2); c = FakeCtl(); lk = DR.Look(br2, c, align=AL); lk.step("a", True); lk.set("a", "#t")
-check("A9 Look：被切 21 px → 往上捲 21、捲完驗證對齊、沒有遮罩",
-      c.now["align"] == {"how": "scroll", "ok": True, "cut": 21.0} and c.now.get("mask") is None and ("scroll", "up", "21", "--selector", ".s") in br2.calls, (c.now, br2.calls[-6:]))
-c = FakeCtl(); lk = DR.Look(FakeBr(boxes, modal=1), c, align=AL); lk.step("a", True); lk.set("a", "#t")
-check("A9 Look：對話框開著 → 不捲、不遮（記為 skip）", c.now["align"]["how"] == "skip" and c.now.get("mask") is None, c.now)
-c = FakeCtl(); br3 = FakeBr(boxes); lk = DR.Look(br3, c, align=AL); lk.step("a", False); lk.set("a", "#t")
-check("這一步不對齊（劇本沒列這個檢視）→ 不做任何對齊查詢", c.now.get("align") is None and not any(x[0] == "scroll" for x in br3.calls))
+br1 = FakeBr(boxes); c = FakeCtl(); lk = DR.Look(br1, c, align=dict(AL, top_align=True)); lk.step("a", True); lk.set("a", "#t")
+check("A9 不對齊、不遮罩（5c）：劇本就算寫了 top_align，讀內容的拍子也只取目標位置——不逐則查訊息、不往上捲、不發布遮罩",
+      c.now.get("mask") is None and c.now.get("align") is None and not any(x[0] == "scroll" for x in br1.calls)
+      and not any(x[:2] == ("get", "count") for x in br1.calls) and not any(x[:2] == ("get", "box") and "nth-last-child" in x[2] for x in br1.calls) and len(br1.calls) <= 3
+      and c.now["look"]["box"] == [269.0, 397.0, 984.0, 90.8], (c.now, br1.calls))
 
 # ---- F-3：示範游標、捲動、外框淡出、不碰系統輸入
 st_ = lay["stage"] if False else L.layout(1920, 1080)["stage"]

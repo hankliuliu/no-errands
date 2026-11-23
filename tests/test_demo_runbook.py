@@ -172,8 +172,7 @@ def main():
     fk = os.path.join(home, "fake_ab.py"); open(fk, "w", encoding="utf-8").write(FAKE)
     open(os.path.join(home, "page.txt"), "w", encoding="utf-8").write("使用說明 C-1234abcd 其他")
     json.dump({"outbox": {"port": port}}, open(os.path.join(home, "policy.json"), "w"))
-    env = dict(os.environ, NO_ERRANDS_HOME=home, NE_FAKE_AB_PY=fk, NE_FAKE_DIR=home, PYTHONIOENCODING="utf-8",
-               NE_TEST_SCREEN_LOCKED="0")             # 測試機的工作階段狀態不一定像真的桌面：鎖定判斷固定成「沒鎖」，另有一段專測鎖定
+    env = dict(os.environ, NO_ERRANDS_HOME=home, NE_FAKE_AB_PY=fk, NE_FAKE_DIR=home, PYTHONIOENCODING="utf-8")
     rbdir = os.path.join(home, "demo"); os.makedirs(rbdir)
     rbp = os.path.join(rbdir, "runbook.json")
     json.dump(RUNBOOK, open(rbp, "w", encoding="utf-8"), ensure_ascii=False)
@@ -631,11 +630,6 @@ def main():
         rc, o, _ = rbj("request-approval", sgp)
         check("建議值超出 1–10 → 發件匣拒收", rc == 2, o)
 
-        # A36：電腦鎖定時 standby 一開始就停、明講要先解鎖（不開舞台、不開瀏覽器、不往下跑）
-        rc, o, txt = run(RB, "standby", sgp, "--approval", aid, "--no-player", extra_env={"NE_TEST_SCREEN_LOCKED": "1"})
-        check("A36 鎖定中 → standby 立刻停、說「請先解鎖」，沒有開任何東西",
-              rc == 1 and o.get("locked") is True and any(c_.get("check") == "電腦沒有鎖定" and "解鎖" in c_.get("detail", "")
-                                                          for c_ in o.get("checks") or []) and not o.get("run_dir"), (rc, o))
         bg_ok = os.name != "nt" or os.environ.get("GITHUB_ACTIONS") or "--allow-background" in sys.argv
         if not bg_ok:
             print("SKIP live 背景執行段落：Windows 本機不跑會分離啟動行程的測試（CI 跑；本機要跑加 --allow-background）")
@@ -862,9 +856,14 @@ def main():
             check("standby：profile 改成正常關閉（不跳還原分頁）、擋通知，其他設定不動",
                   pr["profile"]["exit_type"] == "Normal" and pr["profile"]["default_content_setting_values"]["notifications"] == 2
                   and pr.get("keep") == 1, pr)
+            # 第二次 standby 模擬鎖定（A36；測試只能往嚴的方向覆寫）：清單多一項「請先解鎖」的提示，目前只提示、不擋（5c）
             p2 = subprocess.run([sys.executable, RB, "standby", sbp2, "--approval", aid, "--no-player"], capture_output=True, text=True,
-                                encoding="utf-8", env=env, timeout=240)
+                                encoding="utf-8", env=dict(env, NE_TEST_SCREEN_LOCKED="1"), timeout=240)
             so2 = json.loads(p2.stdout[p2.stdout.find("{"):] or "{}")
+            c3 = [c_ for c_ in so2.get("checks") or [] if c_.get("check") == "電腦沒有鎖定、畫面可用"]
+            check("A36 鎖定中 → 檢查清單提示「請先解鎖」（warn，不擋下）",
+                  bool(c3) and c3[0]["ok"] is False and bool(c3[0].get("warn")) and "解鎖" in c3[0]["detail"] and so2.get("ok") is True,
+                  (c3, so2.get("ok")))
             check("再跑一次 standby：先關掉上一次準備好的畫面，只留一套", now_of(rds).get("status") == "stopped"
                   and so2.get("ok") and so2.get("run_dir") != rds, (now_of(rds).get("status"), so2.get("ok")))
             rbj("control", so2.get("run_dir") or rds, "next")
