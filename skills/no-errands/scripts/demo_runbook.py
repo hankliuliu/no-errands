@@ -853,6 +853,7 @@ class Look:
         self.fx = dict.fromkeys(EFFECTS, True)
         self.fx.update(effects or {})
         self.align_cfg, self.box = align, None
+        self.dialog_violations, self.last_beat_dialog = [], False
         self.ptr, self.ptr_seq, self.press_seq, self.look_seq = None, 0, 0, 0
 
     def step(self, acct, on):
@@ -942,6 +943,8 @@ class Look:
         self.ctl.publish(look=None)
         box = self.into_view(sel)
         self.aim_box = box
+        if getattr(self, "_pre_point", None):
+            self._pre_point(box)                         # 先出這一句字幕（5c：換句在前、游標移動在後）
         if not box:
             return 0.0
         x, y = (box[0] + box[2] / 2, box[1] + box[3] / 2) if click else (box[0] + min(36, box[2] / 2), box[1] + box[3] / 2)
@@ -954,6 +957,14 @@ class Look:
             return self.wait(0.8)
         self.acct, self.sel, self.box = acct, None, None
         self.ctl.publish(look=None)
+        if not getattr(self, "last_beat_dialog", False):
+            # 自我檢查（5c，不擋執行）：這一句出現時沒有對話框、現在有了——游標卻要移向下一個目標（應該先換句）
+            try:
+                if self._box(".modal-content"):
+                    self.dialog_violations.append(sel)
+                    self.last_beat_dialog = True
+            except Exception:
+                pass
         box = self.into_view(sel)
         if not box:
             return 0.0
@@ -973,6 +984,8 @@ class Look:
         if sel and scroll:
             self.into_view(sel)
         self.refresh()
+        if getattr(self, "_pre_point", None):
+            self._pre_point(self.box)                    # 先出這一句字幕，游標才移過去
         if self.box:
             import stage_layout
             self.point(*stage_layout.look_pointer(self.box))
@@ -1058,6 +1071,26 @@ def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
     """一拍：先把這一拍的目標捲到看得見、框好，再出字幕（5c：先捲到再出字幕）。
     自動模式（預設）：字幕留 beat_secs 秒、暫停時計時凍結；逐步模式：hold 的拍才停下等「下一步」。"""
     lk = beat_target(st, b)
+    said = []
+
+    def publish_caption(tbox=None):
+        """這一句字幕：連同這一句期間要避開的區域（開著的對話框、這一拍的目標）一起發布（Sprint G2）。只發一次。"""
+        if said:
+            return
+        avoid = []
+        if getattr(look, "acct", None) and hasattr(look, "_box"):
+            try:
+                dlg = look._box(".modal-content")
+                if dlg:
+                    avoid.append(dlg)
+                look.last_beat_dialog = bool(dlg)
+            except Exception:
+                pass
+        if tbox:
+            avoid.append(tbox)
+        ctl.publish(beat={"text": subst(b.get("say", ""), vars_), "i": k, "n": n, "avoid": avoid})
+        said.append(1)
+    look._pre_point = publish_caption
     if isinstance(lk, dict) and lk.get("css"):
         look.set(st["account"], subst(lk["css"], vars_), scroll=lk.get("scroll", True))
     elif isinstance(lk, dict) and lk.get("target"):
@@ -1068,19 +1101,8 @@ def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
             look.set(st["account"], "@" + ref, scroll=lk.get("scroll", True))
     elif lk is False:
         look.clear()
-    # Sprint G2：字幕一句一個位置——出現時就要避開這一句期間會用到的區域：開著的對話框、這一拍的目標
-    avoid = []
-    if getattr(look, "acct", None) and hasattr(look, "_box"):
-        try:
-            dlg = look._box(".modal-content")
-            if dlg:
-                avoid.append(dlg)
-        except Exception:
-            pass
-    tb = getattr(look, "box", None) or getattr(look, "aim_box", None)
-    if tb:
-        avoid.append(tb)
-    ctl.publish(beat={"text": subst(b.get("say", ""), vars_), "i": k, "n": n, "avoid": avoid})
+    look._pre_point = None
+    publish_caption(getattr(look, "box", None) or getattr(look, "aim_box", None))   # 沒有游標移動的拍子：在這裡出字幕
     t0 = time.time()                                          # 字幕出來才開始計時
     dur = beat_secs(b, subst(b.get("say", ""), vars_))
     while time.time() - t0 < dur:                           # (停)＝多留一會兒；講者模式只在步與步之間停
@@ -1534,7 +1556,8 @@ def execute(rb, mode, a):
                "failed": [s["id"] for s in state["steps"] if not s["ok"]],
                "durations": {s["id"]: s["dur_s"] for s in state["steps"]},
                "paused_s": round(sum(s.get("paused_s", 0) for s in state["steps"]), 1), "stopped": stopped,
-               "timeouts_skipped": [s["id"] for s in state["steps"] if any(a.get("timeout_skipped") for a in s.get("actions") or [])]}
+               "timeouts_skipped": [s["id"] for s in state["steps"] if any(a.get("timeout_skipped") for a in s.get("actions") or [])],
+               "dialog_before_caption": list(getattr(getattr(br, "look", None), "dialog_violations", []) or [])}
     if not persist:
         shutil.rmtree(run_dir, ignore_errors=True)
         summary["note"] = "demo.persist=off：一次性執行，紀錄已刪除"

@@ -243,6 +243,21 @@ class FakeCtl2(FakeCtl):
 
 
 boxes3 = {"#post-list": [269, 141, 984, 354], nth(1): [269, 397, 984, 90.8], "@e9": [600, 700, 200, 40], "#t": [269, 397, 984, 90.8]}
+class OrderCtl(FakeCtl2):
+    def __init__(self):
+        super().__init__(); self.seq = []
+
+    def publish(self, **kw):
+        super().publish(**kw)
+        if kw.get("pointer"):
+            self.seq.append("pointer")
+
+
+oc = OrderCtl(); lko = DR.Look(FakeBr(boxes3), oc, align=AL); lko.step("a", True)
+lko._pre_point = lambda box: oc.seq.append("caption")
+lko.aim("a", "@e9", click=True)
+lko.set("a", "#t")
+check("G（5c）：講動作與讀內容的拍子都是先出字幕、游標才移動", oc.seq[:4] == ["caption", "pointer", "caption", "pointer"], oc.seq)
 br4 = FakeBr(boxes3); c = FakeCtl2(); lk = DR.Look(br4, c, align=AL); lk.step("a", True)
 t_ = time.time(); lk.act("a", "@e9", press=True)
 sc = [x for x in br4.calls if x[0] == "scroll"]
