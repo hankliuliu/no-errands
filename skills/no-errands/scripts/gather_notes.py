@@ -514,9 +514,9 @@ def render_notes(tdir, title):
         if n.get("needs_review"):
             notes_.append("待人看：同一則在兩張圖上轉出來的字不一樣%s" % ("，另一個版本：「%s」" % n["alt_text"] if n.get("alt_text") else "，或那張圖的則數對不上"))
         if n.get("split"):
-            notes_.append("這一則被切在兩張圖之間，由兩張拼起來")
+            notes_.append("這一則是由相鄰兩張截圖拼起來的")
         for x in notes_:
-            L.append("> %s" % x)
+            L.append("- %s" % x)
         if notes_:
             L.append("")
     return "\n".join(L)
