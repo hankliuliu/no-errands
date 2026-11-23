@@ -205,8 +205,11 @@ def read_one(url, name, exe_name, exe, wait_s):
     want = (urllib.parse.urlparse(url).hostname or "").lower()
     before = set(browser_windows(exe_name))
     import nowin  # noqa: F401  子程序不開主控台視窗
-    subprocess.Popen([exe, "--new-window", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    hwnd, end = None, time.time() + 20
+    # --no-first-run --no-default-browser-check：沒跑過的設定檔（CI 的全新 runner）會卡在首次啟動畫面，
+    # 文件讀不到、視窗也關不掉；平常已在跑的瀏覽器會把參數轉給既有實例、不受影響
+    subprocess.Popen([exe, "--new-window", "--no-first-run", "--no-default-browser-check", url],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    hwnd, end = None, time.time() + 30
     while time.time() < end and hwnd is None:
         time.sleep(0.4)
         new = [h for h in browser_windows(exe_name) if h not in before]
@@ -214,7 +217,7 @@ def read_one(url, name, exe_name, exe, wait_s):
             raise Fail("同時出現 %d 個新的 %s 視窗，分不出哪個是自己開的：沒有讀也沒有關任何視窗" % (len(new), name))
         hwnd = new[0] if new else None
     if hwnd is None:
-        raise Fail("20 秒內沒有出現新的 %s 視窗" % name)
+        raise Fail("30 秒內沒有出現新的 %s 視窗" % name)
     res = {"ok": True, "browser": name, "host": want}
     try:
         last, doc, end = None, None, time.time() + wait_s
