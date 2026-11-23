@@ -1393,10 +1393,14 @@ def execute(rb, mode, a):
         if mode == "live" and ctl.read().get("hold_first") and i == lo:
             # 上場前準備（standby）：先把每個帳號的瀏覽器開到它第一步要用的頁面，停在「按下一步開始」
             # 片頭從第一刻就完整（副標、模式）——準備階段也是觀眾會看到的畫面（5c：擷取裡有一格片頭少了副標與模式）
-            ctl.publish(step_index=0, status="staging", captions=[{"text": "準備畫面中…", "s": 60}],
-                        card="title" if staged else None,
-                        card_data={"subtitle": (rb.get("stage") or {}).get("subtitle", ""),
-                                   "mode": "按下一步前進" if ctl.step_mode() else "自動播放"} if staged else None)
+            # Sprint H1（使用者 11-24：「不要做過場動畫」）：沒有片頭卡——準備期間畫面上仍是上場前準備的檢查清單。
+            # 引擎的發布會整份覆寫 now.json：把上場前準備寫的那一頁（卡片與項目）原樣接過來，舞台才知道還在準備（試擺要靠卡片在）
+            try:
+                prev_ = json.load(open(os.path.join(run_dir, "now.json"), encoding="utf-8"))
+            except Exception:
+                prev_ = {}
+            keep_ = {"card": "checklist", "card_data": prev_.get("card_data") or {"heading": "準備畫面中…", "items": []}} if staged else {}
+            ctl.publish(step_index=0, status="staging", captions=[{"text": "準備畫面中…", "s": 60}], **keep_)
             home = rb["target"]["base_url"].rstrip("/") + rb["target"].get("home_path", "/")
             for acct in rb["accounts"]:
                 br.ensure(acct)
@@ -1411,11 +1415,15 @@ def execute(rb, mode, a):
                 ctl.publish(status="failed", fit_fail=fit_why)
                 i = hi
             else:
-                ctl.publish(step_index=0, role="", captions=[{"text": rb.get("ready_caption") or
-                                                              "準備好了。按「下一步」開始示範。", "s": 600}],
-                            card="title" if staged else None,
-                            card_data={"subtitle": (rb.get("stage") or {}).get("subtitle", ""),
-                                       "mode": "按下一步前進" if ctl.step_mode() else "自動播放"} if staged else None)
+                pub_ = {}
+                if staged:
+                    # 準備好了：直接顯示第一個帳號的真頁面，停在第一步之前（沒有片頭卡）
+                    st0 = steps[lo]
+                    info0 = stage_accounts(rb, br)[st0["account"]]
+                    pub_ = dict(card=None, card_data=None, account=st0["account"], role=info0["role"], role_color=info0["color"],
+                                section="", crop=crop_of(rb, st0), look=None, beat={"text": "", "i": 0, "n": 0})
+                ctl.publish(step_index=0, captions=[{"text": rb.get("ready_caption") or
+                                                     "準備好了。按「下一步」開始示範。", "s": 600}], **pub_)
             if fit_why:
                 pass
             elif staged and not ctl.step_mode():
@@ -1434,12 +1442,8 @@ def execute(rb, mode, a):
             pb = os.path.join(rb["_dir"], "planb", "%s.png" % st["id"])
             if staged:
                 info_ = stage_accounts(rb, br)[st["account"]]
-                prev_acct = steps[i - 1]["account"] if i > lo else None
-                if prev_acct and prev_acct != st["account"]:          # 換角色：明確的轉場
-                    ctl.publish(card="transition", role=info_["role"], role_color=info_["color"], look=None,
-                                beat={"text": "", "i": 0, "n": 0})
-                    time.sleep(float((rb.get("stage") or {}).get("transition_s", 1.6)))
-                ctl.publish(card=None, role=info_["role"], role_color=info_["color"], section=st.get("section", ""),
+                # 換角色（Sprint H1）：沒有轉場卡、不停頓——帳號、角色名稱與顏色同一次發布，舞台把另一個帳號的頁面直接換上來
+                ctl.publish(card=None, account=st["account"], role=info_["role"], role_color=info_["color"], section="",
                             crop=crop_of(rb, st), look=None, beat={"text": "", "i": 0, "n": len(beats_of(st))})
                 al = (rb.get("stage") or {}).get("align") or {}
                 br.look.step(st["account"], (st.get("view") or "read") in (al.get("views") or [st.get("view") or "read"]))
@@ -1507,8 +1511,9 @@ def execute(rb, mode, a):
             stopped["stack"] = stk_ if os.path.exists(stk_) else None
         ctl.publish(status="stopped")
     finally:
-        if mode != "live" or not stopped or any(k in (stopped or {}) for k in ("user_stop", "stage_fit", "ended_early", "stage_hang")):
-            br.close_all()
+        end_path = staged and not (stopped and ("user_stop" in stopped or "stage_fit" in stopped or "stage_hang" in stopped))
+        if not end_path and (mode != "live" or not stopped or any(k in (stopped or {}) for k in ("user_stop", "stage_fit", "ended_early", "stage_hang"))):
+            br.close_all()                                   # 舞台的結束路徑（Sprint H1）：瀏覽器留在台上，收場時才關
         if staged and stopped and ("user_stop" in stopped or "stage_hang" in stopped):
             # 緊急停止（Ctrl+Shift+F12、舞台被撤下）：沒有片尾，但資料照樣還原（不留給別人收）
             try:
@@ -1528,31 +1533,31 @@ def execute(rb, mode, a):
             ctl.publish(status="done")
         if staged and stopped and "stage_hang" in stopped:
             show_hang_notice(rb, run_dir, ctl, state.get("reset") or {}, launch="--no-player" not in a)
-        if staged and not (stopped and ("user_stop" in stopped or "stage_fit" in stopped or "stage_hang" in stopped)):
-            # 片尾：停住讓講者可以回頭講；按「結束」由引擎自己還原，片尾卡顯示結果
-            end = (rb.get("stage") or {}).get("end") or {}
-            ctl.publish(card="end", look=None, beat={"text": "", "i": 0, "n": 0}, role="", section="", pointer=None,
-                        card_data={"heading": end.get("heading", "示範結束"), "text": end.get("text", ""),
-                                   "points": end.get("points") or []})
+        if end_path:
+            # 結束（Sprint H1）：沒有片尾卡。畫面停在最後那個真頁面，右上角的標記改成「示範結束」；資料還原有結果後
+            # 接「· 資料已還原／還原失敗」。講者按「下一步」、Esc 或「結束示範」才收（收完不留示範用的瀏覽器）；
+            # 自動模式：還原有結果後停 5 秒自己收。中途「結束示範」也走這條路。（劇本的 stage.end 欄位留著不讀）
+            ctl.publish(card=None, card_data=None, look=None, pointer=None, beat={"text": "", "i": 0, "n": 0}, section="",
+                        ended={"reset": None}, status="done")
+            try:
+                ok_, res_ = do_reset(rb)
+            except Exception as e:
+                ok_, res_ = False, [str(e)[:120]]
+            state["reset"] = {"ok": ok_, "results": res_}
+            with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=1)
+            ctl.publish(ended={"reset": bool(ok_)})
             try:
                 if ctl.step_mode():
-                    ctl.wait_next(status="done")                 # 講者模式：片尾停住，按「結束」才還原
+                    ctl.wait_next(status="done")                 # 講者模式：按「下一步」（結束）才收
                 else:
                     t_ = time.time()
-                    while time.time() - t_ < float(end.get("hold_s", 12)) and int(ctl.read().get("next_seq", 0)) <= ctl.next_seen:
+                    while time.time() - t_ < 5.0 and int(ctl.read().get("next_seq", 0)) <= ctl.next_seen:
                         time.sleep(0.25)
                         t_ += ctl.gate()
-                ok_, res_ = do_reset(rb)
-                state["reset"] = {"ok": ok_, "results": res_}
-                with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as f:
-                    json.dump(state, f, ensure_ascii=False, indent=1)
-                ctl.publish(card="end", card_data={"heading": end.get("heading", "示範結束"), "text": end.get("text", ""),
-                                                   "points": end.get("points") or [],
-                                                   "reset": "資料已還原" if ok_ else "還原沒有成功：請 agent 處理（%s）" % str(res_)[:60],
-                                                   "reset_ok": ok_})
-                time.sleep(4)
-            except StopDemo:
-                pass
+            except (StopDemo, EndDemo):
+                pass                                         # Esc／撤下／結束示範：一樣收掉
+            br.close_all()
             ctl.publish(status="closing")
     summary = {"ok": (stopped is None or "user_stop" in stopped or "ended_early" in stopped) and not skipped, "mode": mode,
                "skipped_after_fail": skipped, "run_dir": run_dir if persist else None,

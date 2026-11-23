@@ -756,14 +756,23 @@ def main():
                 if os.path.exists(os.path.join(home, f_)):
                     os.remove(os.path.join(home, f_))
             focus(["訊息"], "")
-            # 預設像播影片：不按任何鍵也會自己播到片尾（片頭片尾才停）
+            # 自動播放：不按任何鍵也會自己播到結束（Sprint H1：沒有片頭、換角色、片尾卡——全程都是真頁面）
             rc, o, txt = rbj("live", sgp, "--approval", aid, "--no-player")
             rda = o.get("run_dir") or ""
-            t0 = time.time(); seen = set()
-            while time.time() - t0 < 90 and now_of(rda).get("card") != "end":
-                seen.add((now_of(rda).get("beat") or {}).get("text")); time.sleep(0.3)
-            check("舞台（自動播放）：不按鍵就自己播到片尾，每一拍都出現過", now_of(rda).get("card") == "end"
-                  and {"第一句：看這裡", "第二句", "長官這邊"} <= seen, (now_of(rda).get("card"), seen))
+            t0 = time.time(); seen = set(); cards_a = set()
+            while time.time() - t0 < 90 and not now_of(rda).get("ended"):
+                n_ = now_of(rda)
+                seen.add((n_.get("beat") or {}).get("text"))
+                if n_.get("card"):
+                    cards_a.add(n_["card"])
+                time.sleep(0.3)
+            check("舞台（自動播放）：不按鍵就自己播到結束，每一拍都出現過", bool(now_of(rda).get("ended"))
+                  and {"第一句：看這裡", "第二句", "長官這邊"} <= seen, (now_of(rda).get("ended"), seen))
+            check("H1 自動播放：整場沒有任何卡片（片頭、換角色、片尾都沒有）", not cards_a, cards_a)
+            n = wait_for(rda, lambda n: n.get("status") == "closing", 40)
+            check("H1 自動播放：結束時停在真頁面（沒有卡片）、還原有結果後 5 秒內自己收掉",
+                  n.get("status") == "closing" and not n.get("card") and (n.get("ended") or {}).get("reset") is not None,
+                  (n.get("status"), n.get("card"), n.get("ended")))
             rbj("control", rda, "stop"); time.sleep(1)
             # 講者模式（逐步）：拍子自己往下走（hold 只是多留），每一「步」做完才停下等「下一步」
             focus(["訊息"], "")
@@ -784,23 +793,27 @@ def main():
                 time.sleep(0.2)
             check("舞台（講者模式）：一步裡的字幕自己往下走、這一步做完才停在下一步之前",
                   n.get("step_id") == "s2" and n.get("status") == "waiting_next" and seen2[:2] == ["第一句：看這裡", "第二句"], (n.get("step_id"), n.get("status"), seen2))
-            check("舞台：角色名牌、段落、裁切（s1）", True)
-            check("舞台：換角色有轉場卡（換成：長官）", "transition:長官" in cards_seen, cards_seen)
+            n_s2 = now_of(rds_)
+            check("H1 換角色：沒有轉場卡，帳號、角色名稱與顏色同時換（s2＝長官、demo_b）", not cards_seen
+                  and n_s2.get("account") == "demo_b" and n_s2.get("role") == "長官" and n_s2.get("role_color"), (cards_seen, n_s2.get("account"), n_s2.get("role")))
+            check("H2 段落名稱不再發布給舞台顯示", n_s2.get("section") == "", n_s2.get("section"))
             rbj("control", rds_, "next")
             t0 = time.time()
-            while time.time() - t0 < 60 and now_of(rds_).get("card") != "end":
+            while time.time() - t0 < 60 and not now_of(rds_).get("ended"):
                 if now_of(rds_).get("status") in ("waiting_next", "failed"):
                     time.sleep(0.5); rbj("control", rds_, "next")
                 time.sleep(0.5)
-            n = now_of(rds_)
-            check("舞台：跑完停在片尾卡（講者可以回頭講）", n.get("card") == "end" and (n.get("card_data") or {}).get("heading") == "示範結束", n)
-            check("片尾卡：角色帶不再顯示上一步的角色與段落（5c：片尾時還寫著「長官 知識更新」）",
-                  n.get("role") == "" and n.get("section") == "", (n.get("role"), n.get("section")))
+            n = wait_for(rds_, lambda n: (n.get("ended") or {}).get("reset") is not None, 30)
+            check("H1 講者模式：跑完停在最後的真頁面（沒有片尾卡），標記資料是「示範結束」加還原結果",
+                  not n.get("card") and n.get("ended") is not None and (n.get("ended") or {}).get("reset") is not None
+                  and n.get("account") == "demo_b", (n.get("card"), n.get("ended"), n.get("account")))
+            time.sleep(1.5)
+            check("H1 講者模式：還原之後停住等講者（沒按就不收）", now_of(rds_).get("status") != "closing", now_of(rds_).get("status"))
             rbj("control", rds_, "next")
             n = wait_for(rds_, lambda n: n.get("status") == "closing", 30)
             rj_ = json.load(open(os.path.join(rds_, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rds_, "run.json")) else {}
-            check("舞台：片尾按「結束」→ 引擎自己跑還原、片尾卡顯示結果、收掉舞台",
-                  n.get("status") == "closing" and "reset" in rj_ and (n.get("card_data") or {}).get("reset"), (n, rj_.get("reset")))
+            check("H1 講者模式：按「結束」→ 收掉（還原結果在紀錄裡）",
+                  n.get("status") == "closing" and "reset" in rj_, (n.get("status"), rj_.get("reset")))
 
             # 中途「結束示範」（control state=ending）：停下動作 → 片尾 → 還原 → 收掉（5c：時間不夠時任何一步都能收）
             focus(["訊息"], "")
@@ -809,8 +822,9 @@ def main():
             wait_for(rde, lambda n: n.get("step_id") == "s1" and (n.get("beat") or {}).get("text"), 30)
             cpath = os.path.join(rde, "control.json")             # 舞台的「結束示範」寫的就是這個
             json.dump(dict(json.load(open(cpath, encoding="utf-8")), state="ending"), open(cpath, "w"))
-            n = wait_for(rde, lambda n: n.get("card") == "end", 30)
-            check("中途結束 → 停下動作、顯示片尾", n.get("card") == "end" and n.get("step_id") == "s1", (n.get("card"), n.get("step_id")))
+            n = wait_for(rde, lambda n: n.get("ended") is not None, 30)
+            check("中途結束 → 停下動作、停在當下的真頁面（沒有片尾卡）、標記改成示範結束",
+                  n.get("ended") is not None and not n.get("card") and n.get("step_id") == "s1", (n.get("card"), n.get("ended"), n.get("step_id")))
             n = wait_for(rde, lambda n: n.get("status") == "closing", 40)
             rje = json.load(open(os.path.join(rde, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rde, "run.json")) else {}
             check("中途結束 → 照常執行還原、最後收掉舞台（這一段的政策檔還沒有還原同意，所以只看有沒有執行）",
