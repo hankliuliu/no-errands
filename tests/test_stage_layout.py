@@ -263,6 +263,10 @@ check("講動作的拍子：游標指到目標中心（不框、不按）", abs(
 check("look 沒寫、接著的動作不是點擊或輸入 → 沒有目標；寫了 False → 不框；寫了 CSS → 照寫的",
       DR.beat_target(st_b, {"at": 2}) is None and DR.beat_target(st_b, {"at": 1, "look": False}) is False
       and DR.beat_target(st_b, {"at": 1, "look": {"css": "#x"}}) == {"css": "#x"})
+check("讀內容的拍子：游標在那一段開頭的左邊 18 px", L.look_pointer([300, 200, 400, 40]) == (282, 212), L.look_pointer([300, 200, 400, 40]))
+check("整列從頁面最左邊開始（側欄的一列）：游標在列內左側留白，不貼螢幕邊緣",
+      L.look_pointer([0, 380, 403, 48]) == (12, 392) and L.look_pointer([4, 380, 403, 48])[0] == 16, L.look_pointer([0, 380, 403, 48]))
+check("很窄的目標：留白不超過寬度的四分之一", L.look_pointer([0, 10, 20, 10]) == (5.0, 15.0), L.look_pointer([0, 10, 20, 10]))
 import re as _re  # noqa: E402
 bad = {}
 for fn in ("demo_stage.py", "demo_runbook.py", "neb.py", "stage_layout.py"):
