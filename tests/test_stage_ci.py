@@ -195,8 +195,9 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
     t3 = title()
     check("A26 隔離層穩定：20 輪真的點擊＋滾輪＋移動（不同位置與時間點），頁面一次都沒收到",
           bool(t1) and all(t3.get(k) == t1.get(k) for k in "cwm"), (t1, t3))
-    time.sleep(CURSOR_WAIT)
-    check("A26 真的游標不動約 2 秒就隱藏", rd(geom).get("cursor_hidden") is True, rd(geom).get("cursor_hidden"))
+    t_idle = time.time()                           # 舞台 2 秒後隱藏、量測值每秒寫一次：忙的機器上輪詢到 5 秒（main CI 45086819215：固定等 2.8 秒誤判）
+    hid = wait(lambda: rd(geom).get("cursor_hidden") is True or None, 5)
+    check("A26 真的游標不動約 2 秒就隱藏（5 秒內）", hid is True, (rd(geom).get("cursor_hidden"), round(time.time() - t_idle, 1)))
     move_abs(cx + 60, cy + 40); time.sleep(0.5)
     check("A26 真的游標一動就出現", rd(geom).get("cursor_hidden") is False, rd(geom).get("cursor_hidden"))
 
@@ -241,16 +242,24 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
             clicked = True
         time.sleep(0.012)
     e2 = L.css_point(tgt2, lay["stage"], crop, float(now.get("zoom") or 1.0), DS.dpr_of(h))
-    # 依經過的時間算速度（5c）：取樣間隔變長時允許的位移跟著放大；檢查的是速度有沒有突然暴衝（瞬移）
+    # 沒有瞬移（5c v4）：每一次位置改變的位移，不超過「加減速曲線的最高速度 × 這一格經過的時間」該有的量。
+    # 不再用「平均速度的倍數」——smoothstep 中段本來就是平均的 1.5 倍（main CI 45086819215 因此誤判）。
+    # 時間用上一次位置改變到這一次（位置只在舞台畫下一格時才變），夾在 34–250 ms：一格延遲後補上的位移照算，
+    # 停很久再一次跳到底（瞬移）仍然超過（允許量最多是全程的約 2/3）。
     D = ((e2[0] - e1[0]) ** 2 + (e2[1] - e1[1]) ** 2) ** 0.5
-    vmax = 2.5 * D / 0.8 + 60                      # 加減速的最高速度約平均的 1.5 倍＋弧線；60 px/s 是量測雜訊的餘裕
-    speeds = []
-    for i in range(len(samples) - 1):
-        dt = max(0.004, samples[i + 1][2] - samples[i][2])
-        dd = ((samples[i + 1][0] - samples[i][0]) ** 2 + (samples[i + 1][1] - samples[i][1]) ** 2) ** 0.5
-        speeds.append(dd / dt)
-    check("A21 示範游標的移動是連續的（依時間算的速度不超過整段平均速度的 2.5 倍；沒有瞬移）",
-          speeds and max(speeds) <= vmax, (round(max(speeds or [0])), round(vmax), len(samples)))
+    vpeak = 1.5 * 1.15 * D / 0.8                    # smoothstep 最高速度＝平均 1.5 倍；弧線多走約 15%
+    worst, last, nsteps = None, samples[0] if samples else None, 0
+    for sm in samples[1:]:
+        dd = ((sm[0] - last[0]) ** 2 + (sm[1] - last[1]) ** 2) ** 0.5
+        if dd > 0:
+            dt = min(0.25, max(0.034, sm[2] - last[2]))
+            allow = 1.25 * vpeak * dt + 6
+            nsteps += 1
+            if worst is None or dd / allow > worst[0]:
+                worst = (dd / allow, round(dd), round(allow), round(sm[2] - last[2], 3))
+            last = sm
+    check("A21 示範游標的移動是連續的（沒有瞬移：每一格的位移 ≤ 最高速度在這一格時間內該走的量）",
+          nsteps >= 5 and worst is not None and worst[0] <= 1.0, (worst, nsteps, round(D), len(samples)))
     check("A27 移動途中使用者點了字幕：示範游標照樣走到目標", abs(samples[-1][0] - e2[0]) <= 2 and abs(samples[-1][1] - e2[1]) <= 2,
           (samples[-1], e2))
     ackp = os.path.join(d, "stage_ack.json")
