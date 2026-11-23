@@ -614,10 +614,10 @@ class Stage:
         return t
 
     # ---------- 控制
-    def toast(self, text):
+    def toast(self, text, secs=1.5):
         """按鍵有沒有被收到，畫面上一定有反應（字幕帶右下的狀態列）。"""
         try:
-            self._toast = (text, time.time())
+            self._toast = (text, time.time(), secs)
             self.state.configure(text="● " + text, fg="#d29922")
         except Exception:
             pass
@@ -676,8 +676,13 @@ class Stage:
         keys = {1: (0, 0x27), 2: (0, 0x22), 3: (0, 0x20), 4: (0x0002 | 0x0004, 0x7B), 5: (0, 0x43)}   # 5＝C（字幕開關）
 
         def loop():
+            names = {1: "→", 2: "PageDown", 3: "空白鍵", 4: "Ctrl+Shift+F12", 5: "C"}
+            self.hotkeys_ok = {}
             for i, (mod, vk) in keys.items():
-                u32.RegisterHotKey(None, i, 0x4000 | mod, vk)    # MOD_NOREPEAT
+                self.hotkeys_ok[names[i]] = bool(u32.RegisterHotKey(None, i, 0x4000 | mod, vk))    # MOD_NOREPEAT
+            bad = [k for k in ("→", "PageDown", "空白鍵", "Ctrl+Shift+F12") if not self.hotkeys_ok.get(k)]
+            if bad:                                        # 別的程式先註冊了同一個鍵：舞台收不到——畫面上說清楚，請改用按鈕
+                self._hk_warn = "%s 被別的程式佔用，按了不會有反應：請用右下角的按鈕" % "、".join(bad)
             msg = wintypes.MSG()
             while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
                 if msg.message == 0x0312:                  # WM_HOTKEY
@@ -1178,7 +1183,10 @@ class Stage:
         cs = L.controls_state(presenter, "waiting_next" if end_wait else st, paused, slow,
                               (time.time() - self._moved_t) if self._moved_t else None)
         tt = getattr(self, "_toast", None)
-        toast_on = bool(tt and time.time() - tt[1] < 1.5)
+        toast_on = bool(tt and time.time() - tt[1] < (tt[2] if len(tt) > 2 else 1.5))
+        if getattr(self, "_hk_warn", None) and not getattr(self, "_hk_warned", False) and now.get("card") != "checklist":
+            self._hk_warned = True                       # 按鍵被別的程式佔了：講者要知道（使用者昨晚：按空白、右鍵沒反應）
+            self.toast(self._hk_warn, 10)
         show_ctl = (cs["visible"] or toast_on) and now.get("card") != "checklist"
         if show_ctl != self.ctl_shown:
             self.ctlw.deiconify() if show_ctl else self.ctlw.withdraw()
@@ -1360,7 +1368,7 @@ class Stage:
                 "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": list(self.xbtn_rect()) if getattr(self, "_cap_shown", False) and self.xbtn_rect() else None, "x_shown": self._x_on, "hint_visible": bool(self.hintw.winfo_viewable()),
                 "caption_on": self.cap_on, "controls_rect": box(self.ctlw), "controls_want": list(getattr(self, "_ctl_xy", None) or []),
                 "controls_moves": getattr(self, "ctl_moves", 0), "controls_stuck": getattr(self, "_ctl_retry", 0) > 3,
-                "shield": box(self.shield), "shield_rx": dict(self.shield_rx), "pointer": [round(v) for v in self.ptr_pos] if self.ptr_pos and self.ptrw.winfo_viewable() else None,
+                "shield": box(self.shield), "shield_rx": dict(self.shield_rx), "hotkeys": dict(getattr(self, "hotkeys_ok", {}) or {}), "pointer": [round(v) for v in self.ptr_pos] if self.ptr_pos and self.ptrw.winfo_viewable() else None,
                 "cursor_hidden": self.cursor_hidden, "ripple_on": self.ptrc.itemcget(self.ripple, "state") == "normal", "look_alpha": self.look_a if any(e.winfo_viewable() for e in self.edges) else 0,
                 "look_rect": list(self.look_rect) if getattr(self, "look_rect", None) else None,
                 "mask_rect": list(self.mask_rect) if getattr(self, "mask_rect", None) else None,
@@ -1388,7 +1396,11 @@ class Stage:
              "controls_visible": bool(self.ctl_shown),
              "next": [self.b_next.winfo_rootx() + self.b_next.winfo_width() // 2,
                       self.b_next.winfo_rooty() + self.b_next.winfo_height() // 2]
-             if self.ctl_shown and self.b_next.winfo_ismapped() and self.b_next.winfo_width() > 1 else None}
+             if self.ctl_shown and self.b_next.winfo_ismapped() and self.b_next.winfo_width() > 1 else None,
+             "more": [self.b_more.winfo_rootx() + self.b_more.winfo_width() // 2,
+                      self.b_more.winfo_rooty() + self.b_more.winfo_height() // 2]
+             if self.ctl_shown and self.b_more.winfo_ismapped() and self.b_more.winfo_width() > 1 else None,
+             "hint_text": self.state.cget("text"), "hotkeys": dict(getattr(self, "hotkeys_ok", {}) or {})}
         tmp = os.environ["NE_STAGE_GEOM"] + ".tmp"
         json.dump(g, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
         try:

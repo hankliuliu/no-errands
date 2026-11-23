@@ -596,6 +596,102 @@ def real_chrome_checks(stage_with):
     shutil.rmtree(work, ignore_errors=True)
 
 
+def presenter_controls_checks():
+    """講者最常用的動作，用測試機上真實的輸入驗（5c：本機只能用訊息，必須有地方真的點過）：
+    鍵盤 →、PageDown 前進、空白暫停／繼續（keybd_event）；滑鼠點「下一步」前進、點「⋯」→「結束示範」進片尾（mouse_event）；
+    別的程式先佔了 PageDown → 舞台記下註冊失敗、畫面上說「被別的程式佔用」。"""
+    from ctypes import wintypes
+    u = ctypes.windll.user32
+    u.SendMessageW.restype = ctypes.c_void_p
+    u.FindWindowW.restype = ctypes.c_void_p
+    u.GetMenuItemRect.argtypes = [ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT, ctypes.POINTER(wintypes.RECT)]
+    SW, SH = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+
+    def move_abs(x_, y_):
+        u.mouse_event(0x8001, int(x_ * 65535 / (SW - 1)), int(y_ * 65535 / (SH - 1)), 0, 0)
+
+    def click(x_, y_):
+        move_abs(x_, y_); time.sleep(0.15)
+        u.mouse_event(0x0002, 0, 0, 0, 0); time.sleep(0.06); u.mouse_event(0x0004, 0, 0, 0, 0)
+
+    def key(vk, ext=False):
+        f = 0x1 if ext else 0
+        u.keybd_event(vk, 0, f, 0); time.sleep(0.05); u.keybd_event(vk, 0, f | 0x2, 0)
+
+    def start(extra_env=None):
+        d = tempfile.mkdtemp(prefix="ne-stage-")
+        geom = os.path.join(d, "geom.json")
+        json.dump({"status": "waiting_next", "card": None, "role": "長官", "role_color": "#c2410c", "section": "第一道關卡",
+                   "step_index": 8, "steps_total": 13, "beat": {"text": "第一道關卡：長官核准。", "i": 1, "n": 3}, "accounts": {}},
+                  open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        json.dump({"state": "playing", "advance": "step", "next_seq": 0}, open(os.path.join(d, "control.json"), "w"))
+        env = dict(os.environ, NE_STAGE_GEOM=geom, NE_STAGE_NO_HOTKEYS="", NO_ERRANDS_HOME=d)
+        env.update(extra_env or {})
+        p = spawn(d, env)
+        g = wait(lambda: rd(geom).get("next") and rd(geom), 15) or {}
+        return d, p, geom, g
+
+    def ctl(d):
+        return rd(os.path.join(d, "control.json"))
+
+    d, p, geom, g = start()
+    hk = g.get("hotkeys") or {}
+    check("講者：→、PageDown、空白、Ctrl+Shift+F12 都註冊成功（舞台拿到了熱鍵）",
+          all(hk.get(k) for k in ("→", "PageDown", "空白鍵", "Ctrl+Shift+F12")), hk)
+    s0 = int(ctl(d).get("next_seq", 0))
+    key(0x22)                                            # PageDown（簡報筆）
+    s1 = wait(lambda: int(ctl(d).get("next_seq", 0)) > s0 and int(ctl(d).get("next_seq", 0)), 3) or s0
+    check("講者：真的按 PageDown（簡報筆）→ 下一步", s1 > s0, (s0, s1))
+    key(0x27, ext=True)                                  # →
+    s2 = wait(lambda: int(ctl(d).get("next_seq", 0)) > s1 and int(ctl(d).get("next_seq", 0)), 3) or s1
+    check("講者：真的按 → → 下一步", s2 > s1, (s1, s2))
+    key(0x20)                                            # 空白
+    pz = wait(lambda: ctl(d).get("state") == "paused" or None, 3)
+    key(0x20)
+    rs = wait(lambda: ctl(d).get("state") == "playing" or None, 3)
+    check("講者：真的按空白 → 暫停；再按一次 → 繼續", pz is True and rs is True, (pz, rs, ctl(d).get("state")))
+    g = wait(lambda: rd(geom).get("next") and rd(geom), 5) or {}
+    nx = g.get("next")
+    s3 = int(ctl(d).get("next_seq", 0))
+    if nx:
+        click(nx[0], nx[1])
+    s4 = wait(lambda: int(ctl(d).get("next_seq", 0)) > s3 and int(ctl(d).get("next_seq", 0)), 3) or s3
+    check("講者：真的用滑鼠點「下一步」→ 下一步", bool(nx) and s4 > s3, (nx, s3, s4))
+    g = wait(lambda: rd(geom).get("more") and rd(geom), 5) or {}
+    mo = g.get("more")
+    ended = None
+    if mo:
+        click(mo[0], mo[1])
+        m = wait(lambda: u.FindWindowW("#32768", None) or None, 3)
+        if m:
+            hmenu = u.SendMessageW(ctypes.c_void_p(m), 0x01E1, 0, 0)       # MN_GETHMENU
+            r = wintypes.RECT()
+            if hmenu and u.GetMenuItemRect(None, hmenu, 2, ctypes.byref(r)):   # 第 3 項＝結束示範（片尾、還原）
+                click((r.left + r.right) // 2, (r.top + r.bottom) // 2)
+                ended = wait(lambda: ctl(d).get("state") == "ending" or None, 3)
+    check("講者：真的用滑鼠點「⋯」→「結束示範」→ 進入結束（control state=ending）", ended is True, (mo, ctl(d)))
+    move_abs(SW // 2, SH // 2)
+    json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
+    try:
+        p.wait(10)
+    except subprocess.TimeoutExpired:
+        kill_tree(p)
+    # 別的程式先佔了 PageDown：舞台收不到這個鍵——要記下來、畫面上說清楚
+    held = u.RegisterHotKey(None, 0x7701, 0x4000, 0x22)
+    d, p, geom, g = start()
+    hint = wait(lambda: "佔用" in (rd(geom).get("hint_text") or "") and rd(geom).get("hint_text"), 6)
+    check("講者：PageDown 被別的程式先佔 → 舞台記下註冊失敗、畫面上說「被別的程式佔用」",
+          bool(held) and (rd(geom).get("hotkeys") or {}).get("PageDown") is False and bool(hint),
+          (held, rd(geom).get("hotkeys"), rd(geom).get("hint_text")))
+    if held:
+        u.UnregisterHotKey(None, 0x7701)
+    json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
+    try:
+        p.wait(10)
+    except subprocess.TimeoutExpired:
+        kill_tree(p)
+
+
 def main():
     if os.name != "nt" or "--i-am-ci" not in sys.argv or os.environ.get("GITHUB_ACTIONS") != "true":
         # 全螢幕視窗、真的滑鼠輸入、擷圖：只在 GitHub Actions 的測試機上（不動使用者的螢幕、滑鼠鍵盤）
@@ -691,6 +787,7 @@ def main():
         ku.keybd_event(vk, 0, up, 0); time.sleep(0.05)
     check("A16 更新迴圈卡死時按 Ctrl+Shift+F12 → 3 秒內離開（不靠主迴圈）", closes_within(p, 4))
 
+    presenter_controls_checks()
     # 預備清單沒過、講者按停止 → 收掉
     d = tempfile.mkdtemp(prefix="ne-stage-")
     json.dump({"card": "checklist", "card_data": {"heading": "還沒準備好", "items": [{"name": "連線到示範系統", "state": "fail",
