@@ -101,32 +101,81 @@ def _foreground_is_lockapp():
         k.CloseHandle(h)
 
 
-def screen_unavailable():
-    """畫面能不能用：電腦鎖定、或螢幕保護程式正在跑 → 回原因字串；可以用 → None。
-    鎖定時「閒置很久」沒有意義，擷取到的也不是真的畫面（2026-11-23：螢幕閒置 20 分鐘後關閉並鎖定，之後的結果都不算數）。
-    Windows 10 起的鎖定畫面（LockApp）跑在使用者原本的桌面上，所以「輸入桌面」看不出鎖定；以工作階段的鎖定旗標為準，
-    讀不到時看前景視窗是不是 LockApp。判斷不了（非 Windows、呼叫失敗）回 None，交給其他檢查。"""
-    if os.name != "nt":
-        return None
+def _logonui_running():
+    """LogonUI.exe（鎖定或登入畫面的介面）有沒有在跑（Toolhelp 列舉，幾毫秒）。"""
+    import ctypes, ctypes.wintypes as wt
+
+    class PE(ctypes.Structure):
+        _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_void_p), ("th32ModuleID", wt.DWORD), ("cntThreads", wt.DWORD),
+                    ("th32ParentProcessID", wt.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+    k = ctypes.windll.kernel32
+    k.CreateToolhelp32Snapshot.restype = wt.HANDLE
+    snap = k.CreateToolhelp32Snapshot(0x2, 0)   # TH32CS_SNAPPROCESS
+    if not snap or snap == wt.HANDLE(-1).value:
+        return False
     try:
-        import ctypes
-        u32 = ctypes.windll.user32
-        locked = session_lock_state()
-        if locked:
-            return "電腦目前鎖定中"
-        if locked is None and _foreground_is_lockapp():
-            return "電腦目前鎖定中（前景是鎖定畫面）"
+        pe = PE(); pe.dwSize = ctypes.sizeof(PE)
+        ok = k.Process32FirstW(snap, ctypes.byref(pe))
+        while ok:
+            if pe.szExeFile.lower() == "logonui.exe":
+                return True
+            ok = k.Process32NextW(snap, ctypes.byref(pe))
+        return False
+    finally:
+        k.CloseHandle(snap)
+
+
+def screen_signals():
+    """各個「畫面不能用」訊號的原始值（給判斷與診斷用；不含任何內容）。"""
+    sig = {"wts_locked": None, "lockapp_foreground": None, "logonui": None, "secure_desktop": None, "screensaver": None}
+    if os.name != "nt":
+        return sig
+    import ctypes
+    u32 = ctypes.windll.user32
+    for k_, f in (("wts_locked", session_lock_state), ("lockapp_foreground", _foreground_is_lockapp), ("logonui", _logonui_running)):
+        try:
+            sig[k_] = f()
+        except Exception:
+            sig[k_] = None
+    try:
         u32.OpenInputDesktop.restype = ctypes.c_void_p
-        h = u32.OpenInputDesktop(0, False, 0x0100)   # DESKTOP_SWITCHDESKTOP：輸入安全桌面（輸入密碼、UAC）時打不開
-        if not h:
-            return "電腦目前在安全桌面（鎖定或輸入密碼中）"
-        u32.CloseDesktop(ctypes.c_void_p(h))
-        running = ctypes.c_int(0)
-        if u32.SystemParametersInfoW(0x0072, 0, ctypes.byref(running), 0) and running.value:   # SPI_GETSCREENSAVERRUNNING
-            return "螢幕保護程式正在執行"
+        h = u32.OpenInputDesktop(0, False, 0x0100)   # DESKTOP_SWITCHDESKTOP：輸入安全桌面（輸入密碼、權限提示）時打不開
+        sig["secure_desktop"] = not h
+        if h:
+            u32.CloseDesktop(ctypes.c_void_p(h))
     except Exception:
-        return None
+        pass
+    try:
+        running = ctypes.c_int(0)
+        if u32.SystemParametersInfoW(0x0072, 0, ctypes.byref(running), 0):   # SPI_GETSCREENSAVERRUNNING
+            sig["screensaver"] = bool(running.value)
+    except Exception:
+        pass
+    return sig
+
+
+def screen_unavailable(sig=None):
+    """畫面能不能用：不能用 → 原因字串；可以用（或判斷不了）→ None。
+    誤判的代價不對稱（沒鎖卻說鎖著＝上台那天示範起不來），所以「鎖定」要至少兩個獨立訊號同意：
+    工作階段的鎖定旗標（WTS SessionFlags）、前景視窗是鎖定畫面（LockApp）、LogonUI 在跑，三個裡至少兩個。
+    只有一個訊號說鎖定 → 不擋（呼叫端可以記下來）。安全桌面與螢幕保護程式單一訊號就擋。
+    Windows 10 起的鎖定畫面跑在使用者原本的桌面上，所以「輸入桌面」看不出鎖定（2026-11-23 在鎖著的電腦上實測）。"""
+    sig = sig if sig is not None else screen_signals()
+    votes = sum(1 for k_ in ("wts_locked", "lockapp_foreground", "logonui") if sig.get(k_))
+    if votes >= 2:
+        return "電腦目前鎖定中（%d 個訊號一致）" % votes
+    if sig.get("secure_desktop"):
+        return "電腦目前在安全桌面（輸入密碼或權限提示中）"
+    if sig.get("screensaver"):
+        return "螢幕保護程式正在執行"
     return None
+
+
+def single_lock_signal(sig):
+    """只有一個鎖定訊號（不擋，但值得記下來）。"""
+    return sum(1 for k_ in ("wts_locked", "lockapp_foreground", "logonui") if sig.get(k_)) == 1
 
 
 OWN_PAD_S = 0.3   # 我們自己的動作結束後，再多算這麼久（系統記錄輸入時間的誤差）
@@ -174,8 +223,9 @@ def main():
     if a[0] == "seconds":
         print(json.dumps({"idle_s": idle_seconds()})); sys.exit(0)
     if a[0] == "screen":
-        why = screen_unavailable()
-        print(json.dumps({"available": why is None, "why": why}, ensure_ascii=False)); sys.exit(0 if why is None else 1)
+        sig = screen_signals()
+        why = screen_unavailable(sig)
+        print(json.dumps({"available": why is None, "why": why, "signals": sig}, ensure_ascii=False)); sys.exit(0 if why is None else 1)
     if a[0] == "wait":
         mn = float(a[a.index("--min") + 1]) if "--min" in a else 180
         to = float(a[a.index("--timeout") + 1]) if "--timeout" in a else 3600

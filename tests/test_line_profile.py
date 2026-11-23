@@ -268,7 +268,9 @@ check("輸入監看：沒有我們的動作時，照舊一動就算（沒有放�
 # 電腦鎖定或螢幕保護程式時：閒置閘門與操作中的檢查都要中止並講明原因
 _orig_su = _idle.screen_unavailable
 try:
-    _idle.screen_unavailable = lambda: "電腦目前鎖定中（測試）"
+    _orig_sig = _idle.screen_signals
+    _idle.screen_signals = lambda: {}
+    _idle.screen_unavailable = lambda sig=None: "電腦目前鎖定中（測試）"
     try:
         cg.idle_gate({"raises_foreground": True}, {"busy_behavior": "wait_idle", "idle_min_s": 0}, [])
         _gate_ok = False
@@ -281,8 +283,18 @@ try:
         _ci_ok = "鎖定" in str(_e)
 finally:
     _idle.screen_unavailable = _orig_su
+    _idle.screen_signals = _orig_sig
     cg.WATCH.update({"watch": None, "win": None, "tripped": False})
 check("電腦鎖定時：閒置閘門拒絕並講明原因（不把鎖定當成閒置）", _gate_ok)
+_S = dict(wts_locked=None, lockapp_foreground=None, logonui=None, secure_desktop=False, screensaver=False)
+check("鎖定判斷：只有工作階段旗標一個訊號 → 不擋（避免沒鎖卻說鎖著）", _idle.screen_unavailable(dict(_S, wts_locked=True)) is None
+      and _idle.single_lock_signal(dict(_S, wts_locked=True)))
+check("鎖定判斷：旗標＋鎖定畫面在前景 → 擋", "鎖定" in (_idle.screen_unavailable(dict(_S, wts_locked=True, lockapp_foreground=True)) or ""))
+check("鎖定判斷：旗標讀不到，但 LockApp 在前景＋LogonUI 在跑 → 擋", "鎖定" in (_idle.screen_unavailable(dict(_S, lockapp_foreground=True, logonui=True)) or ""))
+check("鎖定判斷：安全桌面、螢幕保護程式單一訊號就擋", _idle.screen_unavailable(dict(_S, secure_desktop=True)) and _idle.screen_unavailable(dict(_S, screensaver=True)))
+check("鎖定判斷：都沒有 → 可以用", _idle.screen_unavailable(_S) is None)
+if os.name == "nt":   # 診斷：這台機器（含 CI 測試機）當下各訊號的值與判斷結果，只有布林值
+    print("screen signals:", _idle.screen_signals(), "->", _idle.screen_unavailable())
 check("電腦鎖定時：操作中的檢查中止並講明原因", _ci_ok)
 import inspect as _ins2  # noqa: E402
 check("記事本擷取中途被鎖定：stop=locked、圖全丟（在丟圖的清單裡）", '"wrong_chat", "no_overlap", "locked"' in _ins2.getsource(cg.cmd_notes))

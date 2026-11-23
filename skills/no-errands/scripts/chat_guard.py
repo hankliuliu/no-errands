@@ -395,9 +395,12 @@ def idle_gate(prof, pol, a):
     """會搶前景的 app：只在使用者閒置時做（或使用者已同意）。回傳後開始監看。"""
     if not prof.get("raises_foreground") or pol.get("visibility") == "watch":
         return
-    why = idle.screen_unavailable()
+    sig = idle.screen_signals()
+    why = idle.screen_unavailable(sig)
     if why:   # 鎖定或螢幕保護程式時「閒置很久」沒有意義，做出來的也不是真的畫面
         raise Refused("%s：解鎖前不操作畫面（閒置閘門在這時候沒有意義）" % why)
+    if idle.single_lock_signal(sig):   # 只有一個訊號說鎖定：照常進行，但記下來（之後判斷誤判用）
+        sys.stderr.write("screen: one lock signal only, proceeding %s" % json.dumps(sig) + chr(10))
     mode = pol.get("busy_behavior", "wait_idle")
     if mode == "ask":
         if "--user-ok" not in a:
