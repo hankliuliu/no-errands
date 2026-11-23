@@ -1041,9 +1041,10 @@ class Look:
         return "#000000"
 
 
-def stage_fit_probe(rb, steps, ctl, run_dir, timeout=12.0):
+def stage_fit_probe(rb, steps, ctl, run_dir, timeout=30.0):
     """A1／A19：上場前，把每個帳號的瀏覽器照它第一步的裁切擺到舞台位置（在背板下面，觀眾看不到），
-    讀舞台量到的實際頁面範圍（stage_fit.json）。連續兩次合格才算；不合格回一句原因（不 READY、不上台）。"""
+    讀舞台量到的實際頁面範圍（stage_fit.json）。連續兩次合格才算；不合格回一句原因（不 READY、不上台）。
+    每個帳號最多等 30 秒（5c：冷開機時瀏覽器第一次畫出頁面會慢，要會等，不要直接判定沒準備好）。"""
     p = os.path.join(run_dir, "stage_fit.json")
     for acct in rb["accounts"]:
         st = next((x for x in steps if x["account"] == acct), None)
@@ -2026,6 +2027,36 @@ def notification_state():
     return None
 
 
+def screen_locked():
+    """A36：電腦是不是鎖定（登入畫面蓋在上面）。用工作階段的鎖定狀態（WTSQuerySessionInformation 的
+    WTSSessionInfoEx → SessionFlags：0＝鎖定、1＝未鎖定；Windows 10 以後）。Windows 11 鎖定時輸入桌面仍回報
+    Default，不能用桌面名稱判斷（候選二實測）。查不到回 False（不擋）。測試用 NE_TEST_SCREEN_LOCKED=1／0 覆寫。"""
+    v = os.environ.get("NE_TEST_SCREEN_LOCKED")
+    if v in ("0", "1"):
+        return v == "1"
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        import struct
+        from ctypes import wintypes
+        w = ctypes.windll.wtsapi32
+        p, n = ctypes.c_void_p(), wintypes.DWORD()
+        if not w.WTSQuerySessionInformationW(None, wintypes.DWORD(0xFFFFFFFF), 25, ctypes.byref(p), ctypes.byref(n)):
+            return False
+        try:
+            b = ctypes.string_at(p, n.value)
+            level, _pad, _sid, _state, flags = struct.unpack_from("<IIIii", b, 0)   # WTSINFOEXW：Level、對齊、LEVEL1
+            return level == 1 and flags == 0
+        finally:
+            w.WTSFreeMemory(p)
+    except Exception:
+        return False
+
+
+LOCKED_SAY = "電腦目前是鎖定狀態，請先解鎖，再雙擊一次。"
+
+
 def standby(rb, a):
     t0 = time.time()
     lines = []
@@ -2035,6 +2066,16 @@ def standby(rb, a):
         print(x, file=sys.stderr, flush=True)
 
     say("上場前準備：%s" % rb.get("title", ""))
+    if screen_locked():
+        # A36（5c）：鎖定時我們的視窗不在顯示中的桌面上、瀏覽器停止繪製——照常往下跑只會在奇怪的地方失敗（候選二）
+        say("✗ " + LOCKED_SAY)
+        result = {"ok": False, "checks": [{"check": "電腦沒有鎖定", "ok": False, "detail": LOCKED_SAY}],
+                  "locked": True, "standby_s": round(time.time() - t0, 1), "run_dir": None}
+        try:
+            _atomic_json(os.path.join(rb["_dir"], "standby-last.json"), result)
+        except OSError:
+            pass
+        out(result, 1)
     old = stop_previous_standby(rb)
     staged = stage_on(rb)
     run_dir, stage_p, items = None, None, []
@@ -2155,7 +2196,7 @@ def standby(rb, a):
         pl = stage_p if staged else (None if "--no-player" in a else nowin.popen_background(
             [sys.executable, os.path.join(HERE, "demo_player.py"), run_dir], stdout=log, stderr=log, **kw))
         st_ = None
-        for _ in range(240):
+        for _ in range(360):                          # 冷開機（剛開機、第一次開瀏覽器）時開頁、量版面會慢：最多等 3 分鐘才判定沒準備好
             time.sleep(0.5)
             try:
                 st_ = json.load(open(os.path.join(run_dir, "now.json"), encoding="utf-8")).get("status")
