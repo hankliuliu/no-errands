@@ -373,5 +373,33 @@ check("字幕斷行：英文字不從中間拆開", all("Python" in ln or "Pyt" 
 check("字幕斷行：一行放得下就不斷", L.wrap_caption("AI 照著指示，改出第二版。", 40 * 30, _m) == ["AI 照著指示，改出第二版。"])
 check("舞台用自己的斷行（Label 不再自己折行）", "wrap_caption(" in _insp.getsource(DS) if "_insp" in dir() else True)
 
+# A35（5c 11-23 15:5x）：每秒路徑上對別的行程視窗的呼叫，必須帶非同步旗標，或明確是我們自己的視窗——列出清單
+import ast as _ast  # noqa: E402
+_src = open(os.path.join(os.path.dirname(L.__file__), "demo_stage.py"), encoding="utf-8").read()
+_PER_TICK = {"tick", "_tick", "place_browsers", "restack", "check_fit", "cap_resync", "update_xbtn", "draw_look", "draw_mask",
+             "draw_shield", "update_pointer", "write_geom", "dump_geom", "win_of", "show_caption", "place_caption"}
+_BLOCKING = {"SetWindowPos", "ShowWindow", "SendMessageW", "SendMessage", "SetForegroundWindow", "GetWindowTextW",
+             "GetWindowText", "MoveWindow", "BringWindowToTop", "SetWindowTextW", "SetActiveWindow"}
+_rows, _bad = [], []
+for _fn in [n for n in _ast.walk(_ast.parse(_src)) if isinstance(n, _ast.FunctionDef) and n.name in _PER_TICK]:
+    for _c in [n for n in _ast.walk(_fn) if isinstance(n, _ast.Call)]:
+        _f = _c.func
+        if isinstance(_f, _ast.Attribute) and _f.attr in _BLOCKING and getattr(_f.value, "id", "") == "u32" and _c.args:
+            _a0 = _ast.unparse(_c.args[0])
+            _fl = _ast.unparse(_c.args[-1]) if _f.attr == "SetWindowPos" else ""
+            _own = _a0 == "own" or _a0.startswith("int(self.") or _a0.startswith("int(w.frame()")
+            _async = _f.attr == "SetWindowPos" and any(isinstance(n, _ast.Constant) and isinstance(n.value, int) and n.value & 0x4000
+                                                       for n in _ast.walk(_c.args[-1]))      # SWP_ASYNCWINDOWPOS
+            _why = "自己的視窗" if _own else ("非同步" if _async else "違規：別的行程視窗、同步")
+            _rows.append("%s：u32.%s(%s, …)→%s" % (_fn.name, _f.attr, _a0, _why))
+            if not (_own or _async):
+                _bad.append(_rows[-1])
+print("A35 每秒路徑上的視窗呼叫清單：\n  " + "\n  ".join(_rows))
+check("A35 每秒路徑上對別的行程視窗的呼叫都帶非同步旗標（或是我們自己的視窗）", _rows and not _bad, _bad)
+check("A35 restack 對台上瀏覽器的上下順序呼叫是非同步", any(r.startswith("restack：u32.SetWindowPos(h,") and r.endswith("非同步") for r in _rows), _rows)
+check("A35 place_browsers 把瀏覽器擺上台的呼叫是非同步",
+      sum(1 for r in _rows if r.startswith("place_browsers：u32.SetWindowPos(h,") and r.endswith("非同步")) >= 2, _rows)
+check("看門機制的堆疊寫到自己的檔案（不和引擎共用 engine.log）", "stage_hang_stack.txt" in _src)
+
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
 sys.exit(0 if all(R) else 1)

@@ -604,6 +604,93 @@ def real_chrome_checks(stage_with):
     shutil.rmtree(work, ignore_errors=True)
 
 
+HUNG_WIN = r'''
+import ctypes, sys, time
+from ctypes import wintypes
+u, k = ctypes.windll.user32, ctypes.windll.kernel32
+WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+u.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+u.DefWindowProcW.restype = ctypes.c_ssize_t
+proc = WNDPROC(lambda h, m, w, l: u.DefWindowProcW(h, m, w, l))
+class WC(ctypes.Structure):
+    _fields_ = [("style", wintypes.UINT), ("lpfnWndProc", WNDPROC), ("cbClsExtra", ctypes.c_int), ("cbWndExtra", ctypes.c_int),
+                ("hInstance", wintypes.HINSTANCE), ("hIcon", wintypes.HICON), ("hCursor", wintypes.HANDLE),
+                ("hbrBackground", wintypes.HBRUSH), ("lpszMenuName", wintypes.LPCWSTR), ("lpszClassName", wintypes.LPCWSTR)]
+hi = k.GetModuleHandleW(None)
+for name in ("Chrome_WidgetWin_1", "Chrome_RenderWidgetHostHWND"):
+    wc = WC(); wc.lpfnWndProc = proc; wc.hInstance = hi; wc.lpszClassName = name; wc.hbrBackground = 6
+    u.RegisterClassW(ctypes.byref(wc))
+u.CreateWindowExW.restype = wintypes.HWND
+u.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int, ctypes.c_int,
+                              ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID]
+top = u.CreateWindowExW(0, "Chrome_WidgetWin_1", "hung page", 0x10CF0000, 100, 100, 900, 600, None, None, hi, None)
+u.CreateWindowExW(0, "Chrome_RenderWidgetHostHWND", "", 0x50000000, 0, 40, 880, 520, top, None, hi, None)
+msg, t0 = wintypes.MSG(), time.time()
+while time.time() - t0 < 2:                       # 先正常處理訊息 2 秒（讓舞台找到它、擺上台），之後完全不處理＝沒有回應
+    while u.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+        u.TranslateMessage(ctypes.byref(msg)); u.DispatchMessageW(ctypes.byref(msg))
+    time.sleep(0.01)
+print(int(top), flush=True)
+time.sleep(60)
+'''
+
+
+def hung_browser_checks():
+    """A35 模擬（5c 11-23 15:5x）：台上的「瀏覽器」是一個故意不處理訊息的視窗（類別、命令列的 --user-data-dir 都像 Chrome）。
+    它沒有回應的期間，舞台的更新不得停超過 2 秒；我們的疊加視窗都在它之上。"""
+    import ctypes
+    u = ctypes.windll.user32
+    work = tempfile.mkdtemp(prefix="ne-hung-")
+    prof = os.path.join(work, "profile")
+    os.makedirs(prof, exist_ok=True)
+    hp = os.path.join(work, "hung_win.py")
+    open(hp, "w", encoding="utf-8").write(HUNG_WIN)
+    hw = subprocess.Popen([sys.executable, hp, "--user-data-dir=" + prof], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    PROCS.append(hw)
+    h = int((hw.stdout.readline() or "0").strip() or 0)
+    check("A35 模擬：不處理訊息的假瀏覽器視窗出現", h, h)
+    if not h:
+        return
+    d = tempfile.mkdtemp(prefix="ne-stage-")
+    geom = os.path.join(d, "geom.json")
+    json.dump({"status": "running", "card": None, "role": "測試者", "role_color": "#2f7de1", "section": "模擬",
+               "account": "a", "accounts": {"a": {"role": "測試者", "color": "#2f7de1", "profile": prof}},
+               "crop": {}, "zoom": 1.0, "step_index": 1, "steps_total": 1, "beat": {"text": "這一句在測試舞台不會被卡住。", "i": 1, "n": 1}},
+              open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    json.dump({"state": "playing", "advance": "auto", "next_seq": 0}, open(os.path.join(d, "control.json"), "w"))
+    p = spawn(d, dict(os.environ, NE_STAGE_GEOM=geom, NE_STAGE_NO_HOTKEYS="1", NO_ERRANDS_HOME=d))
+    hung = wait(lambda: u.IsHungAppWindow(h), 15)                 # 系統判定「沒有回應」要 5 秒沒處理訊息
+    check("A35 模擬：系統判定假瀏覽器沒有回應（IsHungAppWindow）", hung)
+    gaps, last, t0 = [], None, time.time()
+    while time.time() - t0 < 8:                                    # 舞台每格（200 ms）寫一次 geom：看寫入間隔
+        try:
+            m = os.path.getmtime(geom)
+        except OSError:
+            m = None
+        if m and m != last:
+            if last:
+                gaps.append(m - last)
+            last = m
+        time.sleep(0.05)
+    g = rd(geom)
+    z = g.get("z_order") or []
+    check("A35 模擬：假瀏覽器沒有回應的 8 秒內，舞台的更新沒有停超過 2 秒（最長間隔 %.2f 秒）" % (max(gaps) if gaps else -1),
+          gaps and max(gaps) <= 2.0 and p.poll() is None, (len(gaps), max(gaps) if gaps else None, p.poll()))
+    ov = [n for n in z if n in ("captext", "plate", "pad", "shield", "controls", "hint", "pointer")]
+    check("A35 模擬：舞台把它當成台上的瀏覽器，而且我們的疊加視窗都在它之上",
+          "browser" in z and ov and all(z.index(n) < z.index("browser") for n in ov), z)
+    json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
+    try:
+        p.wait(10)
+        closed = True
+    except subprocess.TimeoutExpired:
+        kill_tree(p); closed = False
+    check("A35 模擬：假瀏覽器沒有回應時，舞台照樣收得掉", closed)
+    kill_tree(hw)
+    shutil.rmtree(d, ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def presenter_controls_checks():
     """講者最常用的動作，用測試機上真實的輸入驗（5c：本機只能用訊息，必須有地方真的點過）：
     鍵盤 →、PageDown 前進、空白暫停／繼續（keybd_event）；滑鼠點「下一步」前進、點「⋯」→「結束示範」進片尾（mouse_event）；
@@ -801,6 +888,7 @@ def main():
         ku.keybd_event(vk, 0, up, 0); time.sleep(0.05)
     check("A16 更新迴圈卡死時按 Ctrl+Shift+F12 → 3 秒內離開（不靠主迴圈）", closes_within(p, 4))
 
+    hung_browser_checks()
     presenter_controls_checks()
     # 預備清單沒過、講者按停止 → 收掉
     d = tempfile.mkdtemp(prefix="ne-stage-")

@@ -762,8 +762,9 @@ class Stage:
             x, y, w, hh = L.browser_rect(self.lay["stage"], shell, crop, float(now.get("zoom") or 1.5), dpr_of(h))
             # 上台：只移動、改大小，不動上下順序（SWP_NOZORDER），接著的 restack 才把它插到我們的視窗下面——
             # 先置頂再重排的那一瞬間，瀏覽器的分頁列與網址列會蓋在最上面（排練 13:22：換成長官後露出 0.2 秒）
+            # 0x4000＝SWP_ASYNCWINDOWPOS（A35）：只送出、不等瀏覽器的訊息迴圈——瀏覽器忙或沒回應時舞台照常更新
             u32.SetWindowPos(h, HWND_NOTOPMOST if probe else 0, x, y, w, hh,
-                             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING | (0 if probe else 0x0004))
+                             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING | (0 if probe else 0x0004) | 0x4000)
             self.placed[acct] = key
             self.want[acct] = (x, y, w, hh)
             self.active_hwnd = h
@@ -1113,11 +1114,16 @@ class Stage:
         while True:
             time.sleep(1.0)
             if time.time() - getattr(self, "_last_tick", time.time()) > limit:
-                try:                                       # 卡在哪裡：主執行緒的呼叫堆疊寫進 engine.log（下次可以直接找原因）
+                try:                                       # 卡在哪裡：主執行緒的呼叫堆疊寫進自己的檔案（附加寫入）
                     import traceback
                     fr = sys._current_frames().get(threading.main_thread().ident)
-                    print("stage watchdog: main thread stack" + chr(10) + "".join(traceback.format_stack(fr)[-12:]) if fr else "stage watchdog: no main frame",
-                          file=sys.stderr, flush=True)
+                    txt = ("stage watchdog %s: main thread stack" % time.strftime("%H:%M:%S") + chr(10)
+                           + ("".join(traceback.format_stack(fr)[-12:]) if fr else "(no main frame)") + chr(10))
+                    # 不寫進 engine.log：引擎和舞台各自開檔寫同一個檔，引擎收尾時會把這段蓋掉（11-23 15:29 那場只剩 4 行）
+                    with open(os.path.join(self.run_dir, "stage_hang_stack.txt"), "a", encoding="utf-8") as f_:
+                        f_.write(txt)
+                        f_.flush()
+                    print("stage watchdog: stack written to stage_hang_stack.txt", file=sys.stderr, flush=True)
                 except Exception:
                     pass
                 self.emergency("watchdog: %.0f 秒沒有更新" % (time.time() - self._last_tick))
@@ -1362,15 +1368,17 @@ class Stage:
                 pass
             return
         try:
-            chain = [int(w.frame(), 16) for w in reversed(self.overlays()) if w.winfo_viewable()]
+            ours = [int(w.frame(), 16) for w in reversed(self.overlays()) if w.winfo_viewable()]
+            prev = HWND_TOPMOST
+            for own in ours + [int(self.root.frame(), 16)]:   # 我們自己的視窗（同一個執行緒）：同步、一個插在一個下面
+                u32.SetWindowPos(own, prev, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                prev = own
             h = getattr(self, "active_hwnd", None)
             if h and not self.now.get("card") and u32.IsWindow(h):
-                chain.append(h)
-            chain.append(int(self.root.frame(), 16))
-            prev = HWND_TOPMOST
-            for hw in chain:
-                u32.SetWindowPos(hw, prev, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
-                prev = hw
+                # 台上的瀏覽器：插在我們最下面那層疊加視窗的下方（＝背板之上）。非同步（0x4000，A35）：瀏覽器忙或沒回應時
+                # 舞台不等它；它沒處理之前停在原位，但我們的視窗都已經從最上層往下排好，一定在它之上
+                u32.SetWindowPos(h, ours[-1] if ours else HWND_TOPMOST, 0, 0, 0, 0,
+                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | 0x4000)
         except Exception:
             pass
 
