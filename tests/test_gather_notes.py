@@ -175,6 +175,14 @@ try:
     ns = [n for n in gn.load_notes(tdir) if n.get("run") == "20261123-160000"]
     check("3f 只有圖的記事不會多出一則「被切開」", len(ns) == 2 and f["split_incomplete"] == 0 and f.get("split_covered", 0) >= 1, (len(ns), f))
 
+    # 3g 規則修正後，已收的記事日期由原字串重算（舊資料一起更正）
+    ns = gn.load_notes(tdir)
+    ns[0]["posted_at_raw"], ns[0]["posted_at"], ns[0]["first_seen"] = "5月15日 上午 12:23", "2026-05-15 12:23", "2026-11-23"
+    gn.save_notes(tdir, ns)
+    gn.finish(tdir)
+    fixed = next(n for n in gn.load_notes(tdir) if n.get("posted_at_raw") == "5月15日 上午 12:23")
+    check("3g finish 由原字串重算已收記事的日期（上午 12:23 → 00:23）", fixed["posted_at"] == "2026-05-15 00:23", fixed.get("posted_at"))
+
     # 5 過期
     old = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - 25 * 3600))
     rdir5 = make_run(tdir, "20261122-090000", 2, created=old)
@@ -184,7 +192,7 @@ try:
     # 6 給人看的
     line = gn.overview_line(tdir)
     check("6 總覽那一行：AI 轉寫、內文未完整、待人看、過期那段、留言不收",
-          all(x in line for x in ("由 AI 看圖轉寫；原文以 LINE 為準", "內文未完整 3 則", "待人看", "未收", "留言不收")), line)
+          all(x in line for x in ("由 AI 看圖轉寫；原文以 LINE 為準", "內文未完整 3 則", "附圖", "照片預設不收", "待人看", "未收", "留言不收")), line)
     sec = "\n".join(gn.missing_section(tdir))
     check("6 未收清單記事本一節：來源說明、留言不收、內文未完整、附圖照片規則、待人看",
           all(x in sec for x in ("AI 看圖轉寫", "留言不收", "### 內文未完整（3）", "記事本內的附圖", "照片預設不收", "### 待人看")), sec[:400])
