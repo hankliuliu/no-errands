@@ -473,6 +473,12 @@ def number(notes):
 
 
 # ---------------------------------------------------------------- 給人看的
+def seen_at(st):
+    """實際看過記事本的時間：上一輪擷取的開始時間（run 名稱 YYYYMMDD-HHMMSS），不是之後重跑 finish 的時間。"""
+    m = re.match(r"(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})", str((st.get("last_run") or {}).get("run") or ""))
+    return "%s-%s-%s %s:%s" % m.groups() if m else (st.get("updated") or "")
+
+
 def is_empty(st, notes):
     """記事本確定是空的：一則都沒有、上一輪擷取一路看到底、沒有過期沒轉完的圖。"""
     return (not notes and (st.get("last_run") or {}).get("stop") == "bottom"
@@ -503,7 +509,7 @@ def overview_line(tdir):
     if not st.get("notes") and not st.get("last_run") and not st.get("expired_shots"):
         return None
     if is_empty(st, load_notes(tdir)):
-        return "空的（%s 看過，還沒有人新增記事）" % (st.get("updated") or "")[:10]
+        return "空的（%s 看過，還沒有人新增記事）" % seen_at(st)[:10]
     parts = ["%d 則（由 AI 看圖轉寫；原文以 LINE 為準）" % st.get("notes", 0)]
     if st.get("truncated"):
         parts.append("內文未完整 %d 則" % st["truncated"])
@@ -539,7 +545,7 @@ def render_notes(tdir, title, from_dir=None):
     L = ["[← 回收集總覽](%s)" % _link_target(overview, from_dir or os.path.join(tdir, "files")), "",
          "# 記事本：%s" % title, ""]
     if is_empty(st, notes):
-        return "\n".join(L + ["〈%s〉的記事本目前是空的：還沒有人新增記事（%s 看過）。" % (title, st.get("updated") or ""), ""])
+        return "\n".join(L + ["〈%s〉的記事本目前是空的：還沒有人新增記事（%s 看過）。" % (title, seen_at(st)), ""])
     L += ["這裡是〈%s〉記事本收下來的內容，依時間由新到舊排列。內文是 AI 看圖轉寫的，可能有錯字，原文以 LINE 為準；記事本底下的留言不收。" % title,
           ""]
     rng = ["共 %d 則" % len(notes)] + range_facts(st, notes)
