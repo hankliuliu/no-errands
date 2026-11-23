@@ -1358,6 +1358,12 @@ class Stage:
         角色帶 → 遮罩 → 台上的瀏覽器 → 背板。由上往下一個一個「插在上一個的下方」：過程中瀏覽器從來不會在我們的
         視窗之上（舊做法先把瀏覽器拉到最上面再把我們的視窗一個個抬上去，中間幾十毫秒瀏覽器蓋住墊片，那一刻的點擊
         會落到頁面上——CI main-45057569083：頁面點擊數 0→2）。"""
+        if os.name == "nt":
+            # 滑鼠左鍵按著、或剛按下 0.5 秒內：先不重排（不在使用者按兩下、拖動字幕的中途動視窗順序；下一格再排）
+            if u32.GetAsyncKeyState(0x01) & 0x8000:
+                self._btn_t = time.time()
+            if time.time() - getattr(self, "_btn_t", 0) < 0.5:
+                return
         self._z_t = time.time()
         self.restacks = getattr(self, "restacks", 0) + 1     # 診斷：重排次數（CI 的 × 測試看按下前後有沒有重排）
         if os.name != "nt":
@@ -1371,18 +1377,48 @@ class Stage:
             return
         try:
             ours = [int(w.frame(), 16) for w in reversed(self.overlays()) if w.winfo_viewable()]
+            h = getattr(self, "active_hwnd", None)
+            on_stage = bool(h and not self.now.get("card") and u32.IsWindow(h))
+            want = ours + ([h] if on_stage else []) + [int(self.root.frame(), 16)]
+            order_ok = self.z_actual(want) == want
+            if order_ok and self.z_clean(want):
+                return                                       # 順序已經對了：什麼都不做（不製造真的換順序；f3-async 每秒換兩次）
+            if order_ok:
+                self.restack_raises = getattr(self, "restack_raises", 0) + 1   # 只是有別的置頂視窗蓋在我們上面：把我們抬回最上層
+            else:
+                self.restack_moves = getattr(self, "restack_moves", 0) + 1     # 我們自己（含台上瀏覽器、背板）的順序錯了
             prev = HWND_TOPMOST
             for own in ours + [int(self.root.frame(), 16)]:   # 我們自己的視窗（同一個執行緒）：同步、一個插在一個下面
                 u32.SetWindowPos(own, prev, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
                 prev = own
-            h = getattr(self, "active_hwnd", None)
-            if h and not self.now.get("card") and u32.IsWindow(h):
+            if on_stage:
                 # 台上的瀏覽器：插在我們最下面那層疊加視窗的下方（＝背板之上）。非同步（0x4000，A35）：瀏覽器忙或沒回應時
                 # 舞台不等它；它沒處理之前停在原位，但我們的視窗都已經從最上層往下排好，一定在它之上
                 u32.SetWindowPos(h, ours[-1] if ours else HWND_TOPMOST, 0, 0, 0, 0,
                                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | 0x4000)
         except Exception:
             pass
+
+    def z_actual(self, hwnds):
+        """這些視窗實際的上下順序（上→下）；只讀（GetWindow 不送訊息給任何視窗）。"""
+        want, out, hw, n = set(hwnds), [], u32.GetTopWindow(None), 0
+        while hw and n < 5000 and len(out) < len(want):
+            if hw in want:
+                out.append(hw)
+            hw, n = u32.GetWindow(hw, 2), n + 1               # GW_HWNDNEXT
+        return out
+
+    def z_clean(self, want):
+        """從最上層往下到背板為止，看得到的視窗都是我們的（含台上瀏覽器）：沒有別的視窗蓋在我們上面、也沒有夾在中間。"""
+        mine, last = set(want), want[-1]
+        cur, n = u32.GetTopWindow(None), 0
+        while cur and n < 5000:
+            if cur == last:
+                return True
+            if cur not in mine and u32.IsWindowVisible(cur):
+                return False
+            cur, n = u32.GetWindow(cur, 2), n + 1
+        return False
 
     def z_order(self):
         """測試／診斷：我們的視窗與台上瀏覽器實際的上下順序（上→下）。"""
@@ -1422,7 +1458,8 @@ class Stage:
                 "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": list(self.xbtn_rect()) if getattr(self, "_cap_shown", False) and self.xbtn_rect() else None,
                 "xbtn_real": ([self.cap_x.winfo_rootx(), self.cap_x.winfo_rooty(), self.cap_x.winfo_width(), self.cap_x.winfo_height()]
                               if self.cap_x.winfo_ismapped() else None),
-                "restacks": getattr(self, "restacks", 0), "cap_geom": list(self.cap_geom) if self.cap_geom else None, "x_shown": self._x_on, "hint_visible": bool(self.hintw.winfo_viewable()),
+                "restacks": getattr(self, "restacks", 0), "restack_moves": getattr(self, "restack_moves", 0), "restack_raises": getattr(self, "restack_raises", 0),
+                "cap_geom": list(self.cap_geom) if self.cap_geom else None, "x_shown": self._x_on, "hint_visible": bool(self.hintw.winfo_viewable()),
                 "caption_on": self.cap_on, "controls_rect": box(self.ctlw), "controls_want": list(getattr(self, "_ctl_xy", None) or []),
                 "controls_moves": getattr(self, "ctl_moves", 0), "controls_stuck": getattr(self, "_ctl_retry", 0) > 3,
                 "shield": box(self.shield), "shield_rx": dict(self.shield_rx), "hotkeys": dict(getattr(self, "hotkeys_ok", {}) or {}), "pointer": [round(v) for v in self.ptr_pos] if self.ptr_pos and self.ptrw.winfo_viewable() else None,

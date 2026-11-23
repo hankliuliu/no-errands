@@ -491,8 +491,12 @@ def real_chrome_checks(stage_with):
             u.mouse_event(0x0002, 0, 0, 0, 0); time.sleep(0.1)
             for s_ in range(1, 11):
                 move(sx_ + sgn * 6 * s_, sy_ - sgn * 4 * s_); time.sleep(0.03)
-            u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.6)
-            g1 = rd(geom).get("caption_plate")
+            u.mouse_event(0x0004, 0, 0, 0, 0)
+
+            def dragged(g0=g0, sgn=sgn):
+                g_ = rd(geom).get("caption_plate")
+                return g_ if (g_ and abs((g_[0] - g0[0]) - sgn * 60) <= 6 and abs((g_[1] - g0[1]) + sgn * 40) <= 6) else None
+            g1 = wait(dragged, 3) or rd(geom).get("caption_plate")       # 輪詢（不是固定等待）
             if not (g1 and abs((g1[0] - g0[0]) - sgn * 60) <= 6 and abs((g1[1] - g0[1]) + sgn * 40) <= 6):
                 fails.append((r_, "拖動（%s）" % lab, (g0, g1, zstack(sx_, sy_))))
             # 按兩下回預設
@@ -500,8 +504,7 @@ def real_chrome_checks(stage_with):
             move(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2); time.sleep(0.25)
             for _ in range(2):
                 u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.08)
-            time.sleep(0.7)
-            g1 = rd(geom)
+            g1 = wait(lambda: (lambda g_: g_ if g_.get("cap_user") is None else None)(rd(geom)), 3) or rd(geom)
             if g1.get("cap_user") is not None:
                 fails.append((r_, "按兩下", (g1.get("caption_plate"), zstack(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2))))
             # × 收起（滑鼠停在字幕上 → × 出現在外側右上角 → 點它），再用控制列的「字幕」打開
@@ -510,8 +513,8 @@ def real_chrome_checks(stage_with):
             xb = wait(lambda: rd(geom).get("xbtn"), 2)
             if xb:
                 move(xb[0] + xb[2] // 2, xb[1] + xb[3] // 2); time.sleep(0.3)
-                u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.7)
-            g1 = rd(geom)
+                u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0)
+            g1 = wait(lambda: (lambda g_: g_ if g_.get("caption_on") is False else None)(rd(geom)), 3) or rd(geom)
             if g1.get("caption_on") is not False:
                 fails.append((r_, "×", {"x": xb, "pad": g1.get("caption_pad"), "plate": g1.get("caption_plate"),
                                          "x_shown": g1.get("x_shown"), "stack": zstack(xb[0] + xb[2] // 2, xb[1] + xb[3] // 2) if xb else None}))
@@ -526,7 +529,8 @@ def real_chrome_checks(stage_with):
             cb = g1.get("cap_btn")
             if cb:
                 move(cb[0], cb[1]); time.sleep(0.3)
-                u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.8)
+                u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0)
+            wait(lambda: rd(geom).get("caption_on") is True and rd(geom).get("caption_plate"), 3)
             if rd(geom).get("caption_on") is not True:
                 fails.append((r_, "用控制列打開字幕", {"cap_btn": cb, "controls_rect": g1.get("controls_rect"),
                                                    "controls_want": g1.get("controls_want"), "stack": zstack(*cb) if cb else None}))
@@ -547,13 +551,24 @@ def real_chrome_checks(stage_with):
         for s_ in range(1, 21):
             move(sx_ + dx * s_ / 20, sy_ + dy * s_ / 20); time.sleep(0.04)
         time.sleep(0.2)
-        u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(1.0)
-        g1 = rd(geom)
+        u.mouse_event(0x0004, 0, 0, 0, 0)
+
+        def moved_all():
+            g_ = rd(geom)
+            p_, t_, d_ = g_.get("caption_plate"), g_.get("caption_textwin"), g_.get("caption_pad")
+            return g_ if (p_ and p_ == t_ == d_ and abs((g0[0] - p_[0]) + dx) <= 8 and abs((g0[1] - p_[1]) + dy) <= 8) else None
+        g1 = wait(moved_all, 3) or rd(geom)                       # 輪詢（不是固定等待）
         p1, t1, d1 = g1.get("caption_plate"), g1.get("caption_textwin"), g1.get("caption_pad")
         check("A2 從%s拖動：字幕移動約 %d×%d，三層（底板、字、墊片）同位置（按下處是：%s）" % (label, -dx, -dy, hit),
               p1 and p1 == t1 == d1 and abs((g0[0] - p1[0]) + dx) <= 8 and abs((g0[1] - p1[1]) + dy) <= 8,
               (g0, p1, t1, d1, "cap_user=%s" % g1.get("cap_user")))
         return p1
+    rm0 = rd(geom).get("restack_moves")
+    time.sleep(5.0)
+    rm1 = rd(geom).get("restack_moves")
+    check("穩定時重排不真的換視窗順序（5 秒內實際換順序 %s 次）" % (None if rm0 is None else (rm1 or 0) - rm0),
+          rm0 is not None and rm1 == rm0, (rm0, rm1))
+    print("穩定時被別的置頂視窗蓋住、抬回最上層的次數（參考）：%s" % rd(geom).get("restack_raises"), flush=True)
     c0 = page_clicks()
     if pl:
         drag_from(6.0 / pl[2], 0.5, "內距")
