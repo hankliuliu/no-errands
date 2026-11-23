@@ -225,6 +225,15 @@ def inside(a, b, tol=0):
     return ax >= bx - tol and ay >= by - tol and ax + aw <= bx + bw + tol and ay + ah <= by + bh + tol
 
 
+def look_pointer(box, gap=18.0, min_room=8.0, inset=12.0):
+    """讀內容的拍子，示範游標指的位置（頁面 CSS 座標）：那一段開頭的左邊、不蓋住字。
+    左邊沒有空間（整列從頁面最左邊開始，例：側欄的一列）→ 指在這一列左側的留白裡，不貼在螢幕邊緣（候選版：游標停在 x=2）。"""
+    x = box[0] - gap
+    if x < min_room:
+        x = box[0] + min(inset, box[2] / 4.0)
+    return x, box[1] + min(12.0, box[3] / 2.0)
+
+
 def fit_report(screen, stage, content, tol=3):
     """台上瀏覽器頁面的實測範圍（實體像素）對舞台：頁面底邊要貼齊螢幕底邊；舞台的四邊都不能露出背板（空白帶）。
     頁面超出舞台（頂端被角色帶蓋住、左邊伸到螢幕外）是刻意的裁切，不算空白。"""

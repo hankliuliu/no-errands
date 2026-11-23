@@ -954,7 +954,8 @@ class Look:
         self.refresh(realign=False)
         self.align()
         if self.box:
-            self.point(max(2.0, self.box[0] - 18), self.box[1] + min(12.0, self.box[3] / 2))
+            import stage_layout
+            self.point(*stage_layout.look_pointer(self.box))
 
     def clear(self):
         self.sel = self.box = None

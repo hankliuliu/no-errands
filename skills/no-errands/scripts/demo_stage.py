@@ -111,8 +111,60 @@ def profile_of_cmdline(cl):
     return v[1:].split('"', 1)[0] if v.startswith('"') else v.split('"', 1)[0].split(" --", 1)[0].strip()
 
 
+def process_cmdline(pid):
+    """行程的命令列（NtQueryInformationProcess 類別 60，Windows 8.1+；幾毫秒、不經 WMI）。拿不到回 None。"""
+    if os.name != "nt":
+        return None
+    k32, nt = ctypes.windll.kernel32, ctypes.windll.ntdll
+    k32.OpenProcess.restype = wintypes.HANDLE
+    h = k32.OpenProcess(0x1000, False, int(pid))            # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        class _US(ctypes.Structure):
+            _fields_ = [("Length", ctypes.c_ushort), ("MaximumLength", ctypes.c_ushort), ("Buffer", ctypes.c_void_p)]
+        n = wintypes.ULONG(0)
+        buf = ctypes.create_string_buffer(65536)
+        if nt.NtQueryInformationProcess(wintypes.HANDLE(h), 60, buf, len(buf), ctypes.byref(n)) != 0:
+            return None
+        us = _US.from_buffer(buf)
+        return ctypes.wstring_at(us.Buffer, us.Length // 2) if us.Buffer else None
+    finally:
+        k32.CloseHandle(wintypes.HANDLE(h))
+
+
+def chrome_pids_native(profile):
+    """看得到的 Chrome 頂層視窗所屬的行程裡，命令列的 --user-data-dir 和這個 profile 相同的（幾毫秒）。
+    別人的行程讀不到命令列（例：系統管理員權限的程式）就略過——我們自己開的瀏覽器是同一個使用者，一定讀得到。"""
+    want = os.path.normcase(os.path.abspath(profile))
+    pids, seen = set(), set()
+
+    def f(h, _):
+        if _cls(h) != "Chrome_WidgetWin_1" or not u32.IsWindowVisible(h):
+            return True
+        pid = wintypes.DWORD()
+        u32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+        if pid.value in seen:
+            return True
+        seen.add(pid.value)
+        cl = process_cmdline(pid.value)
+        if cl is not None:
+            v = profile_of_cmdline(cl)
+            if v and "--type=" not in cl and os.path.normcase(os.path.abspath(v)) == want:
+                pids.add(pid.value)
+        return True
+    u32.EnumWindows(EnumProc(f), 0)
+    return pids
+
+
 def chrome_pids(profile):
-    """命令列裡有這個 profile 的 Chrome 瀏覽器主行程（只認自己開的：--user-data-dir 完全相同）。"""
+    """命令列裡有這個 profile 的 Chrome 瀏覽器主行程（只認自己開的：--user-data-dir 完全相同）。
+    用原生查詢（不經 PowerShell／WMI：WMI 冷的時候一次要等十幾秒，舞台更新迴圈跟著停——候選二：量不到頁面範圍、
+    看門 21 秒）；原生查詢本身不能用（例外）才退回 WMI。"""
+    try:
+        return chrome_pids_native(profile)
+    except Exception:
+        pass
     import subprocess
     want = os.path.normcase(os.path.abspath(profile))
     try:
@@ -662,7 +714,7 @@ class Stage:
                 continue
             if acct != active:
                 if self.placed.get(acct) != "off":
-                    u32.SetWindowPos(h, HWND_NOTOPMOST, OFF, OFF, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE)   # 下台：移到螢幕外
+                    u32.SetWindowPos(h, HWND_NOTOPMOST, OFF, OFF, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | 0x4000)   # 下台：移到螢幕外（非同步：瀏覽器忙時不卡舞台）
                     self.placed[acct] = "off"
                 continue
             self.active_hwnd = h
@@ -1016,6 +1068,13 @@ class Stage:
         while True:
             time.sleep(1.0)
             if time.time() - getattr(self, "_last_tick", time.time()) > limit:
+                try:                                       # 卡在哪裡：主執行緒的呼叫堆疊寫進 engine.log（下次可以直接找原因）
+                    import traceback
+                    fr = sys._current_frames().get(threading.main_thread().ident)
+                    print("stage watchdog: main thread stack" + chr(10) + "".join(traceback.format_stack(fr)[-12:]) if fr else "stage watchdog: no main frame",
+                          file=sys.stderr, flush=True)
+                except Exception:
+                    pass
                 self.emergency("watchdog: %.0f 秒沒有更新" % (time.time() - self._last_tick))
 
     def safe(self, name, fn, *a):

@@ -263,6 +263,10 @@ check("講動作的拍子：游標指到目標中心（不框、不按）", abs(
 check("look 沒寫、接著的動作不是點擊或輸入 → 沒有目標；寫了 False → 不框；寫了 CSS → 照寫的",
       DR.beat_target(st_b, {"at": 2}) is None and DR.beat_target(st_b, {"at": 1, "look": False}) is False
       and DR.beat_target(st_b, {"at": 1, "look": {"css": "#x"}}) == {"css": "#x"})
+check("讀內容的拍子：游標在那一段開頭的左邊 18 px", L.look_pointer([300, 200, 400, 40]) == (282, 212), L.look_pointer([300, 200, 400, 40]))
+check("整列從頁面最左邊開始（側欄的一列）：游標在列內左側留白，不貼螢幕邊緣",
+      L.look_pointer([0, 380, 403, 48]) == (12, 392) and L.look_pointer([4, 380, 403, 48])[0] == 16, L.look_pointer([0, 380, 403, 48]))
+check("很窄的目標：留白不超過寬度的四分之一", L.look_pointer([0, 10, 20, 10]) == (5.0, 15.0), L.look_pointer([0, 10, 20, 10]))
 import re as _re  # noqa: E402
 bad = {}
 for fn in ("demo_stage.py", "demo_runbook.py", "neb.py", "stage_layout.py"):
@@ -279,6 +283,14 @@ check("認得自己的瀏覽器：參數整個包在引號裡的 --user-data-dir
 q2 = r"chrome.exe --user-data-dir=C:\p\b --x=1"
 check("認得自己的瀏覽器：沒有引號的 --user-data-dir", DS.profile_of_cmdline(q2) == r"C:\p\b", DS.profile_of_cmdline(q2))
 check("沒有 --user-data-dir → 不認", DS.profile_of_cmdline("chrome.exe --type=renderer") is None)
+if os.name == "nt":
+    import time as _t  # noqa: E402
+    _cl = DS.process_cmdline(os.getpid())
+    check("原生讀行程命令列（不經 WMI）：讀得到自己的命令列", bool(_cl) and "test_stage_layout" in _cl, _cl)
+    _t0 = _t.time()
+    _r = DS.chrome_pids_native(os.path.join(os.environ.get("TEMP", "C:\\"), "no-such-profile-xyz"))
+    check("原生找瀏覽器行程：沒有這個 profile → 空集合（不是 None），而且很快（<1 秒，不卡舞台）",
+          _r == set() and _t.time() - _t0 < 1.0, (_r, round(_t.time() - _t0, 3)))
 
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
 sys.exit(0 if all(R) else 1)
