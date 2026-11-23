@@ -542,7 +542,7 @@ class Stage:
             if fail_:
                 where_t, where_fg = "還沒準備好（%d/%d）" % (ok_n, len(items_)), "#f47067"
             else:
-                where_t, where_fg = "準備中 %d/%d" % (ok_n, max(len(items_), ok_n)), "#c9d1dc"
+                where_t, where_fg = ("準備中 %d/%d" % (ok_n, len(items_)) if items_ else "準備中…"), "#c9d1dc"
             if bad_:
                 detail_t = "\n".join(("✗ " if it.get("state") == "fail" else "! ") + (it.get("name") or "")
                                       + ("：" + it["say"] if it.get("say") else "") for it in bad_)
