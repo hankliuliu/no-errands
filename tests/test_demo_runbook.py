@@ -809,6 +809,21 @@ def main():
             check("中途結束 → 照常執行還原、最後收掉舞台（這一段的政策檔還沒有還原同意，所以只看有沒有執行）",
                   n.get("status") == "closing" and rje.get("reset") is not None
                   and (rje.get("stopped") or {}).get("ended_early") == "s1", (n.get("status"), rje.get("reset"), rje.get("stopped")))
+            # 舞台卡死被看門機制收掉（control dropped=watchdog…）：記成 stage_hang（不是使用者停止）、照樣還原、片尾告訴講者
+            focus(["訊息"], "")
+            rc, o, txt = rbj("live", sgp, "--approval", aid, "--no-player")
+            rdh = o.get("run_dir") or ""
+            wait_for(rdh, lambda n: n.get("step_id") == "s1" and (n.get("beat") or {}).get("text"), 30)
+            cpath = os.path.join(rdh, "control.json")             # 舞台的緊急出口寫的就是這個
+            json.dump(dict(json.load(open(cpath, encoding="utf-8")), state="stopped", dropped="watchdog: 21 秒沒有更新"), open(cpath, "w"))
+            n = wait_for(rdh, lambda n: n.get("card") == "end", 40)
+            check("舞台卡死 → 片尾卡說明發生了什麼（示範中斷：畫面卡住）",
+                  n.get("card") == "end" and "畫面卡住" in ((n.get("card_data") or {}).get("heading") or ""), (n.get("card"), n.get("card_data")))
+            n = wait_for(rdh, lambda n: n.get("status") == "closing", 40)
+            rjh = json.load(open(os.path.join(rdh, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rdh, "run.json")) else {}
+            check("舞台卡死 → 紀錄是 stage_hang（不是 user_stop）、照樣執行還原、最後收掉",
+                  n.get("status") == "closing" and rjh.get("reset") is not None and (rjh.get("stopped") or {}).get("stage_hang") == "s1"
+                  and "user_stop" not in (rjh.get("stopped") or {}), (n.get("status"), rjh.get("reset"), rjh.get("stopped")))
             # 舞台段落結束：假瀏覽器不再模擬輸入框，焦點欄位還原成後面的測試預期的狀態
             os.remove(os.path.join(home, "simulate-field"))
             focus(["訊息"], "/case help")

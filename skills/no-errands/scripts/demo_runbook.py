@@ -1506,12 +1506,18 @@ def execute(rb, mode, a):
             pass
         ctl.publish(status="running", look=None, pointer=None)
     except StopDemo:
-        stopped = {"user_stop": steps[min(i, len(steps) - 1)]["id"]}
+        sid_ = steps[min(i, len(steps) - 1)]["id"]
+        try:
+            why_ = str(json.load(open(os.path.join(run_dir, "control.json"), encoding="utf-8")).get("dropped") or "")
+        except Exception:
+            why_ = ""
+        # 舞台的看門機制收掉舞台（更新迴圈卡死）不是使用者停止：照實記原因（5c：紀錄的原因要寫對）
+        stopped = {"stage_hang": sid_, "why": why_[:80]} if why_.startswith("watchdog") else {"user_stop": sid_}
         ctl.publish(status="stopped")
     finally:
-        if mode != "live" or not stopped or any(k in (stopped or {}) for k in ("user_stop", "stage_fit", "ended_early")):
+        if mode != "live" or not stopped or any(k in (stopped or {}) for k in ("user_stop", "stage_fit", "ended_early", "stage_hang")):
             br.close_all()
-        if staged and stopped and "user_stop" in stopped:
+        if staged and stopped and ("user_stop" in stopped or "stage_hang" in stopped):
             # 緊急停止（Ctrl+Shift+F12、舞台被撤下）：沒有片尾，但資料照樣還原（不留給別人收）
             try:
                 ok_, res_ = do_reset(rb)
@@ -1528,7 +1534,9 @@ def execute(rb, mode, a):
             json.dump(state, f, ensure_ascii=False, indent=1)
         if not stopped:
             ctl.publish(status="done")
-        if staged and not (stopped and ("user_stop" in stopped or "stage_fit" in stopped)):
+        if staged and stopped and "stage_hang" in stopped:
+            show_hang_notice(rb, run_dir, ctl, state.get("reset") or {}, launch="--no-player" not in a)
+        if staged and not (stopped and ("user_stop" in stopped or "stage_fit" in stopped or "stage_hang" in stopped)):
             # 片尾：停住讓講者可以回頭講；按「結束」由引擎自己還原，片尾卡顯示結果
             end = (rb.get("stage") or {}).get("end") or {}
             ctl.publish(card="end", look=None, beat={"text": "", "i": 0, "n": 0},
@@ -1565,6 +1573,30 @@ def execute(rb, mode, a):
         shutil.rmtree(run_dir, ignore_errors=True)
         summary["note"] = "demo.persist=off：一次性執行，紀錄已刪除"
     out(summary, 0 if summary["ok"] else 1)
+
+
+def show_hang_notice(rb, run_dir, ctl, reset, hold_s=10.0, launch=True):
+    """舞台卡死被看門機制收掉之後：重開一個舞台，告訴講者發生了什麼（不是畫面直接消失），停 hold_s 秒或按「下一步」後收掉。"""
+    try:
+        write_control(run_dir, state="playing")              # 新的舞台看到 stopped 會直接撤下
+        if launch:                                           # --no-player（測試）：不開視窗，只發布
+            lg = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")
+            nowin.popen_background([sys.executable, os.path.join(HERE, "demo_stage.py"), run_dir],
+                                   stdin=subprocess.DEVNULL, stdout=lg, stderr=lg,
+                                   env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8"))
+        ok_ = bool(reset.get("ok"))
+        ctl.publish(status="running", card="end", look=None, pointer=None, beat={"text": "", "i": 0, "n": 0},
+                    card_data={"heading": "示範中斷：畫面卡住，已自動收起",
+                               "text": "不是操作造成的。可以改放備案畫面接著講。",
+                               "points": [], "reset": "資料已還原" if ok_ else "還原沒有成功：請 agent 處理",
+                               "reset_ok": ok_})
+        t_ = time.time()
+        seen = int(ctl.read().get("next_seq", 0))
+        while time.time() - t_ < hold_s and int(ctl.read().get("next_seq", 0)) <= seen:
+            time.sleep(0.25)
+    except Exception:
+        pass
+    ctl.publish(status="closing")
 
 
 def control_cli(a):
