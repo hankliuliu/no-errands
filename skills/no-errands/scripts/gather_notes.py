@@ -401,6 +401,7 @@ def finish(tdir, title=None):
         os.rmdir(shots_root(tdir))   # 都轉完了：連空的暫存資料夾也拿掉（還有別的 run 就刪不掉，照留）
     except OSError:
         pass
+    renorm(notes)
     number(notes)
     save_notes(tdir, notes)
     st["notes"] = len(notes)
@@ -433,6 +434,22 @@ def discard(tdir, reason="not-notes-tab"):
     return n
 
 
+def renorm(notes):
+    """日期一律由畫面原字串重算（以第一次收進來的那天為基準）：規則修正後，已收的記事也跟著更正
+    （例：「上午 12:23」曾被算成中午）。原字串照留；看不懂的維持原值。"""
+    for n in notes:
+        raw, seen = n.get("posted_at_raw"), n.get("first_seen")
+        if not raw or not seen:
+            continue
+        try:
+            cap = datetime.datetime.strptime(seen, "%Y-%m-%d").replace(hour=23, minute=59)
+        except ValueError:
+            continue
+        when, guessed = norm_time(raw, cap)
+        if when:
+            n["posted_at"], n["posted_at_guessed"] = when, guessed
+
+
 def number(notes):
     nxt = max([n.get("no") or 0 for n in notes] + [0]) + 1
     for n in sorted(notes, key=lambda x: (x.get("posted_at") or "", x.get("key"))):
@@ -450,6 +467,8 @@ def overview_line(tdir):
     parts = ["%d 則（由 AI 看圖轉寫；原文以 LINE 為準）" % st.get("notes", 0)]
     if st.get("truncated"):
         parts.append("內文未完整 %d 則" % st["truncated"])
+    if st.get("note_images"):
+        parts.append("附圖 %d 張（照片預設不收，見未收清單）" % st["note_images"])
     if st.get("needs_review"):
         parts.append("待人看 %d 則" % st["needs_review"])
     if st.get("older_not_captured"):
