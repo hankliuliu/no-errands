@@ -275,8 +275,11 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
     rip = wait(lambda: rd(geom).get("ripple_on") is True, 0.5)
     check("A22 漣漪確實在畫面上（回報後 0.5 秒內讀到顯示中）", rip, rd(geom).get("ripple_on"))
     shot_png("stage-shot-4-pointer-press.png")
-    a1 = rd(geom).get("look_alpha")
-    t_a = time.time()                              # 量測值每秒寫一次：輪詢到 4 秒（固定等 1.9 秒會讀到上一秒的值）
+    # 重新發布一個外框再量（locked-screen CI：前面的按下／截圖花了一陣子，外框在第一次讀之前就淡完了，讀到 (0, 0, 0.0)）
+    json.dump(dict(now, pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0.8, "seq": 2}, look={"box": [320, 150, 300, 60], "seq": 2}, press=1),
+              open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    a1 = wait(lambda: rd(geom).get("look_alpha") or None, 2.5) or 0   # 量測值每秒寫一次：等它出現
+    t_a = time.time()                              # 輪詢到 4 秒等淡出（固定等 1.9 秒會讀到上一秒的值）
     gone = wait(lambda: (not rd(geom).get("look_alpha")) or None, 4)
     a2 = rd(geom).get("look_alpha")
     check("A25 讀內容的外框很淡（不透明度 ≤0.6），而且會淡出（4 秒內）", a1 and 0 < a1 <= 0.6 and gone is True,

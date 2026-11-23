@@ -1977,10 +1977,19 @@ def standby(rb, a):
 
     say("上場前準備：%s" % rb.get("title", ""))
     # A36（5c）：鎖定時我們的視窗不在顯示中的桌面上、瀏覽器停止繪製（候選二 08:29 之後全部是這樣失敗的）。
-    # 「沒鎖」時各訊號的值實測確認之前只提示、不擋（誤判成鎖定＝上台那天示範起不來）
+    # 鎖定要三個訊號中至少兩個一致才算（誤判成鎖定＝上台那天示範起不來）；「沒鎖」時五個訊號都是 false
+    # （11-23 10:0x 解鎖後 86 與 da 各自實測），所以畫面不能用就擋下、明講要先解鎖
     screen_why = screen_hint()
     if screen_why:
-        say("! %s：請先解鎖（目前只提示，不擋下）" % screen_why)
+        # 一開始就停：鎖定時開舞台、開瀏覽器、量版面都會在奇怪的地方失敗（候選二），只講這一件事
+        say("✗ %s：請先解鎖，再雙擊一次" % screen_why)
+        result = {"ok": False, "locked": True, "run_dir": None, "standby_s": round(time.time() - t0, 1),
+                  "checks": [{"check": "電腦沒有鎖定、畫面可用", "ok": False, "detail": "%s：請先解鎖，再雙擊一次" % screen_why}]}
+        try:
+            _atomic_json(os.path.join(rb["_dir"], "standby-last.json"), result)
+        except OSError:
+            pass
+        out(result, 1)
     old = stop_previous_standby(rb)
     staged = stage_on(rb)
     run_dir, stage_p, items = None, None, []
@@ -2079,8 +2088,7 @@ def standby(rb, a):
         qs = notification_state()
         item("通知", qs in (2, 3, 4), warn=True)
         res.append({"check": "系統通知會被擋下（勿擾）", "ok": qs in (2, 3, 4), "detail": "state=%s" % qs, "warn": True})
-    res.append({"check": "電腦沒有鎖定、畫面可用", "ok": not screen_why,
-                "detail": ("%s：請先解鎖" % screen_why) if screen_why else "", "warn": True})
+    res.append({"check": "電腦沒有鎖定、畫面可用", "ok": True, "detail": ""})
     allok = tun_ok and ok and pb_ok and cok
     result = {"ok": allok, "checks": res, "approval": aid, "standby_s": None, "run_dir": run_dir, "tunnel_pid": tun_pid}
     if staged and not allok:
