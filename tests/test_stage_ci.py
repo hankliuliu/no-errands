@@ -387,7 +387,10 @@ def real_chrome_checks(stage_with):
            "mask": {"box": [289, 150, 300, 30], "color": "#ff00ff"}, "accounts": accts}
     # 這個情境有兩組 20 輪的測試：舞台要活得比預設的 40 秒久（CI 45060724781／45062678450 都在第 5 輪失敗——
     # 是舞台到了 40 秒自己關掉，不是墊片漏點擊）
-    d, p = stage_with(now, None, {"NO_ERRANDS_HOME": work, "NE_STAGE_GEOM": geom, "NE_STAGE_MAX_S": "600"})
+    # NE_STAGE_NO_HOTKEYS 要清掉：f3 的「講者一起操作」檢查靠熱鍵執行緒讓鍵（keys_yield）；
+    # stage_with 預設關熱鍵，CI 45254616271 keys_yield 永遠 False、hotkeys=={} 就是這樣
+    d, p = stage_with(now, None, {"NO_ERRANDS_HOME": work, "NE_STAGE_GEOM": geom, "NE_STAGE_MAX_S": "600",
+                                  "NE_STAGE_NO_HOTKEYS": ""})
     r = fit_ok(d, False)
     check("A1 上台：頁面底邊貼齊螢幕底邊（差 ≤3）、四邊沒有空白帶", r and r.get("fit", {}).get("ok"), r)
     check("A19 視窗實測和要求的差距 ≤3 像素", r and r.get("placement_error") is not None and r["placement_error"] <= 3, r)
