@@ -255,20 +255,16 @@ def pid_alive(pid):
 CURSOR0 = {}
 
 
-def user_input_since(tick):
-    """有人回來了：GetLastInputInfo 晚於 tick，而且游標移動超過 40 px，或游標完全沒動（鍵盤）。
-    1–40 px 的小漂移不算（排練時曾被這種雜訊停掉）。"""
-    class LII(ctypes.Structure):
-        _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
-    li = LII(); li.cbSize = ctypes.sizeof(LII)
-    u32.GetLastInputInfo(ctypes.byref(li))
+def user_input_since(tick=None):
+    """有人回來了（無人值守時撤下舞台用）：游標離開第一次量到的位置超過 40 px（1–40 px 的小漂移不算）。
+    A37：不看系統閒置秒數（GetLastInputInfo）——11-23 實測有一條非人為的輸入流（每 16 ms 一筆、游標不動、沒有按鍵）
+    把它壓在 0；舊規則「有輸入但游標沒動＝鍵盤」在這種情況下會立刻誤判、撤下舞台。代價：只按鍵盤不動滑鼠不會被當成回來。"""
     c = wintypes.POINT(); u32.GetCursorPos(ctypes.byref(c))
     if "p" not in CURSOR0:
         CURSOR0["p"] = (c.x, c.y)
-    if li.dwTime <= tick:
         return False
     d = abs(c.x - CURSOR0["p"][0]) + abs(c.y - CURSOR0["p"][1])
-    return d > 40 or d == 0
+    return d > 40
 
 
 def dpr_of(hwnd):
