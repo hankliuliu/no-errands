@@ -743,7 +743,7 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
         ok, hit = False, None
         marks = dict(vars_.get("__marks") or {}, **rec.get("_marks", {}))
         say_while = [x for x in (act.get("say_while") or []) if x.get("say")]
-        said = -1
+        said, said_at = -1, 0.0
         while True:
             for sc in scopes:
                 body = br.text(acct, sc)
@@ -758,14 +758,12 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
             if ok or waited >= budget:
                 break
             if say_while and ctl is not None:
-                # 真的在等才講（5c）：等的東西已經到了就不會走到這裡；依序每句停 s 秒，最後一句留到等完
-                k_, acc = 0, 0.0
-                for k_, x in enumerate(say_while):
-                    acc += float(x.get("s", 8))
-                    if waited < acc:
-                        break
-                if k_ != said:
-                    said = k_
+                # 真的在等才講（5c）：等的東西已經到了就不會走到這裡；依序每句停 s 秒，最後一句留到等完。
+                # 一次只往下一句、從它真的出現起算（某一輪讀畫面很慢時也不會跳過句子）
+                if said < 0 or (said < len(say_while) - 1 and
+                                waited - said_at >= float(say_while[said].get("s", 8))):
+                    said, said_at = said + 1, waited
+                    k_ = said
                     ctl.publish(beat={"text": subst(say_while[k_]["say"], vars_), "i": k_ + 1, "n": len(say_while)},
                                 look=None)
                     info.setdefault("said_while", []).append(round(waited, 1))

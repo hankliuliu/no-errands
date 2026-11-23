@@ -214,6 +214,16 @@ st_w = {"id": "sx", "account": "a"}
 c = WaitCtl(); ok_, inf_ = DR.run_action(WaitBr(12), {}, st_w, act_w, {}, None, {}, c)
 check("等待中字幕：依序出現、等到了就停（不會硬播完）", ok_ and c.beats[:2] == ["第一句", "第二句"] and len(inf_.get("said_while", [])) >= 2
       and inf_.get("t_end"), (ok_, c.beats, inf_))
+class SlowWaitBr(WaitBr):                                   # 某一輪讀畫面很慢（慢機器／頁面卡住）
+    def text(self, acct, sc):
+        if self.n == 1:
+            time.sleep(0.5)
+        return super().text(acct, sc)
+
+
+c = WaitCtl(); ok_, inf_ = DR.run_action(SlowWaitBr(12), {}, st_w, act_w, {}, None, {}, c)
+check("等待中字幕：某一輪讀畫面很慢也不跳句（一句一句往下）", ok_ and c.beats == ["第一句", "第二句", "第三句"],
+      (ok_, c.beats, inf_.get("said_while")))
 c = WaitCtl(); ok_, inf_ = DR.run_action(WaitBr(0), {}, st_w, act_w, {}, None, {}, c)
 check("等待中字幕：等的東西已經到了 → 一句都不講、直接往下", ok_ and c.beats == [], (ok_, c.beats))
 act_t = dict(act_w, budget_s=0.3, say_while=None, timeout_say="AI 助理這次回得比較慢，先往下看。", timeout_say_s=0)
