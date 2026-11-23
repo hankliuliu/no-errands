@@ -291,6 +291,14 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
     check("A25 讀內容的外框很淡（不透明度 ≤0.6），而且會淡出（4 秒內）", a1 and 0 < a1 <= 0.6 and gone is True,
           (a1, a2, round(time.time() - t_a, 1)))
     shot_png("stage-shot-5-after-fade.png")
+    # Sprint G2：同一句字幕期間，目標換了也不重擺（使用者：出現後到換句前不要閃去其他地方）
+    p0 = rd(geom).get("caption_plate")
+    json.dump(dict(now, pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0.8, "seq": 2}, look={"box": [900, 600, 300, 80], "seq": 7}, press=1),
+              open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    time.sleep(1.6)
+    p1 = rd(geom).get("caption_plate")
+    check("G2 同一句字幕：目標換了也不重擺（位置與大小差 ≤2 像素）",
+          bool(p0 and p1) and max(abs(a_ - b_) for a_, b_ in zip(p0, p1)) <= 2, (p0, p1))
     # 卡片（轉場）：示範游標淡出
     json.dump(dict(now, card="transition", pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0, "seq": 2}),
               open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
@@ -723,6 +731,11 @@ def main():
         check("%d×%d：字幕塊實際排出來最多兩行、不超過最大寬度（舞台寬 62%%）" % (W, H),
               g and g["caption_req"][1] <= 2 * g["cap_line_h"] + 2 * g["cap_pad"] + 12 and g["caption_req"][0] <= g["cap_max_w"] + 2, g)
         check("%d×%d：字幕就是這一拍的句子" % (W, H), g and g["caption_text"] == two_lines, g and g.get("caption_text"))
+        _shown = (g or {}).get("caption_shown") or ""
+        _lns = _shown.split("\n")
+        check("%d×%d：畫面上的字幕斷行：行首不是 。，、；：？！」）、行尾不是 「（，最多兩行" % (W, H),
+              _shown and len(_lns) <= 2 and _shown.replace("\n", "") == two_lines
+              and not any(ln[:1] in L.NO_LINE_START or ln[-1:] in L.NO_LINE_END for ln in _lns), _lns)
         check("%d×%d：講者模式輪到他按 → 控制列出現在右側，「下一步」在右半邊；和字幕重疊時控制列讓到字幕上方" % (W, H),
               g and g["controls_visible"] and g["next"][0] > W * 0.6 and g.get("controls_rect") and g.get("caption_plate")
               and not L.overlaps(g["controls_rect"], g["caption_plate"]), g and (g.get("next"), g.get("controls_rect"), g.get("caption_plate"), "want=%s" % g.get("controls_want")))

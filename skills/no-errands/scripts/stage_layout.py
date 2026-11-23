@@ -17,10 +17,11 @@ MAX_CAPTION_LINES = 2
 def layout(W, H):
     """回各區塊的矩形 (x, y, w, h) 與字級（像素）。Sprint F-2：沒有固定字幕帶——頁面用到角色帶以下的整個高度；
     字幕是浮在舞台上的小方塊（大小跟著文字），控制列是右下角一小塊。"""
-    band_h = max(40, round(H * 0.06))
+    # Sprint G（使用者：不可以有任何固定佔位的額外東西）：沒有角色帶——頁面貼齊螢幕四邊；角色與段落在字幕上方的一小列
+    band_h = 0
     pad = max(16, round(W * 0.017))
     cap_font = max(18, round(H * 0.025))                 # 1200 高→30、1080→27
-    stage = (0, band_h, W, H - band_h)
+    stage = (0, 0, W, H)
     ctl_w, ctl_h = max(260, round(W * 0.2)), max(44, round(H * 0.05))
     return {
         "screen": (W, H),
@@ -31,8 +32,8 @@ def layout(W, H):
         "cap_line_h": round(cap_font * 1.35),
         "cap_pad": max(8, round(cap_font * 0.45)),
         "cap_max_w": round(W * 0.62),
-        "cap_bottom": band_h + round((H - band_h) * 0.93),
-        "band_font": max(16, round(band_h * 0.44)),
+        "cap_bottom": round(H * 0.93),
+        "band_font": max(13, round(cap_font * 0.55)),     # 字幕上方那一小列（角色、段落、等待計時）的字級：字幕的 0.55
         "ctl_font": max(12, round(H * 0.0167)),
         "pad": pad,
     }
@@ -73,6 +74,86 @@ def caption_lines(text, W, H):
         else:
             cur += w
     return lines
+
+
+# 字幕斷行（5c：「。」單獨一行、行尾停在「「」看起來粗糙）：行首不可以是這些標點、行尾不可以是那些
+NO_LINE_START = set("。，、；：？！」』）】〉》…,.;:?!)]}%")
+NO_LINE_END = set("「『（【〈《([{")
+
+
+def _caption_tokens(s):
+    """切成不可再分的單位：英文字、數字（含 v2、0912…、Gate 這類）整段不拆；其他逐字。"""
+    toks, i = [], 0
+    while i < len(s):
+        c = s[i]
+        if c.isascii() and c.isalnum():
+            j = i
+            while j < len(s) and s[j].isascii() and (s[j].isalnum() or s[j] in "._-/@'"):
+                j += 1
+            toks.append(s[i:j])
+            i = j
+        else:
+            toks.append(c)
+            i += 1
+    return toks
+
+
+def _wrap_para(s, width, measure):
+    lines, cur = [], []
+    for t in _caption_tokens(s):
+        if cur and measure("".join(cur + [t]).rstrip()) > width:
+            if t == " ":
+                lines.append(cur)
+                cur = []
+                continue
+            nxt = [t]
+            # 禁則：下一行開頭是不能放行首的標點、或這一行結尾是不能放行尾的標點 → 把這一行最後一個單位一起帶下去
+            while len(cur) > 1 and (nxt[0][:1] in NO_LINE_START or cur[-1][-1:] in NO_LINE_END or cur[-1] == " "):
+                nxt.insert(0, cur.pop())
+            lines.append(cur)
+            cur = nxt
+        elif not cur and t == " ":
+            continue
+        else:
+            cur.append(t)
+    if cur:
+        lines.append(cur)
+    out = []
+    for ln in lines:
+        txt = "".join(ln).strip(" ")
+        # 單一個單位就比寬度寬（很長的英文字）：逐字切開
+        while len(txt) > 1 and measure(txt) > width:
+            k = len(txt) - 1
+            while k > 1 and measure(txt[:k]) > width:
+                k -= 1
+            out.append(txt[:k])
+            txt = txt[k:]
+        out.append(txt)
+    return out
+
+
+def wrap_caption(text, width, measure):
+    """字幕斷行：回傳每一行。measure(字串)→像素寬。
+    - 每一行不超過 width；行首不是 NO_LINE_START、行尾不是 NO_LINE_END（禁則：把前一個字一起帶下去）；
+    - 行數不變的前提下把寬度收到最窄（兩行時兩行差不多長，不會剩一兩個字孤零零在第二行）。"""
+    text = str(text or "")
+    paras = text.split("\n")
+    out = []
+    for p in paras:
+        base = _wrap_para(p, width, measure)
+        n = len(base)
+        if n > 1:
+            lo, hi = 1, int(width)
+            while lo < hi:                                    # 行數維持 n 的最窄寬度
+                mid = (lo + hi) // 2
+                if len(_wrap_para(p, mid, measure)) <= n:
+                    hi = mid
+                else:
+                    lo = mid + 1
+            bal = _wrap_para(p, hi, measure)
+            base = bal if len(bal) == n else base
+        out.extend(base)
+    return out
 
 
 def caption_errors(beats_by_step):
