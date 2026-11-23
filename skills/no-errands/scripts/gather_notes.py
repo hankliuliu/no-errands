@@ -459,6 +459,12 @@ def number(notes):
 
 
 # ---------------------------------------------------------------- 給人看的
+def is_empty(st, notes):
+    """記事本確定是空的：一則都沒有、上一輪擷取一路看到底、沒有過期沒轉完的圖。"""
+    return (not notes and (st.get("last_run") or {}).get("stop") == "bottom"
+            and not st.get("older_not_captured") and not st.get("expired_shots"))
+
+
 def range_facts(st, notes, short=False):
     """記事本範圍的事實（不寫「只收到某日以後的」：最下面那則常常被切在畫面邊緣、看不到時間）。
     回字串清單：有日期的最新～最舊一則；時間看不到的幾則；更舊的還沒擷取。"""
@@ -482,6 +488,8 @@ def overview_line(tdir):
     st = load_state(tdir)
     if not st.get("notes") and not st.get("last_run") and not st.get("expired_shots"):
         return None
+    if is_empty(st, load_notes(tdir)):
+        return "空的（%s 看過，還沒有人新增記事）" % (st.get("updated") or "")[:10]
     parts = ["%d 則（由 AI 看圖轉寫；原文以 LINE 為準）" % st.get("notes", 0)]
     if st.get("truncated"):
         parts.append("內文未完整 %d 則" % st["truncated"])
@@ -515,9 +523,11 @@ def render_notes(tdir, title, from_dir=None):
     when = lambda n: n.get("posted_at") or ""
     overview = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(tdir))), "收集總覽.md")
     L = ["[← 回收集總覽](%s)" % _link_target(overview, from_dir or os.path.join(tdir, "files")), "",
-         "# 記事本：%s" % title, "",
-         "這裡是〈%s〉記事本收下來的內容，依時間由新到舊排列。內文是 AI 看圖轉寫的，可能有錯字，原文以 LINE 為準；記事本底下的留言不收。" % title,
-         ""]
+         "# 記事本：%s" % title, ""]
+    if is_empty(st, notes):
+        return "\n".join(L + ["〈%s〉的記事本目前是空的：還沒有人新增記事（%s 看過）。" % (title, st.get("updated") or ""), ""])
+    L += ["這裡是〈%s〉記事本收下來的內容，依時間由新到舊排列。內文是 AI 看圖轉寫的，可能有錯字，原文以 LINE 為準；記事本底下的留言不收。" % title,
+          ""]
     rng = ["共 %d 則" % len(notes)] + range_facts(st, notes)
     if st.get("updated"):
         rng.append("更新於 %s" % st["updated"])
@@ -569,8 +579,8 @@ def missing_section(tdir, notes=None):
     """未收清單裡的「記事本」一節（沒有要列的 → []）。"""
     st = load_state(tdir)
     notes = notes if notes is not None else load_notes(tdir)
-    if not notes and not st.get("last_run") and not st.get("expired_shots"):
-        return []
+    if (not notes and not st.get("last_run") and not st.get("expired_shots")) or is_empty(st, notes):
+        return []   # 沒收過，或確定是空的（總覽那一行會說「空的」）
     L = ["## 記事本", "", "記事本的內文是 AI 看圖轉寫的，可能有錯字，原文以 LINE 為準。記事本底下的留言不收。", ""]
     facts = range_facts(st, notes)
     if facts:

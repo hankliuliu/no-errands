@@ -301,6 +301,17 @@ try:
     check("8 dest 那份的回總覽連結指得到真的總覽（依它自己的位置算）",
           os.path.normpath(os.path.join(dst8, "files", dmd.splitlines()[0].split("(<")[1].rstrip(">)"))) == os.path.normpath(os.path.join(rd8, "收集總覽.md")),
           dmd.splitlines()[0])
+    t9 = os.path.join(rd8, "line", "empty1")
+    os.makedirs(t9)
+    gn.save_notes(t9, [])
+    gn.save_state(t9, {"last_run": {"run": "r", "stop": "bottom", "shots": 1}, "older_not_captured": False, "notes": 0, "updated": "2026-11-23 11:09"})
+    r9 = gn.render_notes(t9, "空的聊天室")
+    check("9 空的記事本：記事本.md 直接說是空的，不寫「共 0 則」、不寫 AI 轉寫的說明", "記事本目前是空的" in r9 and "共 0 則" not in r9
+          and "AI 看圖轉寫" not in r9 and r9.splitlines()[0].startswith("[← 回收集總覽]"), r9)
+    check("9 空的記事本：總覽一行寫「空的」、不寫「0 則（由 AI 看圖轉寫）」", gn.overview_line(t9) == "空的（2026-11-23 看過，還沒有人新增記事）", gn.overview_line(t9))
+    check("9 空的記事本：未收清單不另開記事本一節", gn.missing_section(t9) == [], gn.missing_section(t9))
+    gn.save_state(t9, {"last_run": {"run": "r", "stop": "cap", "shots": 15}, "older_not_captured": True, "notes": 0})
+    check("9 停在上限、0 則（不是確定空的）：不說「空的」", "空的" not in (gn.overview_line(t9) or "") and "空的" not in gn.render_notes(t9, "x"), gn.overview_line(t9))
 finally:
     shutil.rmtree(rd8, ignore_errors=True)
 
