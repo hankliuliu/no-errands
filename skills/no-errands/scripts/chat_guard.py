@@ -395,6 +395,9 @@ def idle_gate(prof, pol, a):
     """會搶前景的 app：只在使用者閒置時做（或使用者已同意）。回傳後開始監看。"""
     if not prof.get("raises_foreground") or pol.get("visibility") == "watch":
         return
+    why = idle.screen_unavailable()
+    if why:   # 鎖定或螢幕保護程式時「閒置很久」沒有意義，做出來的也不是真的畫面
+        raise Refused("%s：解鎖前不操作畫面（閒置閘門在這時候沒有意義）" % why)
     mode = pol.get("busy_behavior", "wait_idle")
     if mode == "ask":
         if "--user-ok" not in a:
@@ -433,6 +436,9 @@ def idle_gate(prof, pol, a):
 
 
 def check_interrupt():
+    why = idle.screen_unavailable() if WATCH.get("watch") is not None else None
+    if why:
+        raise Refused("%s：已中止（鎖定時的畫面與結果都不算數）" % why)
     w = WATCH["watch"]
     if WATCH.get("tripped") or (w and w.interrupted()):
         if WATCH["win"]:
@@ -942,12 +948,15 @@ def cmd_notes(app, prof, chat, pol, max_shots=NOTES_MAX_SHOTS, skip_notches=0, t
             if res["stop"] in NOTES_OK_STOPS and res["stop"] != "user_input" and not header_ok(prof, snapshot(win, interactive=False), chat):
                 res["stop"] = "wrong_chat"   # 擷取後主視窗標頭不是同一個對話 → 圖全丟
     except Refused as e:
-        if "使用者回來" not in str(e):
+        if "鎖定" in str(e) or "螢幕保護" in str(e):
+            res["stop"] = "locked"   # 鎖定時的畫面不算數：圖全丟（下面一起處理）
+        elif "使用者回來" not in str(e):
             raise
-        res["stop"] = "user_input"
+        else:
+            res["stop"] = "user_input"
     finally:
         man["stop"] = res["stop"]
-        if res["stop"] in ("wrong_chat", "no_overlap"):   # 錯聊天室、或量不到重疊（可能漏內容）：圖全丟
+        if res["stop"] in ("wrong_chat", "no_overlap", "locked"):   # 錯聊天室、量不到重疊、或中途被鎖定：圖全丟
             _sh.rmtree(rdir, ignore_errors=True)
             man["shots"] = []
         if man["shots"]:

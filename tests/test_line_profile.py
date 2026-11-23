@@ -265,6 +265,27 @@ check("輸入監看：我們的點擊執行中送出的系統輸入不算使用�
 check("輸入監看：點擊結束後沒人碰，仍不算", own_done_ok)
 check("輸入監看：我們的動作以外的輸入照常算使用者回來", user_ok)
 check("輸入監看：沒有我們的動作時，照舊一動就算（沒有放寬）", plain_ok)
+# 電腦鎖定或螢幕保護程式時：閒置閘門與操作中的檢查都要中止並講明原因
+_orig_su = _idle.screen_unavailable
+try:
+    _idle.screen_unavailable = lambda: "電腦目前鎖定中（測試）"
+    try:
+        cg.idle_gate({"raises_foreground": True}, {"busy_behavior": "wait_idle", "idle_min_s": 0}, [])
+        _gate_ok = False
+    except cg.Refused as _e:
+        _gate_ok = "鎖定" in str(_e) and "解鎖前不操作" in str(_e)
+    cg.WATCH.update({"watch": _idle.IdleWatch(), "win": None, "tripped": False})
+    try:
+        cg.check_interrupt(); _ci_ok = False
+    except cg.Refused as _e:
+        _ci_ok = "鎖定" in str(_e)
+finally:
+    _idle.screen_unavailable = _orig_su
+    cg.WATCH.update({"watch": None, "win": None, "tripped": False})
+check("電腦鎖定時：閒置閘門拒絕並講明原因（不把鎖定當成閒置）", _gate_ok)
+check("電腦鎖定時：操作中的檢查中止並講明原因", _ci_ok)
+import inspect as _ins2  # noqa: E402
+check("記事本擷取中途被鎖定：stop=locked、圖全丟（在丟圖的清單裡）", '"wrong_chat", "no_overlap", "locked"' in _ins2.getsource(cg.cmd_notes))
 check("記事本目標資料夾：名稱帶不帶人數都對到 gather 那個目標", _tid_ok)
 check("記事本目標資料夾：gather 沒有這個目標 → 和 gather 同一個算法", _tid_fb)
 import inspect as _ins  # noqa: E402
