@@ -420,7 +420,7 @@ def real_chrome_checks(stage_with):
         check("H3／A50 遮罩的位置看得到原本的頁面（不是指定的洋紅色）", not (abs(c[0] - 255) < 20 and c[1] < 40 and abs(c[2] - 255) < 20), c)
     bd = g.get("badge")
     check("H2／A49 右上角的標記：在螢幕右上角、小、文字是這一步的角色、色塊是角色顏色",
-          bd and bd[0] + bd[2] >= W - 40 and bd[1] <= 40 and bd[2] < W * 0.3 and bd[3] < H * 0.1
+          bd and bd[0] + bd[2] >= W - 40 and bd[1] <= H * 0.2 and bd[2] < W * 0.3 and bd[3] < H * 0.12
           and (g.get("badge_text") or [""])[0] == "第一線人員" and (g.get("badge_color") or "").lower() == "#2f7de1",
           (bd, g.get("badge_text"), g.get("badge_color")))
     check("H2／A49 頁面仍然四邊貼齊螢幕（標記疊在上面、不佔版面）", r and r.get("fit", {}).get("ok"), r and r.get("fit"))

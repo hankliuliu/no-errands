@@ -560,7 +560,7 @@ class Stage:
             if st == "waiting_system":
                 w_ = int(now.get("waited_s") or 0)
                 where_t, where_fg = "等待 %d:%02d" % (w_ // 60, w_ % 60), ("#d29922" if slow else "#c9d1dc")
-            elif st == "ready" and not now.get("step_id"):
+            elif not now.get("step_id") and int(now.get("step_index") or 0) == 0:
                 # 準備完成、第一步之前：模式這一行（原本片頭卡上的資訊；時間不夠、怎麼離開在「⋯」選單）
                 c_ = read_json(os.path.join(self.run_dir, "control.json"))
                 where_t = "按「下一步」開始" if c_.get("advance") == "step" else "自動播放"
@@ -589,7 +589,7 @@ class Stage:
         bw, bh = self.badgew.winfo_reqwidth(), self.badgew.winfo_reqheight()
         m = max(8, round(self.H * 0.012))
         sx, sy, sw, sh = self.lay["stage"]
-        top_ = round(self.H * 0.085)                     # 頁面自己最上面那一列（標誌、搜尋、頭像）的下方：不蓋頁面的圖示
+        top_ = round(self.H * 0.15)                      # 頁面最上面兩列（標誌、搜尋、頭像；頻道名稱與圖示）的下方：不蓋頁面的圖示
         rect = (sx + sw - bw - m, sy + top_, bw, bh)
         if rect != self.badge_rect:
             self.badge_rect = rect
