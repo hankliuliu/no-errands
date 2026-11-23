@@ -76,6 +76,86 @@ def caption_lines(text, W, H):
     return lines
 
 
+# 字幕斷行（5c：「。」單獨一行、行尾停在「「」看起來粗糙）：行首不可以是這些標點、行尾不可以是那些
+NO_LINE_START = set("。，、；：？！」』）】〉》…,.;:?!)]}%")
+NO_LINE_END = set("「『（【〈《([{")
+
+
+def _caption_tokens(s):
+    """切成不可再分的單位：英文字、數字（含 v2、0912…、Gate 這類）整段不拆；其他逐字。"""
+    toks, i = [], 0
+    while i < len(s):
+        c = s[i]
+        if c.isascii() and c.isalnum():
+            j = i
+            while j < len(s) and s[j].isascii() and (s[j].isalnum() or s[j] in "._-/@'"):
+                j += 1
+            toks.append(s[i:j])
+            i = j
+        else:
+            toks.append(c)
+            i += 1
+    return toks
+
+
+def _wrap_para(s, width, measure):
+    lines, cur = [], []
+    for t in _caption_tokens(s):
+        if cur and measure("".join(cur + [t]).rstrip()) > width:
+            if t == " ":
+                lines.append(cur)
+                cur = []
+                continue
+            nxt = [t]
+            # 禁則：下一行開頭是不能放行首的標點、或這一行結尾是不能放行尾的標點 → 把這一行最後一個單位一起帶下去
+            while len(cur) > 1 and (nxt[0][:1] in NO_LINE_START or cur[-1][-1:] in NO_LINE_END or cur[-1] == " "):
+                nxt.insert(0, cur.pop())
+            lines.append(cur)
+            cur = nxt
+        elif not cur and t == " ":
+            continue
+        else:
+            cur.append(t)
+    if cur:
+        lines.append(cur)
+    out = []
+    for ln in lines:
+        txt = "".join(ln).strip(" ")
+        # 單一個單位就比寬度寬（很長的英文字）：逐字切開
+        while len(txt) > 1 and measure(txt) > width:
+            k = len(txt) - 1
+            while k > 1 and measure(txt[:k]) > width:
+                k -= 1
+            out.append(txt[:k])
+            txt = txt[k:]
+        out.append(txt)
+    return out
+
+
+def wrap_caption(text, width, measure):
+    """字幕斷行：回傳每一行。measure(字串)→像素寬。
+    - 每一行不超過 width；行首不是 NO_LINE_START、行尾不是 NO_LINE_END（禁則：把前一個字一起帶下去）；
+    - 行數不變的前提下把寬度收到最窄（兩行時兩行差不多長，不會剩一兩個字孤零零在第二行）。"""
+    text = str(text or "")
+    paras = text.split("\n")
+    out = []
+    for p in paras:
+        base = _wrap_para(p, width, measure)
+        n = len(base)
+        if n > 1:
+            lo, hi = 1, int(width)
+            while lo < hi:                                    # 行數維持 n 的最窄寬度
+                mid = (lo + hi) // 2
+                if len(_wrap_para(p, mid, measure)) <= n:
+                    hi = mid
+                else:
+                    lo = mid + 1
+            bal = _wrap_para(p, hi, measure)
+            base = bal if len(bal) == n else base
+        out.extend(base)
+    return out
+
+
 def caption_errors(beats_by_step):
     """{步驟 id: [字幕, …]} → 四種解析度下超過兩行的錯誤清單。"""
     errs = []

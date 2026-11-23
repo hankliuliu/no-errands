@@ -349,5 +349,29 @@ if os.name == "nt":
     check("原生找瀏覽器行程：沒有這個 profile → 空集合（不是 None），而且很快（<1 秒，不卡舞台）",
           _r == set() and _t.time() - _t0 < 1.0, (_r, round(_t.time() - _t0, 3)))
 
+# 字幕斷行（5c）：行首不是 。，、；：？！」）、行尾不是 「（；每一行不超過寬度；兩行時不剩孤字
+def _m(s, f=30):
+    return sum(L.char_w(c, f) for c in s)
+
+
+_cases = [("今天的天氣很好我們一起去公園散步。", 16 * 30),      # 舊做法：第二行只剩「。」
+          ("看完說明之後再按一次，請按「下一步」。", 11 * 30),   # 舊做法：第一行結尾停在「「」
+          ("看完說明之後再按一次，請按「下一步」。", 12 * 30),
+          ("早餐、午餐和晚餐都在這間餐廳吃，而且每一道菜都很好吃。", 16 * 30),
+          ("小貓只會睡覺、吃飯（不會自己洗澡），每天都要有人陪牠玩！", 15 * 30),
+          ("這個程式會先讀檔再交給 Python 輸出。", 12 * 30),
+          ("先講「圖書館」三種書：「小說」、「字典」。", 7 * 30)]
+for _t_, _w in _cases:
+    for _ww in (_w, _w - 15, _w + 15, int(_w * 0.7)):
+        _ls = L.wrap_caption(_t_, _ww, _m)
+        _bad = [ln for ln in _ls if ln[:1] in L.NO_LINE_START or ln[-1:] in L.NO_LINE_END or _m(ln) > _ww or not ln]
+        check("字幕斷行（寬 %d）：每一行首尾合規、不超寬：%s" % (_ww, _t_), not _bad and "".join(_ls).replace(" ", "") == _t_.replace(" ", ""), _ls)
+_ls = L.wrap_caption("今天的天氣很好我們一起去公園散步。", 16 * 30, _m)
+check("字幕斷行：兩行時差不多長（不會剩一兩個字孤零零在第二行）", len(_ls) == 2 and abs(len(_ls[0]) - len(_ls[1])) <= 2, _ls)
+check("字幕斷行：英文字不從中間拆開", all("Python" in ln or "Pyt" not in ln for ln in L.wrap_caption("這個程式會先讀檔再交給 Python 輸出。", 11 * 30, _m)),
+      L.wrap_caption("這個程式會先讀檔再交給 Python 輸出。", 11 * 30, _m))
+check("字幕斷行：一行放得下就不斷", L.wrap_caption("AI 照著指示，改出第二版。", 40 * 30, _m) == ["AI 照著指示，改出第二版。"])
+check("舞台用自己的斷行（Label 不再自己折行）", "wrap_caption(" in _insp.getsource(DS) if "_insp" in dir() else True)
+
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
 sys.exit(0 if all(R) else 1)

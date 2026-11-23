@@ -731,6 +731,11 @@ def main():
         check("%d×%d：字幕塊實際排出來最多兩行、不超過最大寬度（舞台寬 62%%）" % (W, H),
               g and g["caption_req"][1] <= 2 * g["cap_line_h"] + 2 * g["cap_pad"] + 12 and g["caption_req"][0] <= g["cap_max_w"] + 2, g)
         check("%d×%d：字幕就是這一拍的句子" % (W, H), g and g["caption_text"] == two_lines, g and g.get("caption_text"))
+        _shown = (g or {}).get("caption_shown") or ""
+        _lns = _shown.split("\n")
+        check("%d×%d：畫面上的字幕斷行：行首不是 。，、；：？！」）、行尾不是 「（，最多兩行" % (W, H),
+              _shown and len(_lns) <= 2 and _shown.replace("\n", "") == two_lines
+              and not any(ln[:1] in L.NO_LINE_START or ln[-1:] in L.NO_LINE_END for ln in _lns), _lns)
         check("%d×%d：講者模式輪到他按 → 控制列出現在右側，「下一步」在右半邊；和字幕重疊時控制列讓到字幕上方" % (W, H),
               g and g["controls_visible"] and g["next"][0] > W * 0.6 and g.get("controls_rect") and g.get("caption_plate")
               and not L.overlaps(g["controls_rect"], g["caption_plate"]), g and (g.get("next"), g.get("controls_rect"), g.get("caption_plate"), "want=%s" % g.get("controls_want")))

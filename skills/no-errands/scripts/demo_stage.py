@@ -1246,8 +1246,8 @@ class Stage:
         # Sprint G2（使用者：字幕出現後到換下一句前，不要閃去其他地方）：一句一個位置——只在新的一句出現（或使用者
         # 按兩下回預設、拖動）時決定位置與大小，這一句期間目標換了、頁面捲了、對話框開了都不重擺
         new_sentence = bool(text) and (text != getattr(self, "_cap_for", None) or self._force_place)
-        if new_sentence and self.cap.cget("text") != text:
-            self.cap.configure(text=text)
+        if new_sentence:
+            self._cap_raw = text                          # 這一句的原文（geom 回報用；畫面上是斷好行的版本）
         if text and self.cap_on and not new_sentence and getattr(self, "_cap_shown", False) and self.cap_geom:
             pass                                          # 同一句：位置、大小都不動（拖動由 cap_move 處理）
         elif text and self.cap_on:
@@ -1267,8 +1267,20 @@ class Stage:
                         one_line = 10 ** 6
                     if one_line <= 2 * gap * 0.92:                # 兩行放得下才縮窄（A2：最多兩行）；放不下維持原寬、選重疊最少的位置
                         wrap = min(wrap, gap)
-            if int(float(self.cap.cget("wraplength"))) != int(wrap):
-                self.cap.configure(wraplength=wrap)
+            # 斷行由我們自己排（禁則＋兩行等長），Label 不再自己折行
+            try:
+                if getattr(self, "_cap_font", None) is None:
+                    import tkinter.font as tkfont
+                    self._cap_font = tkfont.Font(font=self.cap.cget("font"))
+                shown = "\n".join(L.wrap_caption(text, wrap, self._cap_font.measure))
+                wl = 0
+            except Exception:
+                shown, wl = text, wrap                    # 量不到字寬：退回 Label 自己折行
+            if self.cap.cget("text") != shown:
+                self.cap.configure(text=shown)
+            if int(float(self.cap.cget("wraplength"))) != int(wl):
+                self.cap.configure(wraplength=wl)
+            self._cap_raw = text
             self.capw.update_idletasks()
             bw, bh = self.capbox.winfo_reqwidth() + self.xbtn_size + 4, self.capbox.winfo_reqheight()   # 右側預留 × 的空位；含上方小列
             box0 = self.cap_box()
@@ -1410,7 +1422,7 @@ class Stage:
     def write_geom(self):
         try:
             g = dict(self.geom(), t=round(time.time(), 2), screen=[self.W, self.H],
-                     controls_visible=bool(self.ctl_shown), caption_text=self.cap.cget("text"))
+                     controls_visible=bool(self.ctl_shown), caption_text=getattr(self, "_cap_raw", None) or self.cap.cget("text"))
             p = os.path.join(self.run_dir, "stage_geom.json")
             json.dump(g, open(p + ".tmp", "w", encoding="utf-8"), ensure_ascii=False)
             os.replace(p + ".tmp", p)
@@ -1419,7 +1431,7 @@ class Stage:
 
     def dump_geom(self):
         self.root.update_idletasks()
-        g = {**self.geom(), "screen": [self.W, self.H], "caption_text": self.cap.cget("text"), "card_texts": getattr(self, "card_texts", []),
+        g = {**self.geom(), "screen": [self.W, self.H], "caption_text": getattr(self, "_cap_raw", None) or self.cap.cget("text"), "caption_shown": self.cap.cget("text"), "card_texts": getattr(self, "card_texts", []),
              "caption_box": [self.capbg.winfo_x(), self.capbg.winfo_y(), self.capbg.winfo_width(), self.capbg.winfo_height()]
              if self.capbg.winfo_viewable() else None,
              "caption_rgn": self.cap_rgn_box(),
