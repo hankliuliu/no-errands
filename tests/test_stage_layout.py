@@ -283,6 +283,14 @@ check("認得自己的瀏覽器：參數整個包在引號裡的 --user-data-dir
 q2 = r"chrome.exe --user-data-dir=C:\p\b --x=1"
 check("認得自己的瀏覽器：沒有引號的 --user-data-dir", DS.profile_of_cmdline(q2) == r"C:\p\b", DS.profile_of_cmdline(q2))
 check("沒有 --user-data-dir → 不認", DS.profile_of_cmdline("chrome.exe --type=renderer") is None)
+if os.name == "nt":
+    import time as _t  # noqa: E402
+    _cl = DS.process_cmdline(os.getpid())
+    check("原生讀行程命令列（不經 WMI）：讀得到自己的命令列", bool(_cl) and "test_stage_layout" in _cl, _cl)
+    _t0 = _t.time()
+    _r = DS.chrome_pids_native(os.path.join(os.environ.get("TEMP", "C:\\"), "no-such-profile-xyz"))
+    check("原生找瀏覽器行程：沒有這個 profile → 空集合（不是 None），而且很快（<1 秒，不卡舞台）",
+          _r == set() and _t.time() - _t0 < 1.0, (_r, round(_t.time() - _t0, 3)))
 
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
 sys.exit(0 if all(R) else 1)
