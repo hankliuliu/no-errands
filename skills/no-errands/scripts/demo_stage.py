@@ -255,20 +255,16 @@ def pid_alive(pid):
 CURSOR0 = {}
 
 
-def user_input_since(tick):
-    """有人回來了：GetLastInputInfo 晚於 tick，而且游標移動超過 40 px，或游標完全沒動（鍵盤）。
-    1–40 px 的小漂移不算（排練時曾被這種雜訊停掉）。"""
-    class LII(ctypes.Structure):
-        _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
-    li = LII(); li.cbSize = ctypes.sizeof(LII)
-    u32.GetLastInputInfo(ctypes.byref(li))
+def user_input_since(tick=None):
+    """有人回來了（無人值守時撤下舞台用）：游標離開第一次量到的位置超過 40 px（1–40 px 的小漂移不算）。
+    A37：不看系統閒置秒數（GetLastInputInfo）——11-23 實測有一條非人為的輸入流（每 16 ms 一筆、游標不動、沒有按鍵）
+    把它壓在 0；舊規則「有輸入但游標沒動＝鍵盤」在這種情況下會立刻誤判、撤下舞台。代價：只按鍵盤不動滑鼠不會被當成回來。"""
     c = wintypes.POINT(); u32.GetCursorPos(ctypes.byref(c))
     if "p" not in CURSOR0:
         CURSOR0["p"] = (c.x, c.y)
-    if li.dwTime <= tick:
         return False
     d = abs(c.x - CURSOR0["p"][0]) + abs(c.y - CURSOR0["p"][1])
-    return d > 40 or d == 0
+    return d > 40
 
 
 def dpr_of(hwnd):
@@ -284,6 +280,10 @@ class Stage:
         if os.name == "nt":
             try:
                 ctypes.windll.shcore.SetProcessDpiAwareness(2)   # 實體像素（和瀏覽器視窗座標一致）
+            except Exception:
+                pass
+            try:                                               # 舞台在的期間螢幕不關、不鎖（ES_CONTINUOUS|SYSTEM|DISPLAY；
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000003)   # 候選二：螢幕 20 分鐘無輸入關閉並鎖定，之後全部失敗）
             except Exception:
                 pass
         import tkinter as tk
@@ -406,8 +406,16 @@ class Stage:
             self.shield.attributes("-alpha", SHIELD_ALPHA)
         except Exception:
             pass
-        for ev in ("<Button>", "<ButtonRelease>", "<MouseWheel>", "<Double-Button>"):
-            self.shield.bind(ev, lambda e: "break")
+        self.shield_rx = {"click": 0, "wheel": 0, "move": 0}      # 隔離層實際吃掉的真滑鼠訊息（診斷；頁面收到的必須是 0）
+
+        def eat(kind):
+            def f(e):
+                self.shield_rx[kind] += 1
+                return "break"
+            return f
+        for ev, kind in (("<Button>", "click"), ("<ButtonRelease>", None), ("<MouseWheel>", "wheel"), ("<Double-Button>", None),
+                         ("<Motion>", "move")):
+            self.shield.bind(ev, eat(kind) if kind else (lambda e: "break"))
         self.shield.withdraw()
         self.cursor_hidden = False
         # 示範游標（F-3）：畫出來的箭頭（色鍵透明、滑鼠穿透、不取得焦點）。系統游標完全不動。
@@ -444,13 +452,18 @@ class Stage:
         self.tick()
 
     def take_front(self):
+        """鍵盤焦點拿回舞台（前景被台上的瀏覽器拿走時）。用角色帶（螢幕最上方一條，不蓋台上任何東西）接焦點，
+        絕不把背板拉到最上層——舊做法 root.lift() 讓全螢幕的背板蓋住瀏覽器與字幕，前景鎖讓拿焦點失敗時每秒重來一次：
+        候選版長官那一段每秒閃一次空白背板（稽核：舞台中央沒有瀏覽器）。接完焦點立刻照原本的上下順序重排。"""
         try:
-            self.root.lift()
-            self.root.focus_force()
+            self.band.focus_force()
             if os.name == "nt":
-                u32.SetForegroundWindow(int(self.root.frame(), 16))
+                u32.SetForegroundWindow(int(self.band.frame(), 16))
         except Exception:
             pass
+        z_ = getattr(self, "_z_t", 0)
+        self.restack()
+        self._z_t = z_          # 不把每秒的量測（版面實測、幾何紀錄）往後推：前景鎖讓拿焦點每秒重來時，那些一次都輪不到（排練：A1 量測過期）
 
     def xbtn_rect(self):
         """× 的螢幕位置：字幕塊右上角（預留的空位裡）。"""
@@ -603,10 +616,10 @@ class Stage:
         return t
 
     # ---------- 控制
-    def toast(self, text):
+    def toast(self, text, secs=1.5):
         """按鍵有沒有被收到，畫面上一定有反應（字幕帶右下的狀態列）。"""
         try:
-            self._toast = (text, time.time())
+            self._toast = (text, time.time(), secs)
             self.state.configure(text="● " + text, fg="#d29922")
         except Exception:
             pass
@@ -665,8 +678,13 @@ class Stage:
         keys = {1: (0, 0x27), 2: (0, 0x22), 3: (0, 0x20), 4: (0x0002 | 0x0004, 0x7B), 5: (0, 0x43)}   # 5＝C（字幕開關）
 
         def loop():
+            names = {1: "→", 2: "PageDown", 3: "空白鍵", 4: "Ctrl+Shift+F12", 5: "C"}
+            self.hotkeys_ok = {}
             for i, (mod, vk) in keys.items():
-                u32.RegisterHotKey(None, i, 0x4000 | mod, vk)    # MOD_NOREPEAT
+                self.hotkeys_ok[names[i]] = bool(u32.RegisterHotKey(None, i, 0x4000 | mod, vk))    # MOD_NOREPEAT
+            bad = [k for k in ("→", "PageDown", "空白鍵", "Ctrl+Shift+F12") if not self.hotkeys_ok.get(k)]
+            if bad:                                        # 別的程式先註冊了同一個鍵：舞台收不到——畫面上說清楚，請改用按鈕
+                self._hk_warn = "%s 被別的程式佔用，按了不會有反應：請用右下角的按鈕" % "、".join(bad)
             msg = wintypes.MSG()
             while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
                 if msg.message == 0x0312:                  # WM_HOTKEY
@@ -1166,8 +1184,11 @@ class Stage:
         end_wait = now.get("card") == "end" and presenter
         cs = L.controls_state(presenter, "waiting_next" if end_wait else st, paused, slow,
                               (time.time() - self._moved_t) if self._moved_t else None)
+        if getattr(self, "_hk_warn", None) and not getattr(self, "_hk_warned", False) and now.get("card") != "checklist":
+            self._hk_warned = True                       # 按鍵被別的程式佔了：講者要知道（使用者昨晚：按空白、右鍵沒反應）
+            self.toast(self._hk_warn, 10)                # 要在算 toast_on 之前：否則同一格的一般提示會把它蓋掉（CI 45105573143）
         tt = getattr(self, "_toast", None)
-        toast_on = bool(tt and time.time() - tt[1] < 1.5)
+        toast_on = bool(tt and time.time() - tt[1] < (tt[2] if len(tt) > 2 else 1.5))
         show_ctl = (cs["visible"] or toast_on) and now.get("card") != "checklist"
         if show_ctl != self.ctl_shown:
             self.ctlw.deiconify() if show_ctl else self.ctlw.withdraw()
@@ -1349,7 +1370,7 @@ class Stage:
                 "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": list(self.xbtn_rect()) if getattr(self, "_cap_shown", False) and self.xbtn_rect() else None, "x_shown": self._x_on, "hint_visible": bool(self.hintw.winfo_viewable()),
                 "caption_on": self.cap_on, "controls_rect": box(self.ctlw), "controls_want": list(getattr(self, "_ctl_xy", None) or []),
                 "controls_moves": getattr(self, "ctl_moves", 0), "controls_stuck": getattr(self, "_ctl_retry", 0) > 3,
-                "shield": box(self.shield), "pointer": [round(v) for v in self.ptr_pos] if self.ptr_pos and self.ptrw.winfo_viewable() else None,
+                "shield": box(self.shield), "shield_rx": dict(self.shield_rx), "hotkeys": dict(getattr(self, "hotkeys_ok", {}) or {}), "pointer": [round(v) for v in self.ptr_pos] if self.ptr_pos and self.ptrw.winfo_viewable() else None,
                 "cursor_hidden": self.cursor_hidden, "ripple_on": self.ptrc.itemcget(self.ripple, "state") == "normal", "look_alpha": self.look_a if any(e.winfo_viewable() for e in self.edges) else 0,
                 "look_rect": list(self.look_rect) if getattr(self, "look_rect", None) else None,
                 "mask_rect": list(self.mask_rect) if getattr(self, "mask_rect", None) else None,
@@ -1377,7 +1398,11 @@ class Stage:
              "controls_visible": bool(self.ctl_shown),
              "next": [self.b_next.winfo_rootx() + self.b_next.winfo_width() // 2,
                       self.b_next.winfo_rooty() + self.b_next.winfo_height() // 2]
-             if self.ctl_shown and self.b_next.winfo_ismapped() and self.b_next.winfo_width() > 1 else None}
+             if self.ctl_shown and self.b_next.winfo_ismapped() and self.b_next.winfo_width() > 1 else None,
+             "more": [self.b_more.winfo_rootx() + self.b_more.winfo_width() // 2,
+                      self.b_more.winfo_rooty() + self.b_more.winfo_height() // 2]
+             if self.ctl_shown and self.b_more.winfo_ismapped() and self.b_more.winfo_width() > 1 else None,
+             "hint_text": self.state.cget("text"), "hotkeys": dict(getattr(self, "hotkeys_ok", {}) or {})}
         tmp = os.environ["NE_STAGE_GEOM"] + ".tmp"
         json.dump(g, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
         try:

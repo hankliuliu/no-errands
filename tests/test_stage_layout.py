@@ -173,17 +173,50 @@ AL = {"list": "#post-list", "scroller": ".s", "item_nth": "#p :nth-last-child({k
       "skip_if": ".modal-content", "color_var": "--center-channel-bg"}
 nth = lambda k: AL["item_nth"].format(k=k)
 boxes = {"#post-list": [269, 141, 984, 354], nth(1): [269, 397, 984, 90.8], nth(2): [269, -14.4, 984, 411.4], "#t": [269, 397, 984, 90.8]}
-c = FakeCtl(); lk = DR.Look(FakeBr(boxes), c, align=AL); lk.step("a", True); lk.set("a", "#t")
-check("A9 Look：被切 155 px、捲了會擠掉目標 → 發布遮罩（頁面底色取自 CSS 變數）",
-      c.now["align"]["how"] == "mask" and c.now["mask"]["color"] == "#111827" and c.now["mask"]["box"][1] == 141, c.now)
-boxes2 = {"#post-list": [269, 141, 984, 354], nth(1): [269, 330, 984, 100], nth(2): [269, 120, 984, 200], "#t": [269, 330, 984, 100]}
-br2 = FakeBr(boxes2); c = FakeCtl(); lk = DR.Look(br2, c, align=AL); lk.step("a", True); lk.set("a", "#t")
-check("A9 Look：被切 21 px → 往上捲 21、捲完驗證對齊、沒有遮罩",
-      c.now["align"] == {"how": "scroll", "ok": True, "cut": 21.0} and c.now.get("mask") is None and ("scroll", "up", "21", "--selector", ".s") in br2.calls, (c.now, br2.calls[-6:]))
-c = FakeCtl(); lk = DR.Look(FakeBr(boxes, modal=1), c, align=AL); lk.step("a", True); lk.set("a", "#t")
-check("A9 Look：對話框開著 → 不捲、不遮（記為 skip）", c.now["align"]["how"] == "skip" and c.now.get("mask") is None, c.now)
-c = FakeCtl(); br3 = FakeBr(boxes); lk = DR.Look(br3, c, align=AL); lk.step("a", False); lk.set("a", "#t")
-check("這一步不對齊（劇本沒列這個檢視）→ 不做任何對齊查詢", c.now.get("align") is None and not any(x[0] == "scroll" for x in br3.calls))
+br1 = FakeBr(boxes); c = FakeCtl(); lk = DR.Look(br1, c, align=dict(AL, top_align=True)); lk.step("a", True); lk.set("a", "#t")
+check("A9 不對齊、不遮罩（5c）：劇本就算寫了 top_align，讀內容的拍子也只取目標位置——不逐則查訊息、不往上捲、不發布遮罩",
+      c.now.get("mask") is None and c.now.get("align") is None and not any(x[0] == "scroll" for x in br1.calls)
+      and not any(x[:2] == ("get", "count") for x in br1.calls) and not any(x[:2] == ("get", "box") and "nth-last-child" in x[2] for x in br1.calls) and len(br1.calls) <= 3
+      and c.now["look"]["box"] == [269.0, 397.0, 984.0, 90.8], (c.now, br1.calls))
+
+# ---- 等待中的字幕（5c）：真的在等才講、等到就停；超時說一句就往下（不停掉整場）
+class WaitBr:
+    def __init__(self, busy_reads):
+        self.n, self.busy = 0, busy_reads
+
+    def text(self, acct, sc):
+        self.n += 1
+        return "🤔 處理中..." if self.n <= self.busy else "這是回答"
+
+    def return_to(self, acct):
+        return False
+
+
+class WaitCtl(FakeCtl):
+    def __init__(self):
+        super().__init__(); self.beats = []
+
+    def publish(self, **kw):
+        super().publish(**kw)
+        if kw.get("beat"):
+            self.beats.append(kw["beat"]["text"])
+
+    def gate(self, on_resume=None):
+        return 0.0
+
+
+sw = [{"say": "第一句", "s": 0.15}, {"say": "第二句", "s": 0.15}, {"say": "第三句", "s": 5}]
+act_w = {"do": "expect_absent", "text": ["處理中"], "scopes": ["#rhs"], "budget_s": 5, "poll_s": 0.05, "say_while": sw}
+st_w = {"id": "sx", "account": "a"}
+c = WaitCtl(); ok_, inf_ = DR.run_action(WaitBr(12), {}, st_w, act_w, {}, None, {}, c)
+check("等待中字幕：依序出現、等到了就停（不會硬播完）", ok_ and c.beats[:2] == ["第一句", "第二句"] and len(inf_.get("said_while", [])) >= 2
+      and inf_.get("t_end"), (ok_, c.beats, inf_))
+c = WaitCtl(); ok_, inf_ = DR.run_action(WaitBr(0), {}, st_w, act_w, {}, None, {}, c)
+check("等待中字幕：等的東西已經到了 → 一句都不講、直接往下", ok_ and c.beats == [], (ok_, c.beats))
+act_t = dict(act_w, budget_s=0.3, say_while=None, timeout_say="AI 助理這次回得比較慢，先往下看。", timeout_say_s=0)
+c = WaitCtl(); ok_, inf_ = DR.run_action(WaitBr(10 ** 6), {}, st_w, act_t, {}, None, {}, c)
+check("等太久：說一句「先往下看」、記成超時略過", not ok_ and inf_.get("timeout_skipped") and c.beats == ["AI 助理這次回得比較慢，先往下看。"],
+      (ok_, c.beats, inf_))
 
 # ---- F-3：示範游標、捲動、外框淡出、不碰系統輸入
 st_ = lay["stage"] if False else L.layout(1920, 1080)["stage"]
@@ -283,6 +316,12 @@ check("認得自己的瀏覽器：參數整個包在引號裡的 --user-data-dir
 q2 = r"chrome.exe --user-data-dir=C:\p\b --x=1"
 check("認得自己的瀏覽器：沒有引號的 --user-data-dir", DS.profile_of_cmdline(q2) == r"C:\p\b", DS.profile_of_cmdline(q2))
 check("沒有 --user-data-dir → 不認", DS.profile_of_cmdline("chrome.exe --type=renderer") is None)
+if os.name == "nt":
+    DS.CURSOR0.clear()
+    check("A37 無人值守的「有人回來」不看系統閒置秒數：游標沒動就不算（有一條非人為輸入流時不會誤撤舞台）",
+          DS.user_input_since(0) is False and DS.user_input_since(0) is False and DS.user_input_since(None) is False)
+    import inspect as _insp  # noqa: E402
+    check("A37 舞台程式不呼叫 GetLastInputInfo", "GetLastInputInfo(" not in _insp.getsource(DS).replace("（GetLastInputInfo）", ""))
 if os.name == "nt":
     import time as _t  # noqa: E402
     _cl = DS.process_cmdline(os.getpid())

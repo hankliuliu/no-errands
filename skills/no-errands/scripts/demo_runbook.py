@@ -191,7 +191,10 @@ def stage_errors(rb):
     if not stage_on(rb):
         return []
     import stage_layout
-    return stage_layout.caption_errors({st["id"]: [b.get("say", "") for b in beats_of(st)] for st in rb.get("steps", [])})
+    return stage_layout.caption_errors({st["id"]: [b.get("say", "") for b in beats_of(st)] +
+                                        [x.get("say", "") for a_ in (st.get("actions") or []) for x in (a_.get("say_while") or [])] +
+                                        [a_["timeout_say"] for a_ in (st.get("actions") or []) if a_.get("timeout_say")]
+                                        for st in rb.get("steps", [])})
 
 
 def validate(rb):
@@ -733,6 +736,8 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
         texts = [(resubst(x, vars_) if is_re else subst(x, vars_)) for x in ([raw] if isinstance(raw, str) else raw)]
         ok, hit = False, None
         marks = dict(vars_.get("__marks") or {}, **rec.get("_marks", {}))
+        say_while = [x for x in (act.get("say_while") or []) if x.get("say")]
+        said = -1
         while True:
             for sc in scopes:
                 body = br.text(acct, sc)
@@ -746,6 +751,18 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
             waited = time.time() - t0 - paused
             if ok or waited >= budget:
                 break
+            if say_while and ctl is not None:
+                # 真的在等才講（5c）：等的東西已經到了就不會走到這裡；依序每句停 s 秒，最後一句留到等完
+                k_, acc = 0, 0.0
+                for k_, x in enumerate(say_while):
+                    acc += float(x.get("s", 8))
+                    if waited < acc:
+                        break
+                if k_ != said:
+                    said = k_
+                    ctl.publish(beat={"text": subst(say_while[k_]["say"], vars_), "i": k_ + 1, "n": len(say_while)},
+                                look=None)
+                    info.setdefault("said_while", []).append(round(waited, 1))
             if waited > 3:
                 ctl.publish(status="waiting_system", waited_s=int(waited),
                             wait_label=act.get("label") or st.get("wait_label") or "系統回應",
@@ -777,7 +794,13 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
             info["error"] = "畫面上沒有預期的元素"
     else:
         ok, info["error"] = False, "未知動作"
+    if not ok and act.get("timeout_say") and d in ("wait_text", "expect_absent") and ctl is not None:
+        # 等太久：不停掉整場（5c：自動模式說一句就往下；講者模式照舞台規則等下一步）；紀錄成「超時略過」
+        ctl.publish(beat={"text": subst(act["timeout_say"], vars_), "i": 1, "n": 1}, look=None)
+        info["timeout_skipped"] = True
+        time.sleep(float(act.get("timeout_say_s", 4)))
     info["ok"], info["ms"] = ok, int((time.time() - t0 - paused) * 1000)
+    info["t_end"] = round(time.time(), 2)                 # 絕對時間：量背景作業（送出到回覆出現、確認到提案出現）
     if pre + paused:
         info["paused_ms"] = int((pre + paused) * 1000)
     return ok, info
@@ -822,24 +845,21 @@ def parse_box(o):
 
 class Look:
     """「看這裡」：記住目標（CSS 選取器或 ref），隨時重取位置發布到 now.json；找不到就不畫。
-    劇本 stage.align 有設定時，每拍也把訊息區頂端對齊到一則訊息的開頭（A9：不留被切一半的字）：
-    能往上捲就捲（被切的那則從開頭顯示、目標仍完整）；捲了會把目標擠出去就請舞台用頁面底色蓋住殘段。
-    全部只用唯讀的 get box／get count 和 scroll。"""
+    不對齊、不遮罩（5c，A9）：每一拍只看目標在不在畫面上，不在就平順捲過去（into_view）。劇本 stage.align 只用到
+    訊息區與捲動容器（list／scroller）給平順捲動。全部只用唯讀的 get box 和 scroll。"""
 
     def __init__(self, br, ctl, align=None, effects=None):
         self.br, self.ctl, self.acct, self.sel = br, ctl, None, None
         self.fx = dict.fromkeys(EFFECTS, True)
         self.fx.update(effects or {})
-        self.align_cfg, self.align_on, self.box, self.anchor, self._align_t = align, False, None, None, 0.0
-        self.color = (align or {}).get("color")
+        self.align_cfg, self.box = align, None
         self.ptr, self.ptr_seq, self.press_seq, self.look_seq = None, 0, 0, 0
 
     def step(self, acct, on):
-        """換步驟：這一步要不要對齊；殘段遮罩清掉。換角色時示範游標從新畫面的中間偏下重新出發（舞台負責淡入）。"""
+        """換步驟：清掉外框。換角色時示範游標從新畫面的中間偏下重新出發（舞台負責淡入）。"""
         if acct != self.acct:
             self.ptr = None
-        self.acct, self.sel, self.box, self.anchor = acct, None, None, None
-        self.align_on = bool(self.align_cfg and on and self.align_cfg.get("top_align", True))   # 5c：預設不對齊、不遮
+        self.acct, self.sel, self.box = acct, None, None
         self.ctl.publish(mask=None, align=None, look=None)
 
     # ---- F-3：示範游標（畫在舞台上；系統游標不動）與平順捲動
@@ -951,8 +971,7 @@ class Look:
         self.look_seq += 1
         if sel and scroll:
             self.into_view(sel)
-        self.refresh(realign=False)
-        self.align()
+        self.refresh()
         if self.box:
             import stage_layout
             self.point(*stage_layout.look_pointer(self.box))
@@ -961,89 +980,22 @@ class Look:
         self.sel = self.box = None
         self.ctl.publish(look=None)
 
-    def refresh(self, realign=True):
+    def refresh(self, realign=None):
         if self.sel:
             rc, o, e = self.br.neb(self.acct, "get", "box", self.sel)
             box = parse_box(o) if rc == 0 else None
             self.box = box
             self.ctl.publish(look={"box": box, "seq": self.look_seq} if box else None)
-        if realign and self.align_on and self.anchor is not None and time.time() - self._align_t >= 1.0:
-            b = self._box(self.align_cfg["item_nth"].format(k=1))       # 有新訊息、版面動了 → 重新對齊
-            if b is None or abs(b[1] - self.anchor[1]) > 2 or abs(b[3] - self.anchor[3]) > 2:
-                self.align()
 
     def _box(self, sel):
         rc, o, e = self.br.neb(self.acct, "get", "box", sel)
         return parse_box(o) if rc == 0 else None
 
-    def align(self):
-        if not self.align_on or not self.acct:
-            return
-        import stage_layout
-        cfg = self.align_cfg
-        self._align_t = time.time()
-        if cfg.get("skip_if"):
-            rc, o, e = self.br.neb(self.acct, "get", "count", cfg["skip_if"])
-            if rc == 0 and o.strip().split()[-1:] and o.strip().split()[-1].isdigit() and int(o.strip().split()[-1]) > 0:
-                self.anchor = None
-                self.ctl.publish(mask=None, align={"how": "skip", "ok": None, "why": "對話框開著"})
-                return
-        lst = self._box(cfg["list"])
-        if not lst:
-            self.anchor = None
-            self.ctl.publish(mask=None, align={"how": "none", "ok": False, "why": "找不到訊息區"})
-            return
-        top = lst[1]
-        last = strad = None
-        for k in range(1, int(cfg.get("max_items", 15)) + 1):
-            b = self._box(cfg["item_nth"].format(k=k))
-            if b is None:
-                break
-            last = last or b
-            if b[1] >= top - 1:
-                continue
-            if b[1] + b[3] > top + 1:
-                strad = (k, b)
-            break
-        plan = stage_layout.align_plan(lst, strad and strad[1], self.box or last)
-        rec = {"how": plan[0], "ok": plan[0] in ("ok", "scroll", "mask"), "cut": round(top - strad[1][1], 1) if strad else 0}
-        mask = None
-        if plan[0] == "scroll":
-            self.br.neb(self.acct, "scroll", "up", str(plan[1]), "--selector", cfg["scroller"])
-            time.sleep(0.25)
-            b = self._box(cfg["item_nth"].format(k=strad[0]))
-            rec["ok"] = bool(b and abs(b[1] - top) <= 2)
-            if self.sel:
-                self.refresh_box_only()
-        elif plan[0] == "mask":
-            mask = {"box": plan[1], "color": self.page_color()}
-        elif plan[0] == "none":
-            rec["why"] = plan[1]
-        self.anchor = self._box(cfg["item_nth"].format(k=1))
-        self.ctl.publish(mask=mask, align=rec)
 
-    def refresh_box_only(self):
-        rc, o, e = self.br.neb(self.acct, "get", "box", self.sel)
-        self.box = parse_box(o) if rc == 0 else None
-        self.ctl.publish(look={"box": self.box, "seq": self.look_seq} if self.box else None)
-
-    def page_color(self):
-        """遮罩用的頁面底色：劇本寫的 > 頁面的 CSS 變數（例：--center-channel-bg）> 黑。"""
-        if self.color:
-            return self.color
-        var = (self.align_cfg or {}).get("color_var")
-        if var:
-            rc, o, e = self.br.neb(self.acct, "get", "styles", self.align_cfg["list"])
-            m = re.search(re.escape(var) + r":\s*(#[0-9a-fA-F]{3,8})\b", o or "")
-            if m:
-                self.color = m.group(1)
-                return self.color
-        return "#000000"
-
-
-def stage_fit_probe(rb, steps, ctl, run_dir, timeout=12.0):
+def stage_fit_probe(rb, steps, ctl, run_dir, timeout=30.0):
     """A1／A19：上場前，把每個帳號的瀏覽器照它第一步的裁切擺到舞台位置（在背板下面，觀眾看不到），
-    讀舞台量到的實際頁面範圍（stage_fit.json）。連續兩次合格才算；不合格回一句原因（不 READY、不上台）。"""
+    讀舞台量到的實際頁面範圍（stage_fit.json）。連續兩次合格才算；不合格回一句原因（不 READY、不上台）。
+    每個帳號最多等 30 秒（5c：冷開機時瀏覽器第一次畫出頁面會慢，要會等，不要直接判定沒準備好）。"""
     p = os.path.join(run_dir, "stage_fit.json")
     for acct in rb["accounts"]:
         st = next((x for x in steps if x["account"] == acct), None)
@@ -1506,12 +1458,18 @@ def execute(rb, mode, a):
             pass
         ctl.publish(status="running", look=None, pointer=None)
     except StopDemo:
-        stopped = {"user_stop": steps[min(i, len(steps) - 1)]["id"]}
+        sid_ = steps[min(i, len(steps) - 1)]["id"]
+        try:
+            why_ = str(json.load(open(os.path.join(run_dir, "control.json"), encoding="utf-8")).get("dropped") or "")
+        except Exception:
+            why_ = ""
+        # 舞台的看門機制收掉舞台（更新迴圈卡死）不是使用者停止：照實記原因（5c：紀錄的原因要寫對）
+        stopped = {"stage_hang": sid_, "why": why_[:80]} if why_.startswith("watchdog") else {"user_stop": sid_}
         ctl.publish(status="stopped")
     finally:
-        if mode != "live" or not stopped or any(k in (stopped or {}) for k in ("user_stop", "stage_fit", "ended_early")):
+        if mode != "live" or not stopped or any(k in (stopped or {}) for k in ("user_stop", "stage_fit", "ended_early", "stage_hang")):
             br.close_all()
-        if staged and stopped and "user_stop" in stopped:
+        if staged and stopped and ("user_stop" in stopped or "stage_hang" in stopped):
             # 緊急停止（Ctrl+Shift+F12、舞台被撤下）：沒有片尾，但資料照樣還原（不留給別人收）
             try:
                 ok_, res_ = do_reset(rb)
@@ -1528,10 +1486,12 @@ def execute(rb, mode, a):
             json.dump(state, f, ensure_ascii=False, indent=1)
         if not stopped:
             ctl.publish(status="done")
-        if staged and not (stopped and ("user_stop" in stopped or "stage_fit" in stopped)):
+        if staged and stopped and "stage_hang" in stopped:
+            show_hang_notice(rb, run_dir, ctl, state.get("reset") or {}, launch="--no-player" not in a)
+        if staged and not (stopped and ("user_stop" in stopped or "stage_fit" in stopped or "stage_hang" in stopped)):
             # 片尾：停住讓講者可以回頭講；按「結束」由引擎自己還原，片尾卡顯示結果
             end = (rb.get("stage") or {}).get("end") or {}
-            ctl.publish(card="end", look=None, beat={"text": "", "i": 0, "n": 0},
+            ctl.publish(card="end", look=None, beat={"text": "", "i": 0, "n": 0}, role="", section="", pointer=None,
                         card_data={"heading": end.get("heading", "示範結束"), "text": end.get("text", ""),
                                    "points": end.get("points") or []})
             try:
@@ -1560,11 +1520,36 @@ def execute(rb, mode, a):
                "recovered": [s["id"] for s in state["steps"] if s.get("recovered")],
                "failed": [s["id"] for s in state["steps"] if not s["ok"]],
                "durations": {s["id"]: s["dur_s"] for s in state["steps"]},
-               "paused_s": round(sum(s.get("paused_s", 0) for s in state["steps"]), 1), "stopped": stopped}
+               "paused_s": round(sum(s.get("paused_s", 0) for s in state["steps"]), 1), "stopped": stopped,
+               "timeouts_skipped": [s["id"] for s in state["steps"] if any(a.get("timeout_skipped") for a in s.get("actions") or [])]}
     if not persist:
         shutil.rmtree(run_dir, ignore_errors=True)
         summary["note"] = "demo.persist=off：一次性執行，紀錄已刪除"
     out(summary, 0 if summary["ok"] else 1)
+
+
+def show_hang_notice(rb, run_dir, ctl, reset, hold_s=10.0, launch=True):
+    """舞台卡死被看門機制收掉之後：重開一個舞台，告訴講者發生了什麼（不是畫面直接消失），停 hold_s 秒或按「下一步」後收掉。"""
+    try:
+        write_control(run_dir, state="playing")              # 新的舞台看到 stopped 會直接撤下
+        if launch:                                           # --no-player（測試）：不開視窗，只發布
+            lg = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")
+            nowin.popen_background([sys.executable, os.path.join(HERE, "demo_stage.py"), run_dir],
+                                   stdin=subprocess.DEVNULL, stdout=lg, stderr=lg,
+                                   env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8"))
+        ok_ = bool(reset.get("ok"))
+        ctl.publish(status="running", card="end", look=None, pointer=None, beat={"text": "", "i": 0, "n": 0}, role="", section="",
+                    card_data={"heading": "示範中斷：畫面卡住，已自動收起",
+                               "text": "不是操作造成的。可以改放備案畫面接著講。",
+                               "points": [], "reset": "資料已還原" if ok_ else "還原沒有成功：請 agent 處理",
+                               "reset_ok": ok_})
+        t_ = time.time()
+        seen = int(ctl.read().get("next_seq", 0))
+        while time.time() - t_ < hold_s and int(ctl.read().get("next_seq", 0)) <= seen:
+            time.sleep(0.25)
+    except Exception:
+        pass
+    ctl.publish(status="closing")
 
 
 def control_cli(a):
@@ -1994,6 +1979,18 @@ def notification_state():
     return None
 
 
+def screen_hint():
+    """A36：畫面能不能用（和守門同一套偵測：idle.screen_unavailable，鎖定要三個訊號中至少兩個一致）。
+    回原因字串或 None。測試只能往嚴的方向覆寫：NE_TEST_SCREEN_LOCKED=1 → 當成鎖定（沒有「強制當成沒鎖」的開關）。"""
+    if os.environ.get("NE_TEST_SCREEN_LOCKED") == "1":
+        return "電腦目前鎖定中（測試）"
+    try:
+        import idle
+        return idle.screen_unavailable()
+    except Exception:
+        return None
+
+
 def standby(rb, a):
     t0 = time.time()
     lines = []
@@ -2003,6 +2000,20 @@ def standby(rb, a):
         print(x, file=sys.stderr, flush=True)
 
     say("上場前準備：%s" % rb.get("title", ""))
+    # A36（5c）：鎖定時我們的視窗不在顯示中的桌面上、瀏覽器停止繪製（候選二 08:29 之後全部是這樣失敗的）。
+    # 鎖定要三個訊號中至少兩個一致才算（誤判成鎖定＝上台那天示範起不來）；「沒鎖」時五個訊號都是 false
+    # （11-23 10:0x 解鎖後 86 與 da 各自實測），所以畫面不能用就擋下、明講要先解鎖
+    screen_why = screen_hint()
+    if screen_why:
+        # 一開始就停：鎖定時開舞台、開瀏覽器、量版面都會在奇怪的地方失敗（候選二），只講這一件事
+        say("✗ %s：請先解鎖，再雙擊一次" % screen_why)
+        result = {"ok": False, "locked": True, "run_dir": None, "standby_s": round(time.time() - t0, 1),
+                  "checks": [{"check": "電腦沒有鎖定、畫面可用", "ok": False, "detail": "%s：請先解鎖，再雙擊一次" % screen_why}]}
+        try:
+            _atomic_json(os.path.join(rb["_dir"], "standby-last.json"), result)
+        except OSError:
+            pass
+        out(result, 1)
     old = stop_previous_standby(rb)
     staged = stage_on(rb)
     run_dir, stage_p, items = None, None, []
@@ -2101,6 +2112,7 @@ def standby(rb, a):
         qs = notification_state()
         item("通知", qs in (2, 3, 4), warn=True)
         res.append({"check": "系統通知會被擋下（勿擾）", "ok": qs in (2, 3, 4), "detail": "state=%s" % qs, "warn": True})
+    res.append({"check": "電腦沒有鎖定、畫面可用", "ok": True, "detail": ""})
     allok = tun_ok and ok and pb_ok and cok
     result = {"ok": allok, "checks": res, "approval": aid, "standby_s": None, "run_dir": run_dir, "tunnel_pid": tun_pid}
     if staged and not allok:
@@ -2123,7 +2135,7 @@ def standby(rb, a):
         pl = stage_p if staged else (None if "--no-player" in a else nowin.popen_background(
             [sys.executable, os.path.join(HERE, "demo_player.py"), run_dir], stdout=log, stderr=log, **kw))
         st_ = None
-        for _ in range(240):
+        for _ in range(360):                          # 冷開機（剛開機、第一次開瀏覽器）時開頁、量版面會慢：最多等 3 分鐘才判定沒準備好
             time.sleep(0.5)
             try:
                 st_ = json.load(open(os.path.join(run_dir, "now.json"), encoding="utf-8")).get("status")
