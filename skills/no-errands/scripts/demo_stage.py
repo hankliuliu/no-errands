@@ -461,7 +461,9 @@ class Stage:
                 u32.SetForegroundWindow(int(self.band.frame(), 16))
         except Exception:
             pass
+        z_ = getattr(self, "_z_t", 0)
         self.restack()
+        self._z_t = z_          # 不把每秒的量測（版面實測、幾何紀錄）往後推：前景鎖讓拿焦點每秒重來時，那些一次都輪不到（排練：A1 量測過期）
 
     def xbtn_rect(self):
         """× 的螢幕位置：字幕塊右上角（預留的空位裡）。"""
