@@ -1184,11 +1184,11 @@ class Stage:
         end_wait = now.get("card") == "end" and presenter
         cs = L.controls_state(presenter, "waiting_next" if end_wait else st, paused, slow,
                               (time.time() - self._moved_t) if self._moved_t else None)
-        tt = getattr(self, "_toast", None)
-        toast_on = bool(tt and time.time() - tt[1] < (tt[2] if len(tt) > 2 else 1.5))
         if getattr(self, "_hk_warn", None) and not getattr(self, "_hk_warned", False) and now.get("card") != "checklist":
             self._hk_warned = True                       # 按鍵被別的程式佔了：講者要知道（使用者昨晚：按空白、右鍵沒反應）
-            self.toast(self._hk_warn, 10)
+            self.toast(self._hk_warn, 10)                # 要在算 toast_on 之前：否則同一格的一般提示會把它蓋掉（CI 45105573143）
+        tt = getattr(self, "_toast", None)
+        toast_on = bool(tt and time.time() - tt[1] < (tt[2] if len(tt) > 2 else 1.5))
         show_ctl = (cs["visible"] or toast_on) and now.get("card") != "checklist"
         if show_ctl != self.ctl_shown:
             self.ctlw.deiconify() if show_ctl else self.ctlw.withdraw()
