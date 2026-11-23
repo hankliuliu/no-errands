@@ -639,7 +639,13 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
     info = {"do": d}
     if d == "open":
         url = rb["target"]["base_url"].rstrip("/") + subst(act["url"], vars_)
-        rc, o, e = br.neb(acct, "open", url)
+        if (getattr(br, "preopened", None) or {}).get(acct) == url:
+            # 換角色前已經在後面把這一頁載入好了（Sprint H1）：不再重新載入（重新載入會露出頁面自己的深色載入畫面）
+            br.preopened.pop(acct, None)
+            rc, o, e = 0, "", ""
+            info["preopened"] = True
+        else:
+            rc, o, e = br.neb(acct, "open", url)
         ok = rc == 0
         if ok:
             br.cur_url[acct] = url
@@ -1449,6 +1455,19 @@ def execute(rb, mode, a):
             pb = os.path.join(rb["_dir"], "planb", "%s.png" % st["id"])
             if staged:
                 info_ = stage_accounts(rb, br)[st["account"]]
+                prev_acct_ = steps[i - 1]["account"] if i > lo else None
+                first_ = (st.get("actions") or [{}])[0]
+                if prev_acct_ and prev_acct_ != st["account"] and first_.get("do") == "open" and "{" not in str(first_.get("url")):
+                    # 換角色（5c 11-24）：新頁面先在後面（舞台外）導到位、載入完，才換上來——觀眾看不到載入中的深色畫面；
+                    # 已經在這一頁就不重新載入
+                    url_ = rb["target"]["base_url"].rstrip("/") + first_["url"]
+                    if br.cur_url.get(st["account"]) != url_:
+                        rc_, o_, e_ = br.neb(st["account"], "open", url_)
+                        if rc_ == 0:
+                            br.cur_url[st["account"]] = url_
+                    if br.cur_url.get(st["account"]) == url_:
+                        br.__dict__.setdefault("preopened", {})[st["account"]] = url_
+                        time.sleep(1.0)                    # 頁面的程式把畫面畫完（單頁應用載入後還會再排一次版）
                 # 換角色（Sprint H1）：沒有轉場卡、不停頓——帳號、角色名稱與顏色同一次發布，舞台把另一個帳號的頁面直接換上來
                 ctl.publish(card=None, account=st["account"], role=info_["role"], role_color=info_["color"], section="",
                             crop=crop_of(rb, st), look=None, beat={"text": "", "i": 0, "n": len(beats_of(st))})

@@ -482,7 +482,7 @@ class Stage:
             self.badgew.attributes("-alpha", BADGE_ALPHA)
         except Exception:
             pass
-        bfb = max(bf, round(lay["cap_font"] * 0.75))         # 投影時後排看得到角色名稱（和字幕的小字同級）
+        bfb = max(bf, lay["cap_font"])                        # 投影時後排看得到角色名稱：和字幕的字同一級（5c 11-24：原本太小）
         bpad = self._bpad = max(5, bfb // 3)
         self.badgerow = tk.Frame(self.badgew, bg=BADGEBG)
         self.badgerow.pack(side="top", anchor="e")
@@ -549,9 +549,11 @@ class Stage:
                 if fail_:
                     detail_t += "\n" + EXIT_HINT
         elif ended:
-            chip_t, where_t, where_fg = "", "示範結束", FG
+            # 結束：和角色標記同樣的底與大小——「示範結束」是色塊（中性色、粗體白字），還原結果是粗體綠字／紅字
+            # （5c 11-24：原本灰色小字對比太低）
+            chip_t, col, where_t, where_fg = "示範結束", "#4b5563", "", FG
             r_ = ended.get("reset") if isinstance(ended, dict) else None
-            res_t, res_fg = ("· 資料已還原", "#3fb950") if r_ is True else (("· 資料還原失敗", "#f47067") if r_ is False else ("", FG))
+            res_t, res_fg = ("資料已還原", "#3fb950") if r_ is True else (("資料還原失敗", "#ff6b61") if r_ is False else ("", FG))
         else:
             chip_t, res_t, res_fg = role, "", FG
             where_t, where_fg = "", "#c9d1dc"

@@ -657,8 +657,8 @@ def real_chrome_checks(stage_with):
                       open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
             ge = wait(lambda: (lambda g_: g_ if want_ in ((g_.get("badge_text") or ["", "", ""])[2]) else None)(rd(geom)), 3) or rd(geom)
             bt_ = ge.get("badge_text") or ["", "", ""]
-            check("H1／A49 結束：停在真頁面，標記是「示範結束 · %s」" % want_,
-                  bt_[1] == "示範結束" and want_ in bt_[2] and ge.get("badge") and not ge.get("card"), (bt_, ge.get("badge"), ge.get("card")))
+            check("H1／A49 結束：停在真頁面，標記是「示範結束」色塊加「%s」" % want_,
+                  bt_[0] == "示範結束" and want_ in bt_[2] and ge.get("badge") and not ge.get("card"), (bt_, ge.get("badge"), ge.get("card")))
         json.dump(now, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
         time.sleep(0.5)
         c1 = page_clicks()
