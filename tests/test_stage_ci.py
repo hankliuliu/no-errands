@@ -575,8 +575,9 @@ def real_chrome_checks(stage_with):
         move(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2); time.sleep(0.3)
         for _ in range(2):
             u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.08)
-        time.sleep(1.0)
-        g1 = rd(geom)
+        # 輪詢而不是固定等待（CI 45138496680：runner 停 2 秒時，固定 sleep 結束就讀到舞台還沒更新的 geom）
+        g1 = wait(lambda: (lambda g_: g_ if g_.get("cap_user") is None and g_.get("caption_plate")
+                           and abs((g_["caption_plate"][0] + g_["caption_plate"][2] / 2) - W / 2) <= 2 else None)(rd(geom)), 3) or rd(geom)
         check("A2 在字幕上按兩下 → 回到預設位置（下方置中）", g1.get("cap_user") is None and g1.get("caption_plate")
               and abs((g1["caption_plate"][0] + g1["caption_plate"][2] / 2) - W / 2) <= 2, (g0, g1.get("caption_plate")))
         # ×：滑鼠移到字幕上 → × 出現在字幕塊右上角外側（不壓字）→ 點它 → 字幕收起
@@ -586,11 +587,24 @@ def real_chrome_checks(stage_with):
         check("A2 滑鼠停在字幕上 → × 出現在字幕塊右上角（在預留的空位裡）", xb and rd(geom).get("x_shown") and L.inside(xb, g0)
               and xb[0] + xb[2] >= g0[0] + g0[2] - 8,
               (xb, g0))
+        diag = {}
         if xb:
-            move(xb[0] + xb[2] // 2, xb[1] + xb[3] // 2); time.sleep(0.4)
-            u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.8)
-        g1 = rd(geom)
-        check("A2 點字幕右上角的 × → 字幕收起", g1.get("caption_on") is False and not g1.get("caption_plate"), g1.get("caption_plate"))
+            cx, cy = xb[0] + xb[2] // 2, xb[1] + xb[3] // 2
+            move(cx, cy); time.sleep(0.4)
+            gp = rd(geom)
+            import ctypes.wintypes  # noqa: F401  （診斷用的結構）
+            hit = u.WindowFromPoint(ctypes.wintypes.POINT(cx, cy))
+            cls_ = ctypes.create_unicode_buffer(64); u.GetClassNameW(hit, cls_, 64)
+            pid_ = ctypes.wintypes.DWORD(); u.GetWindowThreadProcessId(hit, ctypes.byref(pid_))
+            r_ = ctypes.wintypes.RECT(); u.GetWindowRect(u.GetAncestor(hit, 2), ctypes.byref(r_))
+            diag = {"click": [cx, cy], "xbtn_logic": xb, "xbtn_real": gp.get("xbtn_real"), "cap_geom": gp.get("cap_geom"),
+                    "pad": gp.get("caption_pad"), "top_at_click": [cls_.value, pid_.value, [r_.left, r_.top, r_.right - r_.left, r_.bottom - r_.top]],
+                    "restacks_before": gp.get("restacks")}
+            u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0)
+        # 輪詢（最多 3 秒）而不是固定 0.8 秒：理由同上
+        g1 = wait(lambda: (lambda g_: g_ if g_.get("caption_on") is False and not g_.get("caption_plate") else None)(rd(geom)), 3) or rd(geom)
+        diag.update(restacks_after=g1.get("restacks"), caption_on=g1.get("caption_on"), plate=g1.get("caption_plate"))
+        check("A2 點字幕右上角的 × → 字幕收起", g1.get("caption_on") is False and not g1.get("caption_plate"), diag)
         time.sleep(0.5)
         c1 = page_clicks()
         check("字幕上的拖動、按兩下、× 都沒有穿到底下的頁面（頁面收到的點擊數不變）", c0 is not None and c1 == c0, (c0, c1))

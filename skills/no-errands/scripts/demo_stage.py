@@ -1359,6 +1359,7 @@ class Stage:
         視窗之上（舊做法先把瀏覽器拉到最上面再把我們的視窗一個個抬上去，中間幾十毫秒瀏覽器蓋住墊片，那一刻的點擊
         會落到頁面上——CI main-45057569083：頁面點擊數 0→2）。"""
         self._z_t = time.time()
+        self.restacks = getattr(self, "restacks", 0) + 1     # 診斷：重排次數（CI 的 × 測試看按下前後有沒有重排）
         if os.name != "nt":
             try:
                 self.root.lift()
@@ -1418,7 +1419,10 @@ class Stage:
                             "placed": self.placed.get(acct_) if acct_ else None, "now_seq": (self.now.get("pointer") or {}).get("seq")},
                 "cap_btn": [self.b_cap.winfo_rootx() + self.b_cap.winfo_width() // 2, self.b_cap.winfo_rooty() + self.b_cap.winfo_height() // 2]
                 if self.ctl_shown and self.b_cap.winfo_ismapped() else None,
-                "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": list(self.xbtn_rect()) if getattr(self, "_cap_shown", False) and self.xbtn_rect() else None, "x_shown": self._x_on, "hint_visible": bool(self.hintw.winfo_viewable()),
+                "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": list(self.xbtn_rect()) if getattr(self, "_cap_shown", False) and self.xbtn_rect() else None,
+                "xbtn_real": ([self.cap_x.winfo_rootx(), self.cap_x.winfo_rooty(), self.cap_x.winfo_width(), self.cap_x.winfo_height()]
+                              if self.cap_x.winfo_ismapped() else None),
+                "restacks": getattr(self, "restacks", 0), "cap_geom": list(self.cap_geom) if self.cap_geom else None, "x_shown": self._x_on, "hint_visible": bool(self.hintw.winfo_viewable()),
                 "caption_on": self.cap_on, "controls_rect": box(self.ctlw), "controls_want": list(getattr(self, "_ctl_xy", None) or []),
                 "controls_moves": getattr(self, "ctl_moves", 0), "controls_stuck": getattr(self, "_ctl_retry", 0) > 3,
                 "shield": box(self.shield), "shield_rx": dict(self.shield_rx), "hotkeys": dict(getattr(self, "hotkeys_ok", {}) or {}), "pointer": [round(v) for v in self.ptr_pos] if self.ptr_pos and self.ptrw.winfo_viewable() else None,
