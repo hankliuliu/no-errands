@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""用使用者平常的瀏覽器（Windows 的 Edge）已經登入的狀態，唯讀地讀一個網頁（wishes 第 2 項，Sprint I）。
+"""用使用者平常的瀏覽器（Windows 的 Chrome／Edge／Brave）已經登入的狀態，唯讀地讀一個網頁（wishes 第 2 項，Sprint I）。
 
 只經由 `neb.py real read <網址> [--out 檔]` 呼叫：網址先過 neb 的同一套網域守門（敏感網域沒授權就拒絕），再到這裡。
 做法（不用擴充功能、不拿 cookie、不接除錯埠）：
-  1. 記下現有的 Edge 頂層視窗；
-  2. `msedge --new-window <網址>` 開一個新視窗，只認「msedge 程序、剛剛新出現的那一個」；不只一個就停手；
+  0. 依序試 Chrome → Edge → Brave（裝了的才試）；某一個回報沒登入就換下一個，都沒登入才回報沒登入；
+  1. 記下那個瀏覽器現有的頂層視窗；
+  2. `<瀏覽器> --new-window <網址>` 開一個新視窗，只認「同一個程式、剛剛新出現的那一個」；不只一個就停手；
   3. 用 UI Automation 讀那個視窗裡的網頁文件（Document）：網址（ValuePattern）與全文（TextPattern），讀到兩次一樣才算載好；
      不讀分頁列、不看其他分頁與其他視窗；
   4. 網址的主機和要的不一樣、或路徑像登入頁 → 回報「這個瀏覽器沒登入」（呼叫端改走專用瀏覽器的登入流程）；
   5. 只對那個視窗送 WM_CLOSE；跳出任何確認框 → 對確認框送關閉（＝取消）、照實回報，不硬關；
-  6. 確認原本的 Edge 視窗一個都沒少。
+  6. 確認那個瀏覽器原本的視窗一個都沒少。
 不打字、不點頁面裡的東西。內容只回給呼叫的任務；紀錄（neb 的 ledger）只記主機與字數。"""
 import ctypes, json, os, re, subprocess, sys, tempfile, time, urllib.parse
 
@@ -50,13 +51,19 @@ def _u32():
     return ctypes.windll.user32
 
 
-def edge_path():
-    """msedge.exe 的位置：App Paths 登錄 → 常見安裝位置。"""
+# 依序試（使用者平常的登入狀態多半在 Chrome；Edge 常常只是系統預設開啟程式）：名稱、執行檔、安裝資料夾
+BROWSERS = [("Chrome", "chrome.exe", ("Google", "Chrome")),
+            ("Edge", "msedge.exe", ("Microsoft", "Edge")),
+            ("Brave", "brave.exe", ("BraveSoftware", "Brave-Browser"))]
+
+
+def browser_path(exe, sub):
+    """瀏覽器執行檔的位置：App Paths 登錄 → 常見安裝位置。沒裝回 None。"""
     try:
         import winreg
         for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
             try:
-                with winreg.OpenKey(hive, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe") as k:
+                with winreg.OpenKey(hive, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" + exe) as k:
                     p = winreg.QueryValue(k, None)
                     if p and os.path.exists(p.strip('"')):
                         return p.strip('"')
@@ -64,11 +71,19 @@ def edge_path():
                 pass
     except ImportError:
         pass
-    for base in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles"), os.environ.get("LOCALAPPDATA")):
-        p = os.path.join(base or "", "Microsoft", "Edge", "Application", "msedge.exe")
+    for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"), os.environ.get("LOCALAPPDATA")):
+        p = os.path.join(base or "", sub[0], sub[1], "Application", exe)
         if base and os.path.exists(p):
             return p
     return None
+
+
+def installed_browsers():
+    return [(name, exe, path) for name, exe, sub in BROWSERS for path in [browser_path(exe, sub)] if path]
+
+
+def edge_path():
+    return browser_path("msedge.exe", ("Microsoft", "Edge"))
 
 
 def _exe_of(pid):
@@ -87,7 +102,11 @@ def _exe_of(pid):
 
 
 def edge_windows():
-    """看得到的 Edge 瀏覽器頂層視窗（Chrome_WidgetWin_1、屬於 msedge.exe、有標題）。只看視窗本身，不讀分頁。"""
+    return browser_windows("msedge.exe")
+
+
+def browser_windows(exe):
+    """看得到的某個瀏覽器的頂層視窗（Chrome_WidgetWin_1、屬於該執行檔、有標題）。只看視窗本身，不讀分頁。"""
     from ctypes import wintypes
     u = _u32()
     found = []
@@ -102,7 +121,7 @@ def edge_windows():
             return True
         pid = wintypes.DWORD()
         u.GetWindowThreadProcessId(h, ctypes.byref(pid))
-        if _exe_of(pid.value) == "msedge.exe":
+        if _exe_of(pid.value) == exe:
             found.append(int(h))
         return True
     u.EnumWindows(proto(cb), 0)
@@ -154,27 +173,49 @@ def close_window(hwnd, timeout=8):
     return False, "送了關閉，%d 秒內視窗沒有關掉" % timeout
 
 
-def read(url, wait_s=45):
-    """回 dict：ok、host、final_host、logged_in、chars、text（只給呼叫端）、title。失敗丟 Fail。"""
+def read(url, wait_s=45, browsers=None):
+    """依序用平常的瀏覽器試：第一個有登入（沒被導去登入頁）的就回它的結果；都沒登入回最後一個的「沒登入」。
+    回 dict：ok、browser、tried、host、final_host、logged_in、chars、text（只給呼叫端）、title。全都失敗丟 Fail。"""
     if os.name != "nt":
-        raise Fail("目前只支援 Windows 的 Edge（其他平台與瀏覽器還沒做）")
-    exe = edge_path()
-    if not exe:
-        raise Fail("找不到 Edge（msedge.exe）")
+        raise Fail("目前只支援 Windows 的 Chrome／Edge／Brave（其他平台還沒做）")
+    cands = browsers if browsers is not None else installed_browsers()
+    if not cands:
+        raise Fail("找不到 Chrome、Edge 或 Brave")
+    tried, last, errs = [], None, []
+    for name, exe_name, path in cands:
+        try:
+            r = read_one(url, name, exe_name, path, wait_s)
+        except Fail as e:
+            tried.append({"browser": name, "error": str(e)})
+            errs.append("%s：%s" % (name, e))
+            continue
+        tried.append({"browser": name, "logged_in": r.get("logged_in"), "closed": r.get("closed")})
+        r["tried"] = tried
+        if r.get("ok"):
+            return r
+        last = r
+    if last is None:
+        raise Fail("；".join(errs))
+    last["tried"] = tried
+    last["error"] = "平常的瀏覽器（%s）都沒登入這個網站：改用專用瀏覽器的登入流程" % "、".join(t["browser"] for t in tried)
+    return last
+
+
+def read_one(url, name, exe_name, exe, wait_s):
     want = (urllib.parse.urlparse(url).hostname or "").lower()
-    before = set(edge_windows())
+    before = set(browser_windows(exe_name))
     import nowin  # noqa: F401  子程序不開主控台視窗
     subprocess.Popen([exe, "--new-window", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     hwnd, end = None, time.time() + 20
     while time.time() < end and hwnd is None:
         time.sleep(0.4)
-        new = [h for h in edge_windows() if h not in before]
+        new = [h for h in browser_windows(exe_name) if h not in before]
         if len(new) > 1:
-            raise Fail("同時出現 %d 個新的 Edge 視窗，分不出哪個是自己開的：沒有讀也沒有關任何視窗" % len(new))
+            raise Fail("同時出現 %d 個新的 %s 視窗，分不出哪個是自己開的：沒有讀也沒有關任何視窗" % (len(new), name))
         hwnd = new[0] if new else None
     if hwnd is None:
-        raise Fail("20 秒內沒有出現新的 Edge 視窗")
-    res = {"ok": True, "host": want}
+        raise Fail("20 秒內沒有出現新的 %s 視窗" % name)
+    res = {"ok": True, "browser": name, "host": want}
     try:
         last, doc, end = None, None, time.time() + wait_s
         while time.time() < end:

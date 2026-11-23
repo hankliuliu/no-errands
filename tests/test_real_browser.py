@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""neb real read 的正面測試：真的開 Edge 新視窗讀本機測試頁、關掉、其他視窗沒動。
+"""neb real read 的正面測試：真的開平常的瀏覽器（Chrome／Edge／Brave，裝了的依序試）新視窗讀本機測試頁、關掉、其他視窗沒動。
 會開瀏覽器視窗——只在 Windows CI 跑（要 --i-am-ci，且 GITHUB_ACTIONS=true）。拒絕路徑在 test_neb.py（三平台）。"""
 import http.server, json, os, shutil, socketserver, subprocess, sys, tempfile, threading
 
@@ -35,8 +35,11 @@ def main():
         print("ALL PASS (0)"); return 0
     sys.path.insert(0, SCRIPTS)
     import real_browser
-    if not real_browser.edge_path():
-        check("這台 runner 有 Edge", False, "找不到 msedge.exe"); print("FAILED"); return 1
+    inst = real_browser.installed_browsers()
+    if not inst:
+        check("這台 runner 有 Chrome、Edge 或 Brave", False, "都找不到"); print("FAILED"); return 1
+    print("installed: %s" % ", ".join(n for n, _, _ in inst))
+    allwin = lambda: {e: set(real_browser.browser_windows(e)) for _, e, _ in inst}
     home = tempfile.mkdtemp(prefix="ne-real-")
     json.dump({}, open(os.path.join(home, "policy.json"), "w"))
     env = dict(os.environ, NO_ERRANDS_HOME=home, PYTHONIOENCODING="utf-8")
@@ -44,7 +47,7 @@ def main():
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
-        before = real_browser.edge_windows()
+        before = allwin()
         p = subprocess.run([sys.executable, NEB, "real", "read", "http://127.0.0.1:%d/page" % port], capture_output=True,
                            text=True, encoding="utf-8", env=env, timeout=180)
         try:
@@ -53,15 +56,18 @@ def main():
             o = {"raw": p.stdout[-400:], "err": p.stderr[-400:]}
         check("real read 讀回本機測試頁的文字", o.get("ok") and MARK in (o.get("text") or ""), o)
         check("字數回報＝讀到的文字長度", o.get("chars") == len(o.get("text") or ""), (o.get("chars"), len(o.get("text") or "")))
-        check("自己開的 Edge 視窗關掉了", o.get("closed") is True, o)
-        check("原本的 Edge 視窗一個都沒少", o.get("other_windows_untouched") is True and
-              set(before) <= set(real_browser.edge_windows()), (before, real_browser.edge_windows()))
-        check("讀完沒有留下新的 Edge 視窗", set(real_browser.edge_windows()) <= set(before) | set(), (before, real_browser.edge_windows()))
+        check("回報用的是哪一個瀏覽器（第一個裝了的）", o.get("browser") == inst[0][0], (o.get("browser"), inst[0][0]))
+        check("自己開的瀏覽器視窗關掉了", o.get("closed") is True, o)
+        after = allwin()
+        check("每個瀏覽器原本的視窗一個都沒少", o.get("other_windows_untouched") is True and
+              all(before[e] <= after[e] for e in before), (before, after))
+        check("讀完沒有留下新的瀏覽器視窗", all(after[e] <= before[e] for e in before), (before, after))
         p = subprocess.run([sys.executable, NEB, "real", "read", "http://127.0.0.1:%d/private" % port], capture_output=True,
                            text=True, encoding="utf-8", env=env, timeout=180)
         o2 = json.loads(p.stdout.strip().splitlines()[-1])
-        check("被導去登入頁 → 回報沒登入、不交出內容", p.returncode == 1 and o2.get("logged_in") is False and not o2.get("text")
-              and "沒登入" in (o2.get("error") or ""), o2)
+        check("被導去登入頁 → 每個裝了的瀏覽器都試過、都沒登入才回報沒登入、不交出內容",
+              p.returncode == 1 and o2.get("logged_in") is False and not o2.get("text") and "沒登入" in (o2.get("error") or "")
+              and [t.get("browser") for t in o2.get("tried") or []] == [n for n, _, _ in inst], o2)
         check("沒登入那一次也關掉了自己的視窗", o2.get("closed") is True, o2)
         lg = open(os.path.join(home, "neb-ledger.jsonl"), encoding="utf-8").read()
         check("紀錄只有主機與字數，沒有頁面內容", "PINEAPPLE" not in lg and '"chars"' in lg, lg[-300:])
