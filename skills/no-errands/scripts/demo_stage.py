@@ -584,7 +584,8 @@ class Stage:
         try:
             h = getattr(self, "active_hwnd", None)
             if os.name == "nt" and h and u32.IsWindow(h):
-                u32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                # 非同步（0x4000，A35／A16）：撤下是看門機制、離開鍵、雙擊、引擎停止共用的路——瀏覽器沒回應時也不能卡在這裡
+                u32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | 0x4000)
         except Exception:
             pass
         try:
@@ -762,8 +763,9 @@ class Stage:
             x, y, w, hh = L.browser_rect(self.lay["stage"], shell, crop, float(now.get("zoom") or 1.5), dpr_of(h))
             # 上台：只移動、改大小，不動上下順序（SWP_NOZORDER），接著的 restack 才把它插到我們的視窗下面——
             # 先置頂再重排的那一瞬間，瀏覽器的分頁列與網址列會蓋在最上面（排練 13:22：換成長官後露出 0.2 秒）
+            # 0x4000＝SWP_ASYNCWINDOWPOS（A35）：只送出、不等瀏覽器的訊息迴圈——瀏覽器忙或沒回應時舞台照常更新
             u32.SetWindowPos(h, HWND_NOTOPMOST if probe else 0, x, y, w, hh,
-                             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING | (0 if probe else 0x0004))
+                             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING | (0 if probe else 0x0004) | 0x4000)
             self.placed[acct] = key
             self.want[acct] = (x, y, w, hh)
             self.active_hwnd = h
@@ -1113,11 +1115,16 @@ class Stage:
         while True:
             time.sleep(1.0)
             if time.time() - getattr(self, "_last_tick", time.time()) > limit:
-                try:                                       # 卡在哪裡：主執行緒的呼叫堆疊寫進 engine.log（下次可以直接找原因）
+                try:                                       # 卡在哪裡：主執行緒的呼叫堆疊寫進自己的檔案（附加寫入）
                     import traceback
                     fr = sys._current_frames().get(threading.main_thread().ident)
-                    print("stage watchdog: main thread stack" + chr(10) + "".join(traceback.format_stack(fr)[-12:]) if fr else "stage watchdog: no main frame",
-                          file=sys.stderr, flush=True)
+                    txt = ("stage watchdog %s: main thread stack" % time.strftime("%H:%M:%S") + chr(10)
+                           + ("".join(traceback.format_stack(fr)[-12:]) if fr else "(no main frame)") + chr(10))
+                    # 不寫進 engine.log：引擎和舞台各自開檔寫同一個檔，引擎收尾時會把這段蓋掉（11-23 15:29 那場只剩 4 行）
+                    with open(os.path.join(self.run_dir, "stage_hang_stack.txt"), "a", encoding="utf-8") as f_:
+                        f_.write(txt)
+                        f_.flush()
+                    print("stage watchdog: stack written to stage_hang_stack.txt", file=sys.stderr, flush=True)
                 except Exception:
                     pass
                 self.emergency("watchdog: %.0f 秒沒有更新" % (time.time() - self._last_tick))
@@ -1351,7 +1358,14 @@ class Stage:
         角色帶 → 遮罩 → 台上的瀏覽器 → 背板。由上往下一個一個「插在上一個的下方」：過程中瀏覽器從來不會在我們的
         視窗之上（舊做法先把瀏覽器拉到最上面再把我們的視窗一個個抬上去，中間幾十毫秒瀏覽器蓋住墊片，那一刻的點擊
         會落到頁面上——CI main-45057569083：頁面點擊數 0→2）。"""
+        if os.name == "nt":
+            # 滑鼠左鍵按著、或剛按下 0.5 秒內：先不重排（不在使用者按兩下、拖動字幕的中途動視窗順序；下一格再排）
+            if u32.GetAsyncKeyState(0x01) & 0x8000:
+                self._btn_t = time.time()
+            if time.time() - getattr(self, "_btn_t", 0) < 0.5:
+                return
         self._z_t = time.time()
+        self.restacks = getattr(self, "restacks", 0) + 1     # 診斷：重排次數（CI 的 × 測試看按下前後有沒有重排）
         if os.name != "nt":
             try:
                 self.root.lift()
@@ -1362,17 +1376,49 @@ class Stage:
                 pass
             return
         try:
-            chain = [int(w.frame(), 16) for w in reversed(self.overlays()) if w.winfo_viewable()]
+            ours = [int(w.frame(), 16) for w in reversed(self.overlays()) if w.winfo_viewable()]
             h = getattr(self, "active_hwnd", None)
-            if h and not self.now.get("card") and u32.IsWindow(h):
-                chain.append(h)
-            chain.append(int(self.root.frame(), 16))
+            on_stage = bool(h and not self.now.get("card") and u32.IsWindow(h))
+            want = ours + ([h] if on_stage else []) + [int(self.root.frame(), 16)]
+            order_ok = self.z_actual(want) == want
+            if order_ok and self.z_clean(want):
+                return                                       # 順序已經對了：什麼都不做（不製造真的換順序；f3-async 每秒換兩次）
+            if order_ok:
+                self.restack_raises = getattr(self, "restack_raises", 0) + 1   # 只是有別的置頂視窗蓋在我們上面：把我們抬回最上層
+            else:
+                self.restack_moves = getattr(self, "restack_moves", 0) + 1     # 我們自己（含台上瀏覽器、背板）的順序錯了
             prev = HWND_TOPMOST
-            for hw in chain:
-                u32.SetWindowPos(hw, prev, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
-                prev = hw
+            for own in ours + [int(self.root.frame(), 16)]:   # 我們自己的視窗（同一個執行緒）：同步、一個插在一個下面
+                u32.SetWindowPos(own, prev, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                prev = own
+            if on_stage:
+                # 台上的瀏覽器：插在我們最下面那層疊加視窗的下方（＝背板之上）。非同步（0x4000，A35）：瀏覽器忙或沒回應時
+                # 舞台不等它；它沒處理之前停在原位，但我們的視窗都已經從最上層往下排好，一定在它之上
+                u32.SetWindowPos(h, ours[-1] if ours else HWND_TOPMOST, 0, 0, 0, 0,
+                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | 0x4000)
         except Exception:
             pass
+
+    def z_actual(self, hwnds):
+        """這些視窗實際的上下順序（上→下）；只讀（GetWindow 不送訊息給任何視窗）。"""
+        want, out, hw, n = set(hwnds), [], u32.GetTopWindow(None), 0
+        while hw and n < 5000 and len(out) < len(want):
+            if hw in want:
+                out.append(hw)
+            hw, n = u32.GetWindow(hw, 2), n + 1               # GW_HWNDNEXT
+        return out
+
+    def z_clean(self, want):
+        """從最上層往下到背板為止，看得到的視窗都是我們的（含台上瀏覽器）：沒有別的視窗蓋在我們上面、也沒有夾在中間。"""
+        mine, last = set(want), want[-1]
+        cur, n = u32.GetTopWindow(None), 0
+        while cur and n < 5000:
+            if cur == last:
+                return True
+            if cur not in mine and u32.IsWindowVisible(cur):
+                return False
+            cur, n = u32.GetWindow(cur, 2), n + 1
+        return False
 
     def z_order(self):
         """測試／診斷：我們的視窗與台上瀏覽器實際的上下順序（上→下）。"""
@@ -1409,7 +1455,11 @@ class Stage:
                             "placed": self.placed.get(acct_) if acct_ else None, "now_seq": (self.now.get("pointer") or {}).get("seq")},
                 "cap_btn": [self.b_cap.winfo_rootx() + self.b_cap.winfo_width() // 2, self.b_cap.winfo_rooty() + self.b_cap.winfo_height() // 2]
                 if self.ctl_shown and self.b_cap.winfo_ismapped() else None,
-                "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": list(self.xbtn_rect()) if getattr(self, "_cap_shown", False) and self.xbtn_rect() else None, "x_shown": self._x_on, "hint_visible": bool(self.hintw.winfo_viewable()),
+                "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": list(self.xbtn_rect()) if getattr(self, "_cap_shown", False) and self.xbtn_rect() else None,
+                "xbtn_real": ([self.cap_x.winfo_rootx(), self.cap_x.winfo_rooty(), self.cap_x.winfo_width(), self.cap_x.winfo_height()]
+                              if self.cap_x.winfo_ismapped() else None),
+                "restacks": getattr(self, "restacks", 0), "restack_moves": getattr(self, "restack_moves", 0), "restack_raises": getattr(self, "restack_raises", 0),
+                "cap_geom": list(self.cap_geom) if self.cap_geom else None, "x_shown": self._x_on, "hint_visible": bool(self.hintw.winfo_viewable()),
                 "caption_on": self.cap_on, "controls_rect": box(self.ctlw), "controls_want": list(getattr(self, "_ctl_xy", None) or []),
                 "controls_moves": getattr(self, "ctl_moves", 0), "controls_stuck": getattr(self, "_ctl_retry", 0) > 3,
                 "shield": box(self.shield), "shield_rx": dict(self.shield_rx), "hotkeys": dict(getattr(self, "hotkeys_ok", {}) or {}), "pointer": [round(v) for v in self.ptr_pos] if self.ptr_pos and self.ptrw.winfo_viewable() else None,

@@ -1500,6 +1500,11 @@ def execute(rb, mode, a):
             why_ = ""
         # 舞台的看門機制收掉舞台（更新迴圈卡死）不是使用者停止：照實記原因（5c：紀錄的原因要寫對）
         stopped = {"stage_hang": sid_, "why": why_[:80]} if why_.startswith("watchdog") else {"user_stop": sid_}
+        if "stage_hang" in stopped:
+            stk_ = os.path.join(run_dir, "stage_hang_stack.txt")     # 舞台看門機制寫的主執行緒堆疊（卡在哪裡）
+            if not os.path.exists(stk_):
+                time.sleep(1.0)
+            stopped["stack"] = stk_ if os.path.exists(stk_) else None
         ctl.publish(status="stopped")
     finally:
         if mode != "live" or not stopped or any(k in (stopped or {}) for k in ("user_stop", "stage_fit", "ended_early", "stage_hang")):

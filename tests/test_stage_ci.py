@@ -491,8 +491,12 @@ def real_chrome_checks(stage_with):
             u.mouse_event(0x0002, 0, 0, 0, 0); time.sleep(0.1)
             for s_ in range(1, 11):
                 move(sx_ + sgn * 6 * s_, sy_ - sgn * 4 * s_); time.sleep(0.03)
-            u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.6)
-            g1 = rd(geom).get("caption_plate")
+            u.mouse_event(0x0004, 0, 0, 0, 0)
+
+            def dragged(g0=g0, sgn=sgn):
+                g_ = rd(geom).get("caption_plate")
+                return g_ if (g_ and abs((g_[0] - g0[0]) - sgn * 60) <= 6 and abs((g_[1] - g0[1]) + sgn * 40) <= 6) else None
+            g1 = wait(dragged, 3) or rd(geom).get("caption_plate")       # 輪詢（不是固定等待）
             if not (g1 and abs((g1[0] - g0[0]) - sgn * 60) <= 6 and abs((g1[1] - g0[1]) + sgn * 40) <= 6):
                 fails.append((r_, "拖動（%s）" % lab, (g0, g1, zstack(sx_, sy_))))
             # 按兩下回預設
@@ -500,8 +504,7 @@ def real_chrome_checks(stage_with):
             move(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2); time.sleep(0.25)
             for _ in range(2):
                 u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.08)
-            time.sleep(0.7)
-            g1 = rd(geom)
+            g1 = wait(lambda: (lambda g_: g_ if g_.get("cap_user") is None else None)(rd(geom)), 3) or rd(geom)
             if g1.get("cap_user") is not None:
                 fails.append((r_, "按兩下", (g1.get("caption_plate"), zstack(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2))))
             # × 收起（滑鼠停在字幕上 → × 出現在外側右上角 → 點它），再用控制列的「字幕」打開
@@ -510,8 +513,8 @@ def real_chrome_checks(stage_with):
             xb = wait(lambda: rd(geom).get("xbtn"), 2)
             if xb:
                 move(xb[0] + xb[2] // 2, xb[1] + xb[3] // 2); time.sleep(0.3)
-                u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.7)
-            g1 = rd(geom)
+                u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0)
+            g1 = wait(lambda: (lambda g_: g_ if g_.get("caption_on") is False else None)(rd(geom)), 3) or rd(geom)
             if g1.get("caption_on") is not False:
                 fails.append((r_, "×", {"x": xb, "pad": g1.get("caption_pad"), "plate": g1.get("caption_plate"),
                                          "x_shown": g1.get("x_shown"), "stack": zstack(xb[0] + xb[2] // 2, xb[1] + xb[3] // 2) if xb else None}))
@@ -526,7 +529,8 @@ def real_chrome_checks(stage_with):
             cb = g1.get("cap_btn")
             if cb:
                 move(cb[0], cb[1]); time.sleep(0.3)
-                u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.8)
+                u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0)
+            wait(lambda: rd(geom).get("caption_on") is True and rd(geom).get("caption_plate"), 3)
             if rd(geom).get("caption_on") is not True:
                 fails.append((r_, "用控制列打開字幕", {"cap_btn": cb, "controls_rect": g1.get("controls_rect"),
                                                    "controls_want": g1.get("controls_want"), "stack": zstack(*cb) if cb else None}))
@@ -547,13 +551,24 @@ def real_chrome_checks(stage_with):
         for s_ in range(1, 21):
             move(sx_ + dx * s_ / 20, sy_ + dy * s_ / 20); time.sleep(0.04)
         time.sleep(0.2)
-        u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(1.0)
-        g1 = rd(geom)
+        u.mouse_event(0x0004, 0, 0, 0, 0)
+
+        def moved_all():
+            g_ = rd(geom)
+            p_, t_, d_ = g_.get("caption_plate"), g_.get("caption_textwin"), g_.get("caption_pad")
+            return g_ if (p_ and p_ == t_ == d_ and abs((g0[0] - p_[0]) + dx) <= 8 and abs((g0[1] - p_[1]) + dy) <= 8) else None
+        g1 = wait(moved_all, 3) or rd(geom)                       # 輪詢（不是固定等待）
         p1, t1, d1 = g1.get("caption_plate"), g1.get("caption_textwin"), g1.get("caption_pad")
         check("A2 從%s拖動：字幕移動約 %d×%d，三層（底板、字、墊片）同位置（按下處是：%s）" % (label, -dx, -dy, hit),
               p1 and p1 == t1 == d1 and abs((g0[0] - p1[0]) + dx) <= 8 and abs((g0[1] - p1[1]) + dy) <= 8,
               (g0, p1, t1, d1, "cap_user=%s" % g1.get("cap_user")))
         return p1
+    rm0 = rd(geom).get("restack_moves")
+    time.sleep(5.0)
+    rm1 = rd(geom).get("restack_moves")
+    check("穩定時重排不真的換視窗順序（5 秒內實際換順序 %s 次）" % (None if rm0 is None else (rm1 or 0) - rm0),
+          rm0 is not None and rm1 == rm0, (rm0, rm1))
+    print("穩定時被別的置頂視窗蓋住、抬回最上層的次數（參考）：%s" % rd(geom).get("restack_raises"), flush=True)
     c0 = page_clicks()
     if pl:
         drag_from(6.0 / pl[2], 0.5, "內距")
@@ -575,8 +590,9 @@ def real_chrome_checks(stage_with):
         move(g0[0] + g0[2] // 2, g0[1] + g0[3] // 2); time.sleep(0.3)
         for _ in range(2):
             u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.08)
-        time.sleep(1.0)
-        g1 = rd(geom)
+        # 輪詢而不是固定等待（CI 45138496680：runner 停 2 秒時，固定 sleep 結束就讀到舞台還沒更新的 geom）
+        g1 = wait(lambda: (lambda g_: g_ if g_.get("cap_user") is None and g_.get("caption_plate")
+                           and abs((g_["caption_plate"][0] + g_["caption_plate"][2] / 2) - W / 2) <= 2 else None)(rd(geom)), 3) or rd(geom)
         check("A2 在字幕上按兩下 → 回到預設位置（下方置中）", g1.get("cap_user") is None and g1.get("caption_plate")
               and abs((g1["caption_plate"][0] + g1["caption_plate"][2] / 2) - W / 2) <= 2, (g0, g1.get("caption_plate")))
         # ×：滑鼠移到字幕上 → × 出現在字幕塊右上角外側（不壓字）→ 點它 → 字幕收起
@@ -586,11 +602,24 @@ def real_chrome_checks(stage_with):
         check("A2 滑鼠停在字幕上 → × 出現在字幕塊右上角（在預留的空位裡）", xb and rd(geom).get("x_shown") and L.inside(xb, g0)
               and xb[0] + xb[2] >= g0[0] + g0[2] - 8,
               (xb, g0))
+        diag = {}
         if xb:
-            move(xb[0] + xb[2] // 2, xb[1] + xb[3] // 2); time.sleep(0.4)
-            u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.8)
-        g1 = rd(geom)
-        check("A2 點字幕右上角的 × → 字幕收起", g1.get("caption_on") is False and not g1.get("caption_plate"), g1.get("caption_plate"))
+            cx, cy = xb[0] + xb[2] // 2, xb[1] + xb[3] // 2
+            move(cx, cy); time.sleep(0.4)
+            gp = rd(geom)
+            import ctypes.wintypes  # noqa: F401  （診斷用的結構）
+            hit = u.WindowFromPoint(ctypes.wintypes.POINT(cx, cy))
+            cls_ = ctypes.create_unicode_buffer(64); u.GetClassNameW(hit, cls_, 64)
+            pid_ = ctypes.wintypes.DWORD(); u.GetWindowThreadProcessId(hit, ctypes.byref(pid_))
+            r_ = ctypes.wintypes.RECT(); u.GetWindowRect(u.GetAncestor(hit, 2), ctypes.byref(r_))
+            diag = {"click": [cx, cy], "xbtn_logic": xb, "xbtn_real": gp.get("xbtn_real"), "cap_geom": gp.get("cap_geom"),
+                    "pad": gp.get("caption_pad"), "top_at_click": [cls_.value, pid_.value, [r_.left, r_.top, r_.right - r_.left, r_.bottom - r_.top]],
+                    "restacks_before": gp.get("restacks")}
+            u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0)
+        # 輪詢（最多 3 秒）而不是固定 0.8 秒：理由同上
+        g1 = wait(lambda: (lambda g_: g_ if g_.get("caption_on") is False and not g_.get("caption_plate") else None)(rd(geom)), 3) or rd(geom)
+        diag.update(restacks_after=g1.get("restacks"), caption_on=g1.get("caption_on"), plate=g1.get("caption_plate"))
+        check("A2 點字幕右上角的 × → 字幕收起", g1.get("caption_on") is False and not g1.get("caption_plate"), diag)
         time.sleep(0.5)
         c1 = page_clicks()
         check("字幕上的拖動、按兩下、× 都沒有穿到底下的頁面（頁面收到的點擊數不變）", c0 is not None and c1 == c0, (c0, c1))
@@ -601,6 +630,132 @@ def real_chrome_checks(stage_with):
     except subprocess.TimeoutExpired:
         kill_tree(p)
     kill_tree(cp)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+HUNG_WIN = r'''
+import ctypes, sys, time
+from ctypes import wintypes
+u, k = ctypes.windll.user32, ctypes.windll.kernel32
+WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+u.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+u.DefWindowProcW.restype = ctypes.c_ssize_t
+proc = WNDPROC(lambda h, m, w, l: u.DefWindowProcW(h, m, w, l))
+class WC(ctypes.Structure):
+    _fields_ = [("style", wintypes.UINT), ("lpfnWndProc", WNDPROC), ("cbClsExtra", ctypes.c_int), ("cbWndExtra", ctypes.c_int),
+                ("hInstance", wintypes.HINSTANCE), ("hIcon", wintypes.HICON), ("hCursor", wintypes.HANDLE),
+                ("hbrBackground", wintypes.HBRUSH), ("lpszMenuName", wintypes.LPCWSTR), ("lpszClassName", wintypes.LPCWSTR)]
+hi = k.GetModuleHandleW(None)
+for name in ("Chrome_WidgetWin_1", "Chrome_RenderWidgetHostHWND"):
+    wc = WC(); wc.lpfnWndProc = proc; wc.hInstance = hi; wc.lpszClassName = name; wc.hbrBackground = 6
+    u.RegisterClassW(ctypes.byref(wc))
+u.CreateWindowExW.restype = wintypes.HWND
+u.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int, ctypes.c_int,
+                              ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID]
+top = u.CreateWindowExW(0, "Chrome_WidgetWin_1", "hung page", 0x10CF0000, 100, 100, 900, 600, None, None, hi, None)
+u.CreateWindowExW(0, "Chrome_RenderWidgetHostHWND", "", 0x50000000, 0, 40, 880, 520, top, None, hi, None)
+msg, t0 = wintypes.MSG(), time.time()
+while time.time() - t0 < 2:                       # 先正常處理訊息 2 秒（讓舞台找到它、擺上台），之後完全不處理＝沒有回應
+    while u.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+        u.TranslateMessage(ctypes.byref(msg)); u.DispatchMessageW(ctypes.byref(msg))
+    time.sleep(0.01)
+print(int(top), flush=True)
+time.sleep(60)
+'''
+
+
+def fg_desc(u):
+    """前景視窗的類別與所屬行程（診斷用）。"""
+    import ctypes
+    from ctypes import wintypes
+    h = u.GetForegroundWindow()
+    c = ctypes.create_unicode_buffer(64); u.GetClassNameW(h, c, 64)
+    pid = wintypes.DWORD(); u.GetWindowThreadProcessId(h, ctypes.byref(pid))
+    return "%s pid=%s" % (c.value, pid.value)
+
+
+def hung_browser_checks():
+    """A35 模擬（5c 11-23 15:5x）：台上的「瀏覽器」是一個故意不處理訊息的視窗（類別、命令列的 --user-data-dir 都像 Chrome）。
+    它沒有回應的期間，舞台的更新不得停超過 2 秒；我們的疊加視窗都在它之上。"""
+    import ctypes
+    u = ctypes.windll.user32
+    work = tempfile.mkdtemp(prefix="ne-hung-")
+    prof = os.path.join(work, "profile")
+    os.makedirs(prof, exist_ok=True)
+    hp = os.path.join(work, "hung_win.py")
+    open(hp, "w", encoding="utf-8").write(HUNG_WIN)
+    hw = subprocess.Popen([sys.executable, hp, "--user-data-dir=" + prof], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    PROCS.append(hw)
+    h = int((hw.stdout.readline() or "0").strip() or 0)
+    check("A35 模擬：不處理訊息的假瀏覽器視窗出現", h, h)
+    if not h:
+        return
+    d = tempfile.mkdtemp(prefix="ne-stage-")
+    geom = os.path.join(d, "geom.json")
+    now_ = {"status": "running", "card": None, "role": "測試者", "role_color": "#2f7de1", "section": "模擬",
+            "account": "a", "accounts": {"a": {"role": "測試者", "color": "#2f7de1", "profile": prof}},
+            "crop": {}, "zoom": 1.0, "step_index": 1, "steps_total": 1, "beat": {"text": "這一句在測試舞台不會被卡住。", "i": 1, "n": 1}}
+    json.dump(now_, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    json.dump({"state": "playing", "advance": "auto", "next_seq": 0}, open(os.path.join(d, "control.json"), "w"))
+    p = spawn(d, dict(os.environ, NE_STAGE_GEOM=geom, NE_STAGE_NO_HOTKEYS="1", NO_ERRANDS_HOME=d))
+    hung = wait(lambda: u.IsHungAppWindow(h), 15)                 # 系統判定「沒有回應」要 5 秒沒處理訊息
+    check("A35 模擬：系統判定假瀏覽器沒有回應（IsHungAppWindow）", hung)
+    gaps, last, t0 = [], None, time.time()
+    while time.time() - t0 < 8:                                    # 舞台每格（200 ms）寫一次 geom：看寫入間隔
+        try:
+            m = os.path.getmtime(geom)
+        except OSError:
+            m = None
+        if m and m != last:
+            if last:
+                gaps.append(m - last)
+            last = m
+        time.sleep(0.05)
+    g = rd(geom)
+    z = g.get("z_order") or []
+    check("A35 模擬：假瀏覽器沒有回應的 8 秒內，舞台的更新沒有停超過 2 秒（最長間隔 %.2f 秒）" % (max(gaps) if gaps else -1),
+          gaps and max(gaps) <= 2.0 and p.poll() is None, (len(gaps), max(gaps) if gaps else None, p.poll()))
+    ov = [n for n in z if n in ("captext", "plate", "pad", "shield", "controls", "hint", "pointer")]
+    check("A35 模擬：舞台把它當成台上的瀏覽器，而且我們的疊加視窗都在它之上",
+          "browser" in z and ov and all(z.index(n) < z.index("browser") for n in ov), z)
+    # 離開的路徑（5c）：瀏覽器沒有回應時，引擎通知停止 → 舞台 3 秒內消失（走 drop，裡面有對瀏覽器的呼叫）
+    t_ = time.time()
+    json.dump({"state": "stopped", "advance": "auto", "next_seq": 0}, open(os.path.join(d, "control.json"), "w"))
+    try:
+        p.wait(10)
+        gone = time.time() - t_
+    except subprocess.TimeoutExpired:
+        kill_tree(p); gone = None
+    check("A35 模擬：瀏覽器沒有回應時，引擎通知停止 → 舞台 3 秒內消失（%s 秒）" % (round(gone, 1) if gone else "沒有消失"),
+          gone is not None and gone <= 3.0, gone)
+    shutil.rmtree(d, ignore_errors=True)
+    # 離開鍵 Ctrl+Shift+F12（真的按鍵，只在 CI）：瀏覽器沒有回應時 3 秒內消失
+    d = tempfile.mkdtemp(prefix="ne-stage-")
+    json.dump(now_, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    json.dump({"state": "playing", "advance": "auto", "next_seq": 0}, open(os.path.join(d, "control.json"), "w"))
+    p = spawn(d, dict(os.environ, NO_ERRANDS_HOME=d))
+    time.sleep(4)                                                   # 舞台上場、找到假瀏覽器、註冊離開鍵
+    ku = ctypes.windll.user32
+    t_ = time.time()
+    for vk, up in ((0x11, 0), (0x10, 0), (0x7B, 0), (0x7B, 2), (0x10, 2), (0x11, 2)):
+        ku.keybd_event(vk, 0, up, 0); time.sleep(0.05)
+    try:
+        p.wait(10)
+        gone = time.time() - t_
+    except subprocess.TimeoutExpired:
+        kill_tree(p); gone = None
+    check("A35 模擬：瀏覽器沒有回應時，按 Ctrl+Shift+F12 → 舞台 3 秒內消失（%s 秒）" % (round(gone, 1) if gone else "沒有消失"),
+          gone is not None and gone <= 3.0, gone)
+    # 收乾淨再交給下一段（CI 45135261246：接著的講者按鍵三項收不到）：收掉不回應的視窗並等它真的消失、
+    # 放開所有修飾鍵，記下當下的修飾鍵狀態與前景視窗（下一段若再失敗，看這一行）
+    kill_tree(hw)
+    gone_w = wait(lambda: not u.IsWindow(h), 10)
+    for vk in (0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C):
+        ku.keybd_event(vk, 0, 0x2, 0)
+    time.sleep(1.0)
+    print("A35 收尾：假瀏覽器視窗消失=%s；修飾鍵按著的=%s；前景視窗=%s" % (
+        bool(gone_w), [hex(vk) for vk in (0x10, 0x11, 0x12, 0x5B) if u.GetAsyncKeyState(vk) & 0x8000], fg_desc(u)), flush=True)
+    shutil.rmtree(d, ignore_errors=True)
     shutil.rmtree(work, ignore_errors=True)
 
 
@@ -650,7 +805,8 @@ def presenter_controls_checks():
     s0 = int(ctl(d).get("next_seq", 0))
     key(0x22)                                            # PageDown（簡報筆）
     s1 = wait(lambda: int(ctl(d).get("next_seq", 0)) > s0 and int(ctl(d).get("next_seq", 0)), 3) or s0
-    check("講者：真的按 PageDown（簡報筆）→ 下一步", s1 > s0, (s0, s1))
+    check("講者：真的按 PageDown（簡報筆）→ 下一步", s1 > s0, (s0, s1, "修飾鍵按著的=%s" % [hex(vk) for vk in (0x10, 0x11, 0x12, 0x5B) if u.GetAsyncKeyState(vk) & 0x8000],
+                                                     "前景=%s" % fg_desc(u)))
     key(0x27, ext=True)                                  # →
     s2 = wait(lambda: int(ctl(d).get("next_seq", 0)) > s1 and int(ctl(d).get("next_seq", 0)), 3) or s1
     check("講者：真的按 → → 下一步", s2 > s1, (s1, s2))
@@ -801,6 +957,7 @@ def main():
         ku.keybd_event(vk, 0, up, 0); time.sleep(0.05)
     check("A16 更新迴圈卡死時按 Ctrl+Shift+F12 → 3 秒內離開（不靠主迴圈）", closes_within(p, 4))
 
+    hung_browser_checks()
     presenter_controls_checks()
     # 預備清單沒過、講者按停止 → 收掉
     d = tempfile.mkdtemp(prefix="ne-stage-")
