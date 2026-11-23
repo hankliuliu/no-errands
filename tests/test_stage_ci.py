@@ -291,6 +291,14 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
     check("A25 讀內容的外框很淡（不透明度 ≤0.6），而且會淡出（4 秒內）", a1 and 0 < a1 <= 0.6 and gone is True,
           (a1, a2, round(time.time() - t_a, 1)))
     shot_png("stage-shot-5-after-fade.png")
+    # Sprint G2：同一句字幕期間，目標換了也不重擺（使用者：出現後到換句前不要閃去其他地方）
+    p0 = rd(geom).get("caption_plate")
+    json.dump(dict(now, pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0.8, "seq": 2}, look={"box": [900, 600, 300, 80], "seq": 7}, press=1),
+              open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    time.sleep(1.6)
+    p1 = rd(geom).get("caption_plate")
+    check("G2 同一句字幕：目標換了也不重擺（位置與大小差 ≤2 像素）",
+          bool(p0 and p1) and max(abs(a_ - b_) for a_, b_ in zip(p0, p1)) <= 2, (p0, p1))
     # 卡片（轉場）：示範游標淡出
     json.dump(dict(now, card="transition", pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0, "seq": 2}),
               open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
