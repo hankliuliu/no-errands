@@ -635,6 +635,16 @@ time.sleep(60)
 '''
 
 
+def fg_desc(u):
+    """前景視窗的類別與所屬行程（診斷用）。"""
+    import ctypes
+    from ctypes import wintypes
+    h = u.GetForegroundWindow()
+    c = ctypes.create_unicode_buffer(64); u.GetClassNameW(h, c, 64)
+    pid = wintypes.DWORD(); u.GetWindowThreadProcessId(h, ctypes.byref(pid))
+    return "%s pid=%s" % (c.value, pid.value)
+
+
 def hung_browser_checks():
     """A35 模擬（5c 11-23 15:5x）：台上的「瀏覽器」是一個故意不處理訊息的視窗（類別、命令列的 --user-data-dir 都像 Chrome）。
     它沒有回應的期間，舞台的更新不得停超過 2 秒；我們的疊加視窗都在它之上。"""
@@ -707,7 +717,15 @@ def hung_browser_checks():
         kill_tree(p); gone = None
     check("A35 模擬：瀏覽器沒有回應時，按 Ctrl+Shift+F12 → 舞台 3 秒內消失（%s 秒）" % (round(gone, 1) if gone else "沒有消失"),
           gone is not None and gone <= 3.0, gone)
+    # 收乾淨再交給下一段（CI 45135261246：接著的講者按鍵三項收不到）：收掉不回應的視窗並等它真的消失、
+    # 放開所有修飾鍵，記下當下的修飾鍵狀態與前景視窗（下一段若再失敗，看這一行）
     kill_tree(hw)
+    gone_w = wait(lambda: not u.IsWindow(h), 10)
+    for vk in (0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C):
+        ku.keybd_event(vk, 0, 0x2, 0)
+    time.sleep(1.0)
+    print("A35 收尾：假瀏覽器視窗消失=%s；修飾鍵按著的=%s；前景視窗=%s" % (
+        bool(gone_w), [hex(vk) for vk in (0x10, 0x11, 0x12, 0x5B) if u.GetAsyncKeyState(vk) & 0x8000], fg_desc(u)), flush=True)
     shutil.rmtree(d, ignore_errors=True)
     shutil.rmtree(work, ignore_errors=True)
 
@@ -758,7 +776,8 @@ def presenter_controls_checks():
     s0 = int(ctl(d).get("next_seq", 0))
     key(0x22)                                            # PageDown（簡報筆）
     s1 = wait(lambda: int(ctl(d).get("next_seq", 0)) > s0 and int(ctl(d).get("next_seq", 0)), 3) or s0
-    check("講者：真的按 PageDown（簡報筆）→ 下一步", s1 > s0, (s0, s1))
+    check("講者：真的按 PageDown（簡報筆）→ 下一步", s1 > s0, (s0, s1, "修飾鍵按著的=%s" % [hex(vk) for vk in (0x10, 0x11, 0x12, 0x5B) if u.GetAsyncKeyState(vk) & 0x8000],
+                                                     "前景=%s" % fg_desc(u)))
     key(0x27, ext=True)                                  # →
     s2 = wait(lambda: int(ctl(d).get("next_seq", 0)) > s1 and int(ctl(d).get("next_seq", 0)), 3) or s1
     check("講者：真的按 → → 下一步", s2 > s1, (s1, s2))
