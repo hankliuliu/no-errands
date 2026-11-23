@@ -369,7 +369,7 @@ def real_chrome_checks(stage_with):
     ex = u.GetWindowLongW(h, -20)
     check("試擺時瀏覽器不置頂", not (ex & 0x8), hex(ex))
     wr_ = DS._rect(h)
-    check("H1 試擺在螢幕左邊外面，只留最多 2 像素在螢幕上（準備期間不蓋背板，觀眾看不到開視窗與試擺）", wr_[0] + wr_[2] <= 2 or wr_[0] >= W, wr_)
+    check("H1 試擺在螢幕右邊外面，只留最多 2 像素在螢幕上（準備期間不蓋背板，觀眾看不到開視窗與試擺）", wr_[0] >= W - 2, wr_)
     gp_ = rd(os.path.join(d, "stage_geom.json"))
     check("H1／A48 準備期間背板是透明的（沒有深色整頁），右上角是「準備中」的小面板",
           gp_.get("backdrop_shown") is False and "準備中" in ((gp_.get("badge_text") or ["", ""])[1]) and gp_.get("badge")

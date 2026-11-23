@@ -32,7 +32,7 @@ CURSOR_IDLE_S = 2.0                                     # 真的游標在舞台�
 PTR_KEY = "#010204"                                     # 示範游標視窗的透明色鍵
 FONT = "Microsoft JhengHei UI"
 OFF = -32000                                            # 移到螢幕外
-PROBE_EDGE = 2                                          # 試擺：照舞台的大小擺在螢幕左邊外面，只留 2 像素在螢幕上（Chrome 才不會判定
+PROBE_EDGE = 2                                          # 試擺：照舞台的大小擺在螢幕右邊外面，只留 2 像素在螢幕上（Chrome 才不會判定
                                                          # 整個看不到而不畫頁面）；準備期間不蓋背板，觀眾幾乎看不到
 EXIT_HINT = "要離開這個畫面：按 Esc 或 Ctrl+Shift+F12，或雙擊背景"
 TIME_SHORT_HINT = "時間不夠時：右下角「⋯」→「結束示範」，停在當下的畫面並還原資料"
@@ -954,7 +954,7 @@ class Stage:
                 continue
             x, y, w, hh = L.browser_rect(self.lay["stage"], shell, crop, float(now.get("zoom") or 1.5), dpr_of(h))
             if probe:
-                dx_ = (PROBE_EDGE - w) - x                     # 試擺在螢幕左邊外面（大小照舞台）：準備期間不蓋背板
+                dx_ = (self.W - PROBE_EDGE) - x                # 試擺在螢幕右邊外面、只留 2 像素（大小照舞台）：準備期間不蓋背板
                 x += dx_
                 self.__dict__.setdefault("probe_dx", {})[acct] = dx_
             # 上台：只移動、改大小，不動上下順序（SWP_NOZORDER），接著的 restack 才把它插到我們的視窗下面——

@@ -1381,8 +1381,10 @@ def execute(rb, mode, a):
     if staged and br.layout:
         # Sprint H1（5c 11-24：整場不可以出現任何深色整頁，準備期間也不蓋背板）：舞台模式的瀏覽器開在螢幕外，
         # 觀眾不會看到開視窗的過程；上台、試擺都由舞台擺（試擺也在螢幕外量）
+        sw_ = (br.layout.get("screen") or (1920, 1080))[0]
         for a_, (x_, y_, w_, h_) in list(br.layout["windows"].items()):
-            br.layout["windows"][a_] = (2 - w_, y_, w_, h_)      # 螢幕左邊外面，只留 2 像素（Chrome 才會畫頁面）
+            # 螢幕右邊外面、只留 2 像素（正座標：neb 只放行非負的視窗位置——11-24 02:00 負座標被擋下，瀏覽器沒有開）
+            br.layout["windows"][a_] = (max(0, sw_ - 2), max(0, y_), w_, h_)
     if staged:
         br.look = Look(br, ctl, align=(rb.get("stage") or {}).get("align"), effects=effects_of(rb))
         ctl.publish(effects=effects_of(rb))
