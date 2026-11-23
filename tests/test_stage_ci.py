@@ -278,18 +278,22 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
     ack = wait(lambda: rd(ackp) if (rd(ackp).get("press") or 0) >= 1 else None, 2) or {}
     check("A22 按下的效果在發出後 0.3 秒內畫出並回報（引擎等到這個回報才送出點擊；順序另由 runbook 測試驗）",
           ack.get("t") is not None and ack["t"] - t_pub <= 0.3, (round(ack["t"] - t_pub, 3) if ack.get("t") else None, ack))
-    rip = wait(lambda: rd(geom).get("ripple_on") is True, 0.5)
-    check("A22 漣漪確實在畫面上（回報後 0.5 秒內讀到顯示中）", rip, rd(geom).get("ripple_on"))
+    time.sleep(0.5)
+    g_r = rd(geom)
+    check("H3／A50 按下時沒有漣漪（回報照舊，漣漪從不顯示）", g_r.get("ripple_on") is False and (g_r.get("fx_shown") or {}).get("ripple") == 0,
+          (g_r.get("ripple_on"), g_r.get("fx_shown")))
     shot_png("stage-shot-4-pointer-press.png")
     # 重新發布一個外框再量（locked-screen CI：前面的按下／截圖花了一陣子，外框在第一次讀之前就淡完了，讀到 (0, 0, 0.0)）
     json.dump(dict(now, pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0.8, "seq": 2}, look={"box": [320, 150, 300, 60], "seq": 2}, press=1),
               open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
-    a1 = wait(lambda: rd(geom).get("look_alpha") or None, 2.5) or 0   # 量測值每秒寫一次：等它出現
-    t_a = time.time()                              # 輪詢到 4 秒等淡出（固定等 1.9 秒會讀到上一秒的值）
-    gone = wait(lambda: (not rd(geom).get("look_alpha")) or None, 4)
-    a2 = rd(geom).get("look_alpha")
-    check("A25 讀內容的外框很淡（不透明度 ≤0.6），而且會淡出（4 秒內）", a1 and 0 < a1 <= 0.6 and gone is True,
-          (a1, a2, round(time.time() - t_a, 1)))
+    seen_a = []
+    t_a = time.time()
+    while time.time() - t_a < 2.5:                 # 發布了外框（look）之後 2.5 秒內，外框一次都沒有顯示
+        seen_a.append(rd(geom).get("look_alpha") or 0)
+        time.sleep(0.2)
+    g_l = rd(geom)
+    check("H3／A50 沒有外框：發布目標之後外框一次都沒顯示（只用來讓字幕避開）", max(seen_a or [0]) == 0
+          and (g_l.get("fx_shown") or {}).get("look") == 0 and g_l.get("look_rect"), (max(seen_a or [0]), g_l.get("fx_shown"), g_l.get("look_rect")))
     shot_png("stage-shot-5-after-fade.png")
     # Sprint G2：同一句字幕期間，目標換了也不重擺（使用者：出現後到換句前不要閃去其他地方）
     p0 = rd(geom).get("caption_plate")
@@ -299,17 +303,17 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
     p1 = rd(geom).get("caption_plate")
     check("G2 同一句字幕：目標換了也不重擺（位置與大小差 ≤2 像素）",
           bool(p0 and p1) and max(abs(a_ - b_) for a_, b_ in zip(p0, p1)) <= 2, (p0, p1))
-    # 卡片（轉場）：示範游標淡出
-    json.dump(dict(now, card="transition", pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0, "seq": 2}),
+    # 卡片（檢查清單；Sprint H1 起示範中沒有轉場卡）：示範游標收起
+    json.dump(dict(now, card="checklist", card_data={"heading": "x", "items": []}, pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0, "seq": 2}),
               open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
     time.sleep(0.8)
-    check("轉場卡時示範游標收起", not u.IsWindowVisible(ph), u.IsWindowVisible(ph))
+    check("卡片時示範游標收起", not u.IsWindowVisible(ph), u.IsWindowVisible(ph))
     # 回到台上、游標目標的序號沒變（排練 2 的當機路徑：游標位置已清掉、序號沒變 → place_ptr(None)）
     json.dump(dict(now, pointer={"x": tgt2[0], "y": tgt2[1], "dur": 0, "seq": 2}),
               open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
     vis = wait(lambda: u.IsWindowVisible(ph), 3)
     g5 = rd(geom)
-    check("A33 轉場卡後回到台上（游標序號沒變）：舞台沒有出錯、游標重新出現", g5.get("errors") == 0 and vis,
+    check("A33 卡片後回到台上（游標序號沒變）：舞台沒有出錯、游標重新出現", g5.get("errors") == 0 and vis,
           (g5.get("errors"), u.IsWindowVisible(ph), g5.get("pointer"), g5.get("card"), g5.get("ptr_dbg")))
 
 
@@ -356,14 +360,20 @@ def real_chrome_checks(stage_with):
         time.sleep(1.2)
         return f() or r1
 
-    # 1 上場前試擺：片頭卡顯示中，瀏覽器照裁切擺好但在背板下面
-    now = {"card": "title", "status": "staging", "title": "測試", "card_data": {"subtitle": "", "mode": "自動播放"},
+    # 1 上場前試擺：檢查清單顯示中（Sprint H1 起沒有片頭卡），瀏覽器照裁切擺好但在背板下面
+    now = {"card": "checklist", "status": "staging", "title": "測試", "card_data": {"heading": "準備中…", "items": []},
            "fit_probe": "a", "crop": crop, "zoom": 1.0, "accounts": accts}
     d, p = stage_with(now, None, {"NO_ERRANDS_HOME": work})
     r = fit_ok(d, True)
     check("A1 試擺（背板下面）：頁面貼齊螢幕底邊、舞台沒有空白帶", r and r.get("ok"), r)
     ex = u.GetWindowLongW(h, -20)
-    check("試擺時瀏覽器不置頂（在背板下面，觀眾看不到）", not (ex & 0x8), hex(ex))
+    check("試擺時瀏覽器不置頂", not (ex & 0x8), hex(ex))
+    wr_ = DS._rect(h)
+    check("H1 試擺在螢幕右邊外面，只留最多 2 像素在螢幕上（準備期間不蓋背板，觀眾看不到開視窗與試擺）", wr_[0] >= W - 2, wr_)
+    gp_ = rd(os.path.join(d, "stage_geom.json"))
+    check("H1／A48 準備期間背板是透明的（沒有深色整頁），右上角是「準備中」的小面板",
+          gp_.get("backdrop_shown") is False and "準備中" in ((gp_.get("badge_text") or ["", ""])[1]) and gp_.get("badge")
+          and gp_["badge"][2] < W * 0.5 and gp_["badge"][3] < H * 0.3, (gp_.get("backdrop_shown"), gp_.get("badge_text"), gp_.get("badge")))
     shot_png("stage-shot-1-probe.png")
     json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
     try:
@@ -403,11 +413,30 @@ def real_chrome_checks(stage_with):
         check("A2 圓角：底板的角落露出頁面（白）", min(corner) > 200, corner)
         mx = max(max(px_at(img, x, y)) for x in range(x0, x0 + bw, 2) for y in range(y0, y0 + bh, 2))
         check("A2 字完全不透明（白字最亮處 ≥240）", mx >= 240, mx)
-    mr = g.get("mask_rect")
-    check("遮罩畫在舞台上指定的位置", mr and L.inside(mr, lay["stage"]), mr)
-    if mr and img:
-        c = px_at(img, mr[0] + mr[2] // 2, mr[1] + mr[3] // 2)
-        check("遮罩的顏色是指定的頁面底色", abs(c[0] - 255) < 20 and c[1] < 40 and abs(c[2] - 255) < 20, c)
+    check("H3／A50 沒有遮罩：引擎發布了遮罩，舞台也不畫（頁面上切到一半的列就讓它那樣）",
+          not g.get("mask_rect") and (g.get("fx_shown") or {}).get("mask") == 0, (g.get("mask_rect"), g.get("fx_shown")))
+    if img:
+        c = px_at(img, 289 + 150, 150 + 15)
+        check("H3／A50 遮罩的位置看得到原本的頁面（不是指定的洋紅色）", not (abs(c[0] - 255) < 20 and c[1] < 40 and abs(c[2] - 255) < 20), c)
+    bd = g.get("badge")
+    check("H2／A49 右上角的標記：在螢幕右上角、小、文字是這一步的角色、色塊是角色顏色",
+          bd and bd[0] + bd[2] >= W - 40 and bd[1] <= H * 0.2 and bd[2] < W * 0.3 and bd[3] < H * 0.12
+          and (g.get("badge_text") or [""])[0] == "第一線人員" and (g.get("badge_color") or "").lower() == "#2f7de1",
+          (bd, g.get("badge_text"), g.get("badge_color")))
+    check("H2／A49 頁面仍然四邊貼齊螢幕（標記疊在上面、不佔版面）", r and r.get("fit", {}).get("ok"), r and r.get("fit"))
+    check("H2 字幕組只剩字幕文字（沒有角色、段落那一小列）", g.get("caption_text") == beat and "第一線人員" not in (g.get("caption_shown") or ""),
+          (g.get("caption_text"), g.get("caption_shown")))
+    if bd:
+        import ctypes.wintypes  # noqa: F401
+        hb = u.GetAncestor(u.WindowFromPoint(ctypes.wintypes.POINT(bd[0] + bd[2] // 2, bd[1] + bd[3] // 2)), 2)
+        rb_ = ctypes.wintypes.RECT(); u.GetWindowRect(hb, ctypes.byref(rb_))
+        hit_rect = [rb_.left, rb_.top, rb_.right - rb_.left, rb_.bottom - rb_.top]
+        check("H2／A49 標記不擋滑鼠（滑鼠穿透：標記中心那一點接到滑鼠的視窗不是標記本身）", hit_rect != list(bd), (hit_rect, bd))
+    # 等伺服器：標記顯示等待時間
+    json.dump(dict(now, status="waiting_system", waited_s=42), open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    gw = wait(lambda: (lambda g_: g_ if "等待 0:42" in (g_.get("badge_text") or ["", ""])[1] else None)(rd(geom)), 3) or rd(geom)
+    check("H2／A49 等伺服器時標記顯示「等待 0:42」", "等待 0:42" in (gw.get("badge_text") or ["", ""])[1], gw.get("badge_text"))
+    json.dump(now, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
     # 3 滑鼠一動控制列出現：字幕不動（控制列讓位）
     if pl:
         def move_abs(x_, y_):
@@ -620,6 +649,17 @@ def real_chrome_checks(stage_with):
         g1 = wait(lambda: (lambda g_: g_ if g_.get("caption_on") is False and not g_.get("caption_plate") else None)(rd(geom)), 3) or rd(geom)
         diag.update(restacks_after=g1.get("restacks"), caption_on=g1.get("caption_on"), plate=g1.get("caption_plate"))
         check("A2 點字幕右上角的 × → 字幕收起", g1.get("caption_on") is False and not g1.get("caption_plate"), diag)
+        gb = wait(lambda: rd(geom).get("badge") and rd(geom), 2) or rd(geom)
+        check("H2／A49 關掉字幕後，右上角的標記還在", gb.get("badge") and gb.get("caption_on") is False, (gb.get("badge"), gb.get("caption_on")))
+        # 結束（Sprint H1）：停在真頁面，標記改成「示範結束 · 資料已還原」（綠）；失敗時「資料還原失敗」（紅）
+        for ok_, want_ in ((True, "資料已還原"), (False, "資料還原失敗")):
+            json.dump(dict(now, status="done", ended={"reset": ok_}, beat={"text": "", "i": 0, "n": 0}),
+                      open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+            ge = wait(lambda: (lambda g_: g_ if want_ in ((g_.get("badge_text") or ["", "", ""])[2]) else None)(rd(geom)), 3) or rd(geom)
+            bt_ = ge.get("badge_text") or ["", "", ""]
+            check("H1／A49 結束：停在真頁面，標記是「示範結束」色塊加「%s」" % want_,
+                  bt_[0] == "示範結束" and want_ in bt_[2] and ge.get("badge") and not ge.get("card"), (bt_, ge.get("badge"), ge.get("card")))
+        json.dump(now, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
         time.sleep(0.5)
         c1 = page_clicks()
         check("字幕上的拖動、按兩下、× 都沒有穿到底下的頁面（頁面收到的點擊數不變）", c0 is not None and c1 == c0, (c0, c1))
@@ -923,21 +963,21 @@ def main():
         env.update(env_extra or {})
         return d, spawn(d, env)
 
-    title = {"card": "title", "status": "ready", "title": "測試", "card_data": {"subtitle": "副標", "mode": "自動播放"}}
+    title = {"card": "checklist", "status": "ready", "title": "測試", "card_data": {"heading": "準備好了", "items": []}}
     # 1 主控端（引擎）被強制結束 → 舞台幾秒內自己關
     eng = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
     d, p = stage_with(dict(title, owner_pid=eng.pid))
     time.sleep(3)
     eng.kill()
-    check("引擎被強制結束 → 舞台在 15 秒內自己關（片頭卡）", closes_within(p, 15))
-    # 2 引擎停了（control stopped）→ 片頭卡上也會說一句後自己關
+    check("引擎被強制結束 → 舞台在 15 秒內自己關（檢查清單）", closes_within(p, 15))
+    # 2 引擎停了（control stopped）→ 檢查清單上也會說一句後自己關
     d, p = stage_with(dict(title), {"state": "playing", "advance": "auto", "next_seq": 0})
     time.sleep(3)
     json.dump({"state": "stopped", "advance": "auto", "next_seq": 0}, open(os.path.join(d, "control.json"), "w"))
-    check("示範停止（片頭卡）→ 舞台說一句後自己關", closes_within(p, 10))
+    check("示範停止（檢查清單）→ 舞台說一句後自己關", closes_within(p, 10))
     # 3 Ctrl+Shift+F12 在每一種卡片上都能離開（全域熱鍵，不依賴引擎）
     ku = ctypes.windll.user32
-    for card in ("title", "checklist", None):
+    for card in ("checklist", "end", None):              # end＝卡住時的說明卡（示範中沒有片頭、轉場、片尾卡）
         now = {"card": card, "status": "running", "card_data": {"heading": "x", "items": []}, "beat": {"text": "字幕", "i": 1, "n": 2}}
         d, p = stage_with(now, None, {"NE_STAGE_NO_HOTKEYS": ""})
         time.sleep(3)

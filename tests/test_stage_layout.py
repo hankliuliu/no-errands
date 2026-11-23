@@ -400,10 +400,28 @@ print("A35 每秒路徑＋離開路徑上的視窗呼叫清單：\n  " + "\n  ".
 check("A35 每秒路徑與所有離開路徑上，對別的行程視窗的呼叫都帶非同步旗標（或是我們自己的視窗）", _rows and not _bad, _bad)
 check("A35 撤下舞台（drop）對瀏覽器的呼叫是非同步", any(r.startswith("drop：u32.SetWindowPos(h,") and r.endswith("非同步") for r in _rows), _rows)
 check("A35 緊急出口（emergency）對瀏覽器的呼叫是非同步", any(r.startswith("emergency：u32.SetWindowPos(h,") and r.endswith("非同步") for r in _rows), _rows)
-check("A35 restack 對台上瀏覽器的上下順序呼叫是非同步", any(r.startswith("restack：u32.SetWindowPos(h,") and r.endswith("非同步") for r in _rows), _rows)
+check("A35 restack 對台上瀏覽器的上下順序呼叫是非同步", any(r.startswith(("restack：u32.SetWindowPos(h,", "restack：u32.SetWindowPos(b,")) and r.endswith("非同步") for r in _rows), _rows)
 check("A35 place_browsers 把瀏覽器擺上台的呼叫是非同步",
       sum(1 for r in _rows if r.startswith("place_browsers：u32.SetWindowPos(h,") and r.endswith("非同步")) >= 2, _rows)
 check("看門機制的堆疊寫到自己的檔案（不和引擎共用 engine.log）", "stage_hang_stack.txt" in _src)
+
+# Sprint H（使用者 11-24：「Live demo 很像影片…我要最樸素的操作、不要做過場動畫、標記訊息(例如角色)改去疊在畫面右上角」）
+_eng = open(os.path.join(os.path.dirname(L.__file__), "demo_runbook.py"), encoding="utf-8").read()
+_exec = _eng[_eng.index("def execute("):_eng.index("def show_hang_notice(")]
+check("H1 引擎正常流程不發布片頭、換角色、片尾卡（只剩卡住說明卡）",
+      'card="title"' not in _exec and 'card="transition"' not in _exec and 'card="end"' not in _exec, "")
+check("H1 結束：停在真頁面，發布 ended（還原結果），收場時才關瀏覽器", "ended={\"reset\": None}" in _exec and "ended={\"reset\": bool(ok_)}" in _exec, "")
+check("H2 角色、等待、結束訊息在右上角的標記（字幕組上方那一小列不再放進字幕組）",
+      "self.badgew" in _src and "self.caphdr.pack(" not in _src and "def update_badge" in _src, "")
+check("H2 標記在疊加視窗的上下順序清單裡、滑鼠穿透", "self.badgew, self.ptrw" in _src and "for w in (self.ptrw, self.badgew)" in _src, "")
+check("H3 游標直線移動（沒有弧線）、不淡入、沒有漣漪", "pointer_path(p0, p1, t, bend=0.0)" in _src and '"-alpha", max(0.05, fa)' not in _src
+      and 'itemconfigure(self.ripple, state="normal")' not in _src, "")
+check("H1 準備期間不蓋背板：背板透明、滑鼠穿透，右上角小面板；瀏覽器開在螢幕外、試擺在螢幕外量",
+      "def backdrop_mode" in _src and "PROBE_EDGE" in _src and "max(0, sw_ - 2)" in _eng and "準備中 %d/%d" in _src, "")
+check("同時只能有一組舞台：啟動時叫別的舞台停", "def stop_other_stages" in _src and "replaced_by_new_stage" in _src, "")
+check("H3 外框、遮罩從不顯示", "e.deiconify()" not in _src and "self.maskw.deiconify()" not in _src, "")
+check("H3 直線：pointer_path(bend=0) 的中點就在兩點連線上",
+      abs(L.pointer_path((0, 0), (100, 50), 0.5, bend=0.0)[1] - 0.5 * L.pointer_path((0, 0), (100, 50), 0.5, bend=0.0)[0]) < 1e-6)
 
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
 sys.exit(0 if all(R) else 1)
