@@ -334,8 +334,8 @@ _ph = tempfile.mkdtemp(prefix="ne-pol-sw-")
 try:
     _env = dict(os.environ, NO_ERRANDS_HOME=_ph, PYTHONIOENCODING="utf-8")
     _pp = os.path.join(os.path.dirname(cg.__file__), "policy.py")
-    _r1 = subprocess.run([sys.executable, _pp, "set", "start_when", "now", "--reason", "測試"], capture_output=True, text=True, env=_env)
-    _r2 = subprocess.run([sys.executable, _pp, "set", "start_when", "always", "--reason", "測試"], capture_output=True, text=True, env=_env)
+    _r1 = subprocess.run([sys.executable, _pp, "set", "start_when", "now", "--reason", "測試"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=_env)
+    _r2 = subprocess.run([sys.executable, _pp, "set", "start_when", "always", "--reason", "測試"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=_env)
     _pj = _js.load(open(os.path.join(_ph, "policy.json"), encoding="utf-8"))
     check("policy.py set start_when now 寫進政策檔；不認得的值拒絕", _r1.returncode == 0 and _pj.get("start_when") == "now"
           and _r2.returncode != 0, (_r1.stdout[-200:], _r2.stdout[-200:], _pj.get("start_when")))
