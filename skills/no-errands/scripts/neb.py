@@ -17,6 +17,10 @@
   放行條件全部成立：核准有效（未到期、未撤銷、清單雜湊相符）；目前主機＝核准的目標主機；--profile 的資料夾名
   ＝該步核准的示範帳號；輸入的欄位名稱與文字逐字相符（或符合核准的變動規則）／按鍵與點擊的名稱在該步清單內。
   任一不符 → 拒絕並回「需重新核准」。沒帶核准時行為不變。
+- `neb.py real read <網址> [--out 檔]`：用使用者平常的瀏覽器（Windows 的 Edge）已經登入的狀態唯讀地讀一頁
+  （開一個新視窗、只讀那個視窗的網頁文件、只關自己開的那個；詳見 real_browser.py）。比 neb 更嚴：
+  敏感網域（郵件、聊天、社群、金融、使用者登記的）**授權了也不開**——用的是真的帳號，一打開就會變已讀。
+  被導去登入頁 → 回報沒登入，改走專用瀏覽器的登入流程。紀錄只記主機與字數。
 - 其他網域：原樣交給 agent-browser。
 - 每次呼叫寫 ledger（~/.no-errands/neb-ledger.jsonl；不含頁面內容）。
 """
@@ -373,6 +377,45 @@ def pop_flag(args, name):
     return None
 
 
+def do_real(glob, args):
+    """real read：平常的瀏覽器（Edge）唯讀地讀一頁。網址照常過網域守門；不接受全域旗標與其他動作。"""
+    out = pop_flag(args, "--out")
+    if glob:
+        refuse("real read 不接受 %s（用的是使用者平常的瀏覽器，不是 agent 專用的）" % " ".join(glob), sub="real")
+    if len(args) != 2 or args[0].lower() != "read":
+        refuse("real 只有 read：neb.py real read <網址> [--out 檔]（只讀，不打字、不點頁面）", sub="real")
+    nu, err = norm_url(args[1])
+    if err or nu == "about:blank":
+        refuse(err or "real read 需要 http(s) 網址", sub="real")
+    pol = policy.load(HOME)
+    host = (urllib.parse.urlparse(nu).hostname or "").lower()
+    d_ = policy.sensitive_domain_entry(pol, *policy.url_host_port(nu))
+    ap = policy.canonical_app(d_.get("app") or d_.get("host")) if d_ else app_for_host(host, pol)
+    if ap:   # 用的是使用者真的帳號：郵件、聊天、社群、金融一打開就會把東西變已讀——授權了也不開（v1）
+        refuse("real read 不開郵件、聊天、社群、金融類網站（%s）：用的是你真的帳號，一打開就會變已讀；"
+               "這類照舊走 neb 的專用瀏覽器與同意閘門" % ap, app=ap, sub="real-read", host=host)
+    import real_browser
+    try:
+        res = real_browser.read(nu)
+    except real_browser.Fail as e:
+        ledger(allowed=True, sub="real-read", host=host, app=ap, ok=False, error=str(e))
+        print(json.dumps({"ok": False, "tool": "neb", "error": str(e)}, ensure_ascii=False))
+        sys.exit(1)
+    text = res.pop("text", "")
+    ledger(allowed=True, sub="real-read", host=host, app=ap, ok=res.get("ok"), logged_in=res.get("logged_in"),
+           final_host=res.get("final_host"), chars=res.get("chars"), closed=res.get("closed"),
+           other_windows_untouched=res.get("other_windows_untouched"))
+    if out:
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(text)
+        res["out"] = os.path.abspath(out)
+    else:
+        res["text"] = text
+    res["tool"] = "neb"
+    print(json.dumps(res, ensure_ascii=False))
+    sys.exit(0 if res.get("ok") else 1)
+
+
 def acct_of(profile):
     return os.path.basename(os.path.normpath(profile)) if profile else ""
 
@@ -561,6 +604,8 @@ def main():
     if not rest:
         print(__doc__); sys.exit(2)
     sub, args = rest[0].lower(), rest[1:]
+    if sub == "real":
+        do_real(glob, args)
     rb_id, rb_step = pop_flag(args, "--runbook-approval"), pop_flag(args, "--step")
     progressive = "--progressive" in args
     if progressive:
