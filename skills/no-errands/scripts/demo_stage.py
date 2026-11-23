@@ -452,13 +452,16 @@ class Stage:
         self.tick()
 
     def take_front(self):
+        """鍵盤焦點拿回舞台（前景被台上的瀏覽器拿走時）。用角色帶（螢幕最上方一條，不蓋台上任何東西）接焦點，
+        絕不把背板拉到最上層——舊做法 root.lift() 讓全螢幕的背板蓋住瀏覽器與字幕，前景鎖讓拿焦點失敗時每秒重來一次：
+        候選版長官那一段每秒閃一次空白背板（稽核：舞台中央沒有瀏覽器）。接完焦點立刻照原本的上下順序重排。"""
         try:
-            self.root.lift()
-            self.root.focus_force()
+            self.band.focus_force()
             if os.name == "nt":
-                u32.SetForegroundWindow(int(self.root.frame(), 16))
+                u32.SetForegroundWindow(int(self.band.frame(), 16))
         except Exception:
             pass
+        self.restack()
 
     def xbtn_rect(self):
         """× 的螢幕位置：字幕塊右上角（預留的空位裡）。"""

@@ -186,6 +186,12 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
           bool(t1) and all(t2.get(k) == t1.get(k) for k in "cwm"),
           (t1, t2))
     check("A26 鍵盤焦點不在瀏覽器上（點了頁面範圍之後前景仍不是瀏覽器）", u.GetForegroundWindow() != h, u.GetForegroundWindow())
+    # 拿回焦點時背板不能跑到最上層（候選版：每秒閃一次空白背板）：連看 3 秒，每次量到的上下順序裡背板都在最下面
+    zs = []
+    for _ in range(6):
+        time.sleep(0.5)
+        zs.append((rd(geom).get("z_order") or [])[-1:])
+    check("A26 拿回鍵盤焦點時背板一直在最下面（不蓋住瀏覽器與字幕）", all(z == ["backdrop"] for z in zs), zs)
     bad = []
     for r_ in range(20):
         px_ = lay["stage"][0] + int(lay["stage"][2] * (0.2 + 0.6 * ((r_ * 7) % 10) / 10))
