@@ -584,7 +584,8 @@ class Stage:
         try:
             h = getattr(self, "active_hwnd", None)
             if os.name == "nt" and h and u32.IsWindow(h):
-                u32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                # 非同步（0x4000，A35／A16）：撤下是看門機制、離開鍵、雙擊、引擎停止共用的路——瀏覽器沒回應時也不能卡在這裡
+                u32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | 0x4000)
         except Exception:
             pass
         try:

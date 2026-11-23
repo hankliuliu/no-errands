@@ -653,10 +653,10 @@ def hung_browser_checks():
         return
     d = tempfile.mkdtemp(prefix="ne-stage-")
     geom = os.path.join(d, "geom.json")
-    json.dump({"status": "running", "card": None, "role": "測試者", "role_color": "#2f7de1", "section": "模擬",
-               "account": "a", "accounts": {"a": {"role": "測試者", "color": "#2f7de1", "profile": prof}},
-               "crop": {}, "zoom": 1.0, "step_index": 1, "steps_total": 1, "beat": {"text": "這一句在測試舞台不會被卡住。", "i": 1, "n": 1}},
-              open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    now_ = {"status": "running", "card": None, "role": "測試者", "role_color": "#2f7de1", "section": "模擬",
+            "account": "a", "accounts": {"a": {"role": "測試者", "color": "#2f7de1", "profile": prof}},
+            "crop": {}, "zoom": 1.0, "step_index": 1, "steps_total": 1, "beat": {"text": "這一句在測試舞台不會被卡住。", "i": 1, "n": 1}}
+    json.dump(now_, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
     json.dump({"state": "playing", "advance": "auto", "next_seq": 0}, open(os.path.join(d, "control.json"), "w"))
     p = spawn(d, dict(os.environ, NE_STAGE_GEOM=geom, NE_STAGE_NO_HOTKEYS="1", NO_ERRANDS_HOME=d))
     hung = wait(lambda: u.IsHungAppWindow(h), 15)                 # 系統判定「沒有回應」要 5 秒沒處理訊息
@@ -679,13 +679,34 @@ def hung_browser_checks():
     ov = [n for n in z if n in ("captext", "plate", "pad", "shield", "controls", "hint", "pointer")]
     check("A35 模擬：舞台把它當成台上的瀏覽器，而且我們的疊加視窗都在它之上",
           "browser" in z and ov and all(z.index(n) < z.index("browser") for n in ov), z)
-    json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
+    # 離開的路徑（5c）：瀏覽器沒有回應時，引擎通知停止 → 舞台 3 秒內消失（走 drop，裡面有對瀏覽器的呼叫）
+    t_ = time.time()
+    json.dump({"state": "stopped", "advance": "auto", "next_seq": 0}, open(os.path.join(d, "control.json"), "w"))
     try:
         p.wait(10)
-        closed = True
+        gone = time.time() - t_
     except subprocess.TimeoutExpired:
-        kill_tree(p); closed = False
-    check("A35 模擬：假瀏覽器沒有回應時，舞台照樣收得掉", closed)
+        kill_tree(p); gone = None
+    check("A35 模擬：瀏覽器沒有回應時，引擎通知停止 → 舞台 3 秒內消失（%s 秒）" % (round(gone, 1) if gone else "沒有消失"),
+          gone is not None and gone <= 3.0, gone)
+    shutil.rmtree(d, ignore_errors=True)
+    # 離開鍵 Ctrl+Shift+F12（真的按鍵，只在 CI）：瀏覽器沒有回應時 3 秒內消失
+    d = tempfile.mkdtemp(prefix="ne-stage-")
+    json.dump(now_, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    json.dump({"state": "playing", "advance": "auto", "next_seq": 0}, open(os.path.join(d, "control.json"), "w"))
+    p = spawn(d, dict(os.environ, NO_ERRANDS_HOME=d))
+    time.sleep(4)                                                   # 舞台上場、找到假瀏覽器、註冊離開鍵
+    ku = ctypes.windll.user32
+    t_ = time.time()
+    for vk, up in ((0x11, 0), (0x10, 0), (0x7B, 0), (0x7B, 2), (0x10, 2), (0x11, 2)):
+        ku.keybd_event(vk, 0, up, 0); time.sleep(0.05)
+    try:
+        p.wait(10)
+        gone = time.time() - t_
+    except subprocess.TimeoutExpired:
+        kill_tree(p); gone = None
+    check("A35 模擬：瀏覽器沒有回應時，按 Ctrl+Shift+F12 → 舞台 3 秒內消失（%s 秒）" % (round(gone, 1) if gone else "沒有消失"),
+          gone is not None and gone <= 3.0, gone)
     kill_tree(hw)
     shutil.rmtree(d, ignore_errors=True)
     shutil.rmtree(work, ignore_errors=True)

@@ -377,7 +377,9 @@ check("舞台用自己的斷行（Label 不再自己折行）", "wrap_caption(" 
 import ast as _ast  # noqa: E402
 _src = open(os.path.join(os.path.dirname(L.__file__), "demo_stage.py"), encoding="utf-8").read()
 _PER_TICK = {"tick", "_tick", "place_browsers", "restack", "check_fit", "cap_resync", "update_xbtn", "draw_look", "draw_mask",
-             "draw_shield", "update_pointer", "write_geom", "dump_geom", "win_of", "show_caption", "place_caption"}
+             "draw_shield", "update_pointer", "write_geom", "dump_geom", "win_of", "show_caption", "place_caption",
+             # 離開的路徑（5c：看門機制、離開鍵、雙擊／Esc、引擎通知停止或關閉都走這些）
+             "drop", "emergency", "safety", "watchdog", "loop", "ask_drop"}
 _BLOCKING = {"SetWindowPos", "ShowWindow", "SendMessageW", "SendMessage", "SetForegroundWindow", "GetWindowTextW",
              "GetWindowText", "MoveWindow", "BringWindowToTop", "SetWindowTextW", "SetActiveWindow"}
 _rows, _bad = [], []
@@ -394,8 +396,10 @@ for _fn in [n for n in _ast.walk(_ast.parse(_src)) if isinstance(n, _ast.Functio
             _rows.append("%s：u32.%s(%s, …)→%s" % (_fn.name, _f.attr, _a0, _why))
             if not (_own or _async):
                 _bad.append(_rows[-1])
-print("A35 每秒路徑上的視窗呼叫清單：\n  " + "\n  ".join(_rows))
-check("A35 每秒路徑上對別的行程視窗的呼叫都帶非同步旗標（或是我們自己的視窗）", _rows and not _bad, _bad)
+print("A35 每秒路徑＋離開路徑上的視窗呼叫清單：\n  " + "\n  ".join(_rows))
+check("A35 每秒路徑與所有離開路徑上，對別的行程視窗的呼叫都帶非同步旗標（或是我們自己的視窗）", _rows and not _bad, _bad)
+check("A35 撤下舞台（drop）對瀏覽器的呼叫是非同步", any(r.startswith("drop：u32.SetWindowPos(h,") and r.endswith("非同步") for r in _rows), _rows)
+check("A35 緊急出口（emergency）對瀏覽器的呼叫是非同步", any(r.startswith("emergency：u32.SetWindowPos(h,") and r.endswith("非同步") for r in _rows), _rows)
 check("A35 restack 對台上瀏覽器的上下順序呼叫是非同步", any(r.startswith("restack：u32.SetWindowPos(h,") and r.endswith("非同步") for r in _rows), _rows)
 check("A35 place_browsers 把瀏覽器擺上台的呼叫是非同步",
       sum(1 for r in _rows if r.startswith("place_browsers：u32.SetWindowPos(h,") and r.endswith("非同步")) >= 2, _rows)
