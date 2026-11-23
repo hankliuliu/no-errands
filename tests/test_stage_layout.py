@@ -179,6 +179,45 @@ check("A9 不對齊、不遮罩（5c）：劇本就算寫了 top_align，讀內�
       and not any(x[:2] == ("get", "count") for x in br1.calls) and not any(x[:2] == ("get", "box") and "nth-last-child" in x[2] for x in br1.calls) and len(br1.calls) <= 3
       and c.now["look"]["box"] == [269.0, 397.0, 984.0, 90.8], (c.now, br1.calls))
 
+# ---- 等待中的字幕（5c）：真的在等才講、等到就停；超時說一句就往下（不停掉整場）
+class WaitBr:
+    def __init__(self, busy_reads):
+        self.n, self.busy = 0, busy_reads
+
+    def text(self, acct, sc):
+        self.n += 1
+        return "🤔 處理中..." if self.n <= self.busy else "這是回答"
+
+    def return_to(self, acct):
+        return False
+
+
+class WaitCtl(FakeCtl):
+    def __init__(self):
+        super().__init__(); self.beats = []
+
+    def publish(self, **kw):
+        super().publish(**kw)
+        if kw.get("beat"):
+            self.beats.append(kw["beat"]["text"])
+
+    def gate(self, on_resume=None):
+        return 0.0
+
+
+sw = [{"say": "第一句", "s": 0.15}, {"say": "第二句", "s": 0.15}, {"say": "第三句", "s": 5}]
+act_w = {"do": "expect_absent", "text": ["處理中"], "scopes": ["#rhs"], "budget_s": 5, "poll_s": 0.05, "say_while": sw}
+st_w = {"id": "sx", "account": "a"}
+c = WaitCtl(); ok_, inf_ = DR.run_action(WaitBr(12), {}, st_w, act_w, {}, None, {}, c)
+check("等待中字幕：依序出現、等到了就停（不會硬播完）", ok_ and c.beats[:2] == ["第一句", "第二句"] and len(inf_.get("said_while", [])) >= 2
+      and inf_.get("t_end"), (ok_, c.beats, inf_))
+c = WaitCtl(); ok_, inf_ = DR.run_action(WaitBr(0), {}, st_w, act_w, {}, None, {}, c)
+check("等待中字幕：等的東西已經到了 → 一句都不講、直接往下", ok_ and c.beats == [], (ok_, c.beats))
+act_t = dict(act_w, budget_s=0.3, say_while=None, timeout_say="AI 助理這次回得比較慢，先往下看。", timeout_say_s=0)
+c = WaitCtl(); ok_, inf_ = DR.run_action(WaitBr(10 ** 6), {}, st_w, act_t, {}, None, {}, c)
+check("等太久：說一句「先往下看」、記成超時略過", not ok_ and inf_.get("timeout_skipped") and c.beats == ["AI 助理這次回得比較慢，先往下看。"],
+      (ok_, c.beats, inf_))
+
 # ---- F-3：示範游標、捲動、外框淡出、不碰系統輸入
 st_ = lay["stage"] if False else L.layout(1920, 1080)["stage"]
 check("A21 CSS 點 → 螢幕（扣裁切、乘倍率、夾在舞台內）",

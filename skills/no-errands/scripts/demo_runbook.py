@@ -191,7 +191,10 @@ def stage_errors(rb):
     if not stage_on(rb):
         return []
     import stage_layout
-    return stage_layout.caption_errors({st["id"]: [b.get("say", "") for b in beats_of(st)] for st in rb.get("steps", [])})
+    return stage_layout.caption_errors({st["id"]: [b.get("say", "") for b in beats_of(st)] +
+                                        [x.get("say", "") for a_ in (st.get("actions") or []) for x in (a_.get("say_while") or [])] +
+                                        [a_["timeout_say"] for a_ in (st.get("actions") or []) if a_.get("timeout_say")]
+                                        for st in rb.get("steps", [])})
 
 
 def validate(rb):
@@ -733,6 +736,8 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
         texts = [(resubst(x, vars_) if is_re else subst(x, vars_)) for x in ([raw] if isinstance(raw, str) else raw)]
         ok, hit = False, None
         marks = dict(vars_.get("__marks") or {}, **rec.get("_marks", {}))
+        say_while = [x for x in (act.get("say_while") or []) if x.get("say")]
+        said = -1
         while True:
             for sc in scopes:
                 body = br.text(acct, sc)
@@ -746,6 +751,18 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
             waited = time.time() - t0 - paused
             if ok or waited >= budget:
                 break
+            if say_while and ctl is not None:
+                # 真的在等才講（5c）：等的東西已經到了就不會走到這裡；依序每句停 s 秒，最後一句留到等完
+                k_, acc = 0, 0.0
+                for k_, x in enumerate(say_while):
+                    acc += float(x.get("s", 8))
+                    if waited < acc:
+                        break
+                if k_ != said:
+                    said = k_
+                    ctl.publish(beat={"text": subst(say_while[k_]["say"], vars_), "i": k_ + 1, "n": len(say_while)},
+                                look=None)
+                    info.setdefault("said_while", []).append(round(waited, 1))
             if waited > 3:
                 ctl.publish(status="waiting_system", waited_s=int(waited),
                             wait_label=act.get("label") or st.get("wait_label") or "系統回應",
@@ -777,7 +794,13 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
             info["error"] = "畫面上沒有預期的元素"
     else:
         ok, info["error"] = False, "未知動作"
+    if not ok and act.get("timeout_say") and d in ("wait_text", "expect_absent") and ctl is not None:
+        # 等太久：不停掉整場（5c：自動模式說一句就往下；講者模式照舞台規則等下一步）；紀錄成「超時略過」
+        ctl.publish(beat={"text": subst(act["timeout_say"], vars_), "i": 1, "n": 1}, look=None)
+        info["timeout_skipped"] = True
+        time.sleep(float(act.get("timeout_say_s", 4)))
     info["ok"], info["ms"] = ok, int((time.time() - t0 - paused) * 1000)
+    info["t_end"] = round(time.time(), 2)                 # 絕對時間：量背景作業（送出到回覆出現、確認到提案出現）
     if pre + paused:
         info["paused_ms"] = int((pre + paused) * 1000)
     return ok, info
@@ -1497,7 +1520,8 @@ def execute(rb, mode, a):
                "recovered": [s["id"] for s in state["steps"] if s.get("recovered")],
                "failed": [s["id"] for s in state["steps"] if not s["ok"]],
                "durations": {s["id"]: s["dur_s"] for s in state["steps"]},
-               "paused_s": round(sum(s.get("paused_s", 0) for s in state["steps"]), 1), "stopped": stopped}
+               "paused_s": round(sum(s.get("paused_s", 0) for s in state["steps"]), 1), "stopped": stopped,
+               "timeouts_skipped": [s["id"] for s in state["steps"] if any(a.get("timeout_skipped") for a in s.get("actions") or [])]}
     if not persist:
         shutil.rmtree(run_dir, ignore_errors=True)
         summary["note"] = "demo.persist=off：一次性執行，紀錄已刪除"
