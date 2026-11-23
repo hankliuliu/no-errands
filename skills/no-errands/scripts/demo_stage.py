@@ -406,8 +406,16 @@ class Stage:
             self.shield.attributes("-alpha", SHIELD_ALPHA)
         except Exception:
             pass
-        for ev in ("<Button>", "<ButtonRelease>", "<MouseWheel>", "<Double-Button>"):
-            self.shield.bind(ev, lambda e: "break")
+        self.shield_rx = {"click": 0, "wheel": 0, "move": 0}      # 隔離層實際吃掉的真滑鼠訊息（診斷；頁面收到的必須是 0）
+
+        def eat(kind):
+            def f(e):
+                self.shield_rx[kind] += 1
+                return "break"
+            return f
+        for ev, kind in (("<Button>", "click"), ("<ButtonRelease>", None), ("<MouseWheel>", "wheel"), ("<Double-Button>", None),
+                         ("<Motion>", "move")):
+            self.shield.bind(ev, eat(kind) if kind else (lambda e: "break"))
         self.shield.withdraw()
         self.cursor_hidden = False
         # 示範游標（F-3）：畫出來的箭頭（色鍵透明、滑鼠穿透、不取得焦點）。系統游標完全不動。
@@ -1349,7 +1357,7 @@ class Stage:
                 "caption_plate": box(self.capbg), "caption_textwin": box(self.capw), "caption_pad": box(self.cappad), "xbtn": list(self.xbtn_rect()) if getattr(self, "_cap_shown", False) and self.xbtn_rect() else None, "x_shown": self._x_on, "hint_visible": bool(self.hintw.winfo_viewable()),
                 "caption_on": self.cap_on, "controls_rect": box(self.ctlw), "controls_want": list(getattr(self, "_ctl_xy", None) or []),
                 "controls_moves": getattr(self, "ctl_moves", 0), "controls_stuck": getattr(self, "_ctl_retry", 0) > 3,
-                "shield": box(self.shield), "pointer": [round(v) for v in self.ptr_pos] if self.ptr_pos and self.ptrw.winfo_viewable() else None,
+                "shield": box(self.shield), "shield_rx": dict(self.shield_rx), "pointer": [round(v) for v in self.ptr_pos] if self.ptr_pos and self.ptrw.winfo_viewable() else None,
                 "cursor_hidden": self.cursor_hidden, "ripple_on": self.ptrc.itemcget(self.ripple, "state") == "normal", "look_alpha": self.look_a if any(e.winfo_viewable() for e in self.edges) else 0,
                 "look_rect": list(self.look_rect) if getattr(self, "look_rect", None) else None,
                 "mask_rect": list(self.mask_rect) if getattr(self, "mask_rect", None) else None,
