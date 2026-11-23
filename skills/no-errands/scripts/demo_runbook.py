@@ -1468,7 +1468,7 @@ def execute(rb, mode, a):
         if staged and not (stopped and ("user_stop" in stopped or "stage_fit" in stopped or "stage_hang" in stopped)):
             # 片尾：停住讓講者可以回頭講；按「結束」由引擎自己還原，片尾卡顯示結果
             end = (rb.get("stage") or {}).get("end") or {}
-            ctl.publish(card="end", look=None, beat={"text": "", "i": 0, "n": 0},
+            ctl.publish(card="end", look=None, beat={"text": "", "i": 0, "n": 0}, role="", section="", pointer=None,
                         card_data={"heading": end.get("heading", "示範結束"), "text": end.get("text", ""),
                                    "points": end.get("points") or []})
             try:
@@ -1514,7 +1514,7 @@ def show_hang_notice(rb, run_dir, ctl, reset, hold_s=10.0, launch=True):
                                    stdin=subprocess.DEVNULL, stdout=lg, stderr=lg,
                                    env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8"))
         ok_ = bool(reset.get("ok"))
-        ctl.publish(status="running", card="end", look=None, pointer=None, beat={"text": "", "i": 0, "n": 0},
+        ctl.publish(status="running", card="end", look=None, pointer=None, beat={"text": "", "i": 0, "n": 0}, role="", section="",
                     card_data={"heading": "示範中斷：畫面卡住，已自動收起",
                                "text": "不是操作造成的。可以改放備案畫面接著講。",
                                "points": [], "reset": "資料已還原" if ok_ else "還原沒有成功：請 agent 處理",

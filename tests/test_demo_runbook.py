@@ -794,6 +794,8 @@ def main():
                 time.sleep(0.5)
             n = now_of(rds_)
             check("舞台：跑完停在片尾卡（講者可以回頭講）", n.get("card") == "end" and (n.get("card_data") or {}).get("heading") == "示範結束", n)
+            check("片尾卡：角色帶不再顯示上一步的角色與段落（5c：片尾時還寫著「長官 知識更新」）",
+                  n.get("role") == "" and n.get("section") == "", (n.get("role"), n.get("section")))
             rbj("control", rds_, "next")
             n = wait_for(rds_, lambda n: n.get("status") == "closing", 30)
             rj_ = json.load(open(os.path.join(rds_, "run.json"), encoding="utf-8")) if os.path.exists(os.path.join(rds_, "run.json")) else {}
