@@ -600,6 +600,7 @@ def presenter_controls_checks():
     """講者最常用的動作，用測試機上真實的輸入驗（5c：本機只能用訊息，必須有地方真的點過）：
     鍵盤 →、PageDown 前進、空白暫停／繼續（keybd_event）；滑鼠點「下一步」前進、點「⋯」→「結束示範」進片尾（mouse_event）；
     別的程式先佔了 PageDown → 舞台記下註冊失敗、畫面上說「被別的程式佔用」。"""
+    import ctypes
     from ctypes import wintypes
     u = ctypes.windll.user32
     u.SendMessageW.restype = ctypes.c_void_p
