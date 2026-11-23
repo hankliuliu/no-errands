@@ -459,6 +459,24 @@ def number(notes):
 
 
 # ---------------------------------------------------------------- 給人看的
+def range_facts(st, notes, short=False):
+    """記事本範圍的事實（不寫「只收到某日以後的」：最下面那則常常被切在畫面邊緣、看不到時間）。
+    回字串清單：有日期的最新～最舊一則；時間看不到的幾則；更舊的還沒擷取。"""
+    out = []
+    dated = sorted((n.get("posted_at") or "")[:10] for n in notes if n.get("posted_at"))
+    undated = [n for n in notes if not n.get("posted_at")]
+    if dated and not short:
+        out.append("有日期的從 %s 到 %s" % (dated[0], dated[-1]) if dated[0] != dated[-1] else "有日期的都是 %s" % dated[0])
+    if undated:
+        if len(undated) == 1 and (undated[0].get("split_incomplete") or undated[0].get("cut_bottom") or undated[0].get("cut_top")):
+            out.append("最舊的一則（最下面）被切在畫面邊緣，時間看不到")
+        else:
+            out.append("%d 則時間看不到（排在最下面）" % len(undated))
+    if st.get("older_not_captured"):
+        out.append("更舊的還沒擷取" + ("" if short else "，下次同步會接著往下補"))
+    return out
+
+
 def overview_line(tdir):
     """總覽裡記事本那一行（沒有收過 → None）。"""
     st = load_state(tdir)
@@ -471,37 +489,50 @@ def overview_line(tdir):
         parts.append("附圖 %d 張（照片預設不收，見未收清單）" % st["note_images"])
     if st.get("needs_review"):
         parts.append("待人看 %d 則" % st["needs_review"])
-    if st.get("older_not_captured"):
-        parts.append("只收到 %s 以後的，更舊的還沒擷取" % (st.get("oldest_captured") or "最近幾則"))
+    parts += range_facts(st, load_notes(tdir), short=True)
     if st.get("expired_shots"):
         parts.append("有一段擷取後沒轉完（%d 張圖已過期清掉），那段未收" % st["expired_shots"])
     parts.append("留言不收")
     return "；".join(parts)
 
 
-def render_notes(tdir, title):
-    """給人讀的「記事本.md」：收下來的每一則，依時間由新到舊；沒有收過記事本 → None（不寫檔）。
-    內容只在本機的收集資料夾。"""
+def _link_target(path, from_dir):
+    """Markdown 連結目標：能用相對路徑就用相對的（斜線），跨磁碟機時用絕對路徑；一律包在 <> 裡（路徑可能有空白）。"""
+    try:
+        rel = os.path.relpath(path, from_dir).replace(os.sep, "/")
+    except ValueError:
+        rel = os.path.abspath(path).replace(os.sep, "/")
+    return "<%s>" % rel
+
+
+def render_notes(tdir, title, from_dir=None):
+    """給人讀的「記事本.md」：收下來的每一則，依時間由新到舊（時間看不到的排最後）；沒有收過記事本 → None（不寫檔）。
+    內容只在本機的收集資料夾。from_dir：這份檔案要放的資料夾（算回收集總覽的連結用）。"""
     st = load_state(tdir)
     notes = load_notes(tdir)
     if not notes and not st.get("last_run"):
         return None
     when = lambda n: n.get("posted_at") or ""
-    L = ["# 記事本：%s" % title, "",
+    overview = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(tdir))), "收集總覽.md")
+    L = ["[← 回收集總覽](%s)" % _link_target(overview, from_dir or os.path.join(tdir, "files")), "",
+         "# 記事本：%s" % title, "",
          "這裡是〈%s〉記事本收下來的內容，依時間由新到舊排列。內文是 AI 看圖轉寫的，可能有錯字，原文以 LINE 為準；記事本底下的留言不收。" % title,
          ""]
-    rng = "共 %d 則" % len(notes)
-    if st.get("older_not_captured"):
-        rng += "；只收到 %s 以後的，更舊的還沒擷取（下次同步會接著往下補）" % (st.get("oldest_captured") or "最近幾則")
+    rng = ["共 %d 則" % len(notes)] + range_facts(st, notes)
     if st.get("updated"):
-        rng += "；更新於 %s" % st["updated"]
-    L += [rng + "。", ""]
+        rng.append("更新於 %s" % st["updated"])
+    L += ["；".join(rng) + "。", ""]
     for n in sorted(notes, key=lambda x: (when(x), x.get("no") or 0), reverse=True):
-        head = "## 記事 %d · %s · %s" % (n.get("no") or 0, (when(n) or n.get("posted_at_raw") or "時間不明")[:16], n.get("author") or "作者不明")
+        head = "## %s · %s" % ((when(n) or "時間不明")[:16], n.get("author") or "作者不明")
         L += [head, ""]
         text = (n.get("text") or "").strip()
+        imgs = n.get("images") or 0
         if text:
             L += [line.rstrip() + "  " for line in text.splitlines()] + [""]   # 行尾兩個空白：保留原本的換行
+        elif imgs:
+            L += ["只有 %d 張照片（照片預設不收）" % imgs, ""]
+        elif n.get("stickers"):
+            L += ["只有貼圖", ""]
         else:
             L += ["（沒有文字）", ""]
         notes_ = []
@@ -509,12 +540,10 @@ def render_notes(tdir, title):
             notes_.append("這一則被切在兩張圖之間、沒能拼完整，上面只有看得到的部分")
         elif n.get("truncated"):
             notes_.append("內文未完整：畫面上只顯示前段（要在 LINE 按「顯示更多」才看得到全文）")
-        if n.get("images"):
-            notes_.append("附圖 %d 張（照片預設不收）" % n["images"])
+        if imgs and text:
+            notes_.append("附圖 %d 張（照片預設不收）" % imgs)
         if n.get("needs_review"):
             notes_.append("待人看：同一則在兩張圖上轉出來的字不一樣%s" % ("，另一個版本：「%s」" % n["alt_text"] if n.get("alt_text") else "，或那張圖的則數對不上"))
-        if n.get("split"):
-            notes_.append("這一則是由相鄰兩張截圖拼起來的")
         for x in notes_:
             L.append("- %s" % x)
         if notes_:
@@ -523,16 +552,16 @@ def render_notes(tdir, title):
 
 
 def write_readable(tdir, title, dest=None):
-    md = render_notes(tdir, title)
+    d = os.path.join(tdir, "files")
+    md = render_notes(tdir, title, d)
     if md is None:
         return None
-    d = os.path.join(tdir, "files")
     os.makedirs(d, exist_ok=True)
     open(os.path.join(d, "記事本.md"), "w", encoding="utf-8").write(md)
     if dest:
         dd = os.path.join(dest, "files")
         os.makedirs(dd, exist_ok=True)
-        open(os.path.join(dd, "記事本.md"), "w", encoding="utf-8").write(md)
+        open(os.path.join(dd, "記事本.md"), "w", encoding="utf-8").write(render_notes(tdir, title, dd))
     return os.path.join(d, "記事本.md")
 
 
@@ -543,8 +572,9 @@ def missing_section(tdir, notes=None):
     if not notes and not st.get("last_run") and not st.get("expired_shots"):
         return []
     L = ["## 記事本", "", "記事本的內文是 AI 看圖轉寫的，可能有錯字，原文以 LINE 為準。記事本底下的留言不收。", ""]
-    if st.get("older_not_captured"):
-        L += ["- 記事本只收到 %s 以後的，更舊的還沒擷取（下次同步會接著往下補）。" % (st.get("oldest_captured") or "最近幾則"), ""]
+    facts = range_facts(st, notes)
+    if facts:
+        L += ["- 記事本 %d 則：%s。" % (len(notes), "；".join(facts)), ""]
     if st.get("expired_shots"):
         L += ["- 有一段記事本擷取後沒轉完（%d 張圖過期清掉），那一段未收。" % st["expired_shots"], ""]
     trunc = [n for n in notes if n.get("truncated")]

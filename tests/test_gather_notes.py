@@ -248,9 +248,11 @@ try:
     check("7 總覽：記事本一行、公告還沒收", "- 記事本：1 則（由 AI 看圖轉寫；原文以 LINE 為準）" in ov and "- 公告：還沒收" in ov, ov[-500:])
     rd = os.path.join(tdir, "files", "記事本.md")
     rmd = open(rd, encoding="utf-8").read() if os.path.exists(rd) else ""
-    check("7 人讀的記事本.md：說明、則數、每則編號時間作者全文、未完整與附圖的註記", "AI 看圖轉寫" in rmd and "共 1 則" in rmd
-          and "## 記事 1 · 2026-11-20 10:00 · Ann" in rmd and "記事內容只進收集資料夾：全形冒號……" in rmd
+    check("7 人讀的記事本.md：說明、則數、每則時間作者全文、未完整與附圖的註記", "AI 看圖轉寫" in rmd and "共 1 則" in rmd
+          and "## 2026-11-20 10:00 · Ann" in rmd and "記事內容只進收集資料夾：全形冒號……" in rmd
           and "內文未完整" in rmd and "附圖 1 張" in rmd, rmd[:400])
+    check("7 記事本.md 標題不帶「記事 N」序號、沒有「拼起來」的過程註記", "## 記事 " not in rmd and "拼起來" not in rmd, rmd[:400])
+    check("7 記事本.md 第一行連回收集總覽（相對路徑）", rmd.splitlines()[0] == "[← 回收集總覽](<../../../收集總覽.md>)", rmd[:120])
     check("7 總覽的記事本那一行連到記事本.md", "[記事本](line/%s/files/記事本.md)" % tid in ov, ov[-400:])
     lg = open(os.path.join(home, "gather-ledger.jsonl"), encoding="utf-8").read()
     check("7 ledger 只有數字（不含內文）", "notes-add" in lg and "記事內容" not in lg)
@@ -264,6 +266,43 @@ try:
           and st["last_run"]["stop"] == "not-notes-tab" and len([l for l in open(os.path.join(tdir, "notes.jsonl"), encoding="utf-8") if l.strip()]) == 1, (o, st.get("last_run")))
 finally:
     shutil.rmtree(home, ignore_errors=True)
+
+# 8 記事本.md 的範圍說明與只有照片的記事（合成資料；不借真實內容）
+rd8 = tempfile.mkdtemp(prefix="ne-notes-render-")
+try:
+    t8 = os.path.join(rd8, "line", "abc123")
+    os.makedirs(t8)
+    gn.save_notes(t8, [
+        {"no": 1, "author": "Ann", "posted_at": "2026-03-02 09:00", "text": "測試甲", "images": 0},
+        {"no": 2, "author": "Bob", "posted_at": "2026-05-06 18:30", "text": "", "images": 3},
+        {"no": 3, "author": "Ann", "text": "被切開的測試乙", "split_incomplete": True, "truncated": True},
+        {"no": 4, "author": "Bob", "posted_at": "2026-04-01 12:00", "text": "測試丙", "images": 2, "split": True},
+    ])
+    gn.save_state(t8, {"older_not_captured": True, "oldest_captured": "2026-03-02", "notes": 4})
+    r8 = gn.render_notes(t8, "測試聊天室")
+    check("8 範圍講事實：有日期的最舊～最新、最下面那則被切到看不到時間、更舊的還沒擷取；不寫「只收到某日以後的」",
+          "有日期的從 2026-03-02 到 2026-05-06" in r8 and "最舊的一則（最下面）被切在畫面邊緣，時間看不到" in r8
+          and "更舊的還沒擷取，下次同步會接著往下補" in r8 and "以後的" not in r8, r8[:600])
+    heads = [l for l in r8.splitlines() if l.startswith("## ")]
+    check("8 標題是「時間 · 作者」、由新到舊、時間不明的排最後",
+          heads == ["## 2026-05-06 18:30 · Bob", "## 2026-04-01 12:00 · Bob", "## 2026-03-02 09:00 · Ann", "## 時間不明 · Ann"], heads)
+    check("8 只有照片：一行「只有 3 張照片」，不寫「（沒有文字）」也不再另列附圖", "只有 3 張照片（照片預設不收）" in r8
+          and "（沒有文字）" not in r8 and r8.count("附圖") == 1 and "附圖 2 張" in r8, r8)
+    check("8 拼起來的不註記；沒拼完整的照樣註記", "拼起來" not in r8 and "沒能拼完整" in r8, r8)
+    ms8 = "\n".join(gn.missing_section(t8))
+    check("8 未收清單的範圍句同一套事實；仍用穩定編號「記事 N」引用", "最舊的一則（最下面）被切在畫面邊緣" in ms8 and "以後的" not in ms8
+          and "| 記事 3 |" in ms8, ms8[:500])
+    ov8 = gn.overview_line(t8)
+    check("8 總覽一行：短版事實（不寫日期範圍與補抓說明）", "最舊的一則（最下面）被切在畫面邊緣，時間看不到" in ov8 and "更舊的還沒擷取" in ov8
+          and "以後的" not in ov8 and "下次同步" not in ov8, ov8)
+    dst8 = os.path.join(rd8, "elsewhere", "dest")
+    gn.write_readable(t8, "測試聊天室", dst8)
+    dmd = open(os.path.join(dst8, "files", "記事本.md"), encoding="utf-8").read()
+    check("8 dest 那份的回總覽連結指得到真的總覽（依它自己的位置算）",
+          os.path.normpath(os.path.join(dst8, "files", dmd.splitlines()[0].split("(<")[1].rstrip(">)"))) == os.path.normpath(os.path.join(rd8, "收集總覽.md")),
+          dmd.splitlines()[0])
+finally:
+    shutil.rmtree(rd8, ignore_errors=True)
 
 print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))
 sys.exit(0 if all(R) else 1)
