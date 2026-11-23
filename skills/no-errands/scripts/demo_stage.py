@@ -12,6 +12,8 @@
   外框：「看這裡」與「agent 動到的元素」，用元素位置畫在舞台上（四條細的置頂視窗），不往頁面注入東西。
   字幕帶（底部）：全寬、一拍一句、最多兩行；右端只有「下一步」「暫停」「⋯」與還剩幾句的小圓點。
   鍵盤／簡報筆：→、PageDown 下一步；空白鍵暫停／繼續（RegisterHotKey，不靠焦點；舞台結束就取消）。
+  講者一起操作：沒有隔離層，真滑鼠鍵盤直接到台上的頁面；示範瀏覽器有鍵盤焦點時 →、空白、C 讓給頁面（打字用），
+  PageDown 與 Ctrl+Shift+F12 一直有效。
 now.json 用到的欄位：status、card（title|checklist|transition|end|None）、card_data、account、role、role_color、
   section、crop、zoom、beat（{text,i,n}）、look（{box:[x,y,w,h] CSS}）、slow_s、waited_s、slow_say、planb、replay、
   title、accounts（{帳號:{role,color}}）。
@@ -443,6 +445,7 @@ class Stage:
             self.shield.attributes("-alpha", SHIELD_ALPHA)
         except Exception:
             pass
+        self.browser_hwnds, self.keys_yield = frozenset(), False   # 示範瀏覽器的視窗（熱鍵執行緒判斷鍵盤焦點在不在頁面上）
         self.shield_rx = {"click": 0, "wheel": 0, "move": 0}      # 隔離層實際吃掉的真滑鼠訊息（診斷；頁面收到的必須是 0）
 
         def eat(kind):
@@ -890,7 +893,29 @@ class Stage:
             if bad:                                        # 別的程式先註冊了同一個鍵：舞台收不到——畫面上說清楚，請改用按鈕
                 self._hk_warn = "%s 被別的程式佔用，按了不會有反應：請用右下角的按鈕" % "、".join(bad)
             msg = wintypes.MSG()
-            while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            typing_keys, held_ = (1, 3, 5), {1, 3, 5}
+            while True:
+                # 講者一起操作（使用者 11-24 03:4x）：示範瀏覽器有鍵盤焦點時，會被打進輸入框的鍵（→、空白、C）
+                # 不攔，讓他在頁面上打字；焦點回到別處再接回來。PageDown（簡報筆）與 Ctrl+Shift+F12 一直有效。
+                fg_ = u32.GetForegroundWindow()
+                in_page = bool(fg_) and (fg_ in self.browser_hwnds or u32.GetAncestor(fg_, 2) in self.browser_hwnds)
+                if in_page and held_:
+                    for i in typing_keys:
+                        u32.UnregisterHotKey(None, i)
+                    held_ = set()
+                elif not in_page and not held_:
+                    for i in typing_keys:
+                        mod, vk = keys[i]
+                        if u32.RegisterHotKey(None, i, 0x4000 | mod, vk):
+                            held_.add(i)
+                    if not held_:
+                        held_ = {0}                        # 被別的程式佔走：不要每 0.1 秒重試
+                self.keys_yield = in_page
+                if not u32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):      # PM_REMOVE
+                    u32.MsgWaitForMultipleObjects(0, None, False, 100, 0x04FF)    # QS_ALLINPUT；最多 0.1 秒看一次前景
+                    continue
+                if msg.message == 0x0012:                  # WM_QUIT
+                    break
                 if msg.message == 0x0312:                  # WM_HOTKEY
                     if msg.wParam in (1, 2):
                         self.root.after(0, self.next)
@@ -937,6 +962,8 @@ class Stage:
             h = self.win_of(acct, info.get("profile"))
             if not h:
                 continue
+            if h not in self.browser_hwnds:
+                self.browser_hwnds = self.browser_hwnds | {h}     # 熱鍵執行緒讀（換成新的集合，不在原物件上改）
             if acct != active:
                 if self.placed.get(acct) != "off":
                     if active and not probe and not self.active_ready() and time.time() - getattr(self, "_switch_t", 0) < 3:
@@ -1020,7 +1047,7 @@ class Stage:
         鍵盤焦點：前景變成我們的瀏覽器時拿回舞台（使用者按鍵不會打進頁面）。"""
         fx = now.get("effects") or {}
         on = bool(not now.get("card") and now.get("account") and self.placed.get(now.get("account")) not in (None, "off")
-                  and fx.get("shield", True))
+                  and fx.get("shield", False))
         if on:
             sx, sy, sw, sh = self.lay["stage"]
             g = "%dx%d+%d+%d" % (sw, sh, sx, sy)
@@ -1597,7 +1624,7 @@ class Stage:
         names = {}
         for n, w in (("hint", self.hintw), ("controls", self.ctlw), ("pad", self.cappad), ("captext", self.capw),
                      ("plate", self.capbg), ("band", self.band), ("mask", self.maskw), ("backdrop", self.root),
-                     ("shield", self.shield), ("pointer", self.ptrw)):
+                     ("shield", self.shield), ("pointer", self.ptrw), ("badge", self.badgew)):
             try:
                 names[int(w.frame(), 16)] = n
             except Exception:
@@ -1620,7 +1647,7 @@ class Stage:
     def geom(self):
         box = lambda w: [w.winfo_x(), w.winfo_y(), w.winfo_width(), w.winfo_height()] if w.winfo_viewable() else None
         acct_ = self.now.get("account")
-        return {"z_order": self.z_order(), "errors": getattr(self, "errors", 0), "cap_resyncs": getattr(self, "cap_resyncs", 0),
+        return {"z_order": self.z_order(), "keys_yield": bool(getattr(self, "keys_yield", False)), "errors": getattr(self, "errors", 0), "cap_resyncs": getattr(self, "cap_resyncs", 0),
                 "ptr_dbg": {"seq": self.ptr_seq, "shown": getattr(self, "_ptr_shown", False), "pos": self.ptr_pos,
                             "placed": self.placed.get(acct_) if acct_ else None, "now_seq": (self.now.get("pointer") or {}).get("seq")},
                 "cap_btn": [self.b_cap.winfo_rootx() + self.b_cap.winfo_width() // 2, self.b_cap.winfo_rooty() + self.b_cap.winfo_height() // 2]
