@@ -299,6 +299,49 @@ check("電腦鎖定時：操作中的檢查中止並講明原因", _ci_ok)
 import inspect as _ins2  # noqa: E402
 check("記事本擷取中途被鎖定：stop=locked、圖全丟（在丟圖的清單裡）", '"wrong_chat", "no_overlap", "locked"' in _ins2.getsource(cg.cmd_notes))
 check("記事本目標資料夾：名稱帶不帶人數都對到 gather 那個目標", _tid_ok)
+
+# wishes 第 3 項：什麼時候動手（立刻／等你離開）。立刻與觀看都不等閒置，但使用者一動就讓開的監看照樣開著
+_saved = (_idle.screen_signals, _idle.screen_unavailable, _idle.single_lock_signal, _idle.idle_seconds)
+try:
+    _idle.screen_signals = lambda: {}
+    _idle.screen_unavailable = lambda sig=None: None
+    _idle.single_lock_signal = lambda sig: False
+    _idle.idle_seconds = lambda: 2.0          # 使用者兩秒前才動過
+    _res = {}
+    for _name, _pol in (("預設（等離開）", {"busy_behavior": "wait_idle", "idle_min_s": 180}),
+                        ("立刻", {"busy_behavior": "wait_idle", "idle_min_s": 180, "start_when": "now"}),
+                        ("觀看", {"busy_behavior": "wait_idle", "idle_min_s": 180, "visibility": "watch"})):
+        cg.WATCH.update({"watch": None, "win": None, "tripped": False})
+        try:
+            cg.idle_gate({"raises_foreground": True}, _pol, [])
+            _res[_name] = ("過", cg.WATCH.get("watch") is not None)
+        except cg.Refused as _e:
+            _res[_name] = ("擋", str(_e)[:30])
+        cg.WATCH.update({"watch": None, "win": None, "tripped": False})
+    _idle.screen_unavailable = lambda sig=None: "電腦目前鎖定中（測試）"
+    try:
+        cg.idle_gate({"raises_foreground": True}, {"start_when": "now"}, []); _lock_now = False
+    except cg.Refused as _e:
+        _lock_now = "鎖定" in str(_e)
+finally:
+    _idle.screen_signals, _idle.screen_unavailable, _idle.single_lock_signal, _idle.idle_seconds = _saved
+    cg.WATCH.update({"watch": None, "win": None, "tripped": False})
+check("預設仍是等使用者離開（他兩秒前還在動 → 擋）", _res["預設（等離開）"][0] == "擋", _res)
+check("設成立刻：不等閒置就開始，而且「他一動就讓開」的監看開著", _res["立刻"] == ("過", True), _res)
+check("觀看模式：不等閒置，監看也開著（以前觀看模式會連監看一起跳過）", _res["觀看"] == ("過", True), _res)
+check("設成立刻也不在鎖定時操作", _lock_now)
+_ph = tempfile.mkdtemp(prefix="ne-pol-sw-")
+try:
+    _env = dict(os.environ, NO_ERRANDS_HOME=_ph, PYTHONIOENCODING="utf-8")
+    _pp = os.path.join(os.path.dirname(cg.__file__), "policy.py")
+    _r1 = subprocess.run([sys.executable, _pp, "set", "start_when", "now", "--reason", "測試"], capture_output=True, text=True, env=_env)
+    _r2 = subprocess.run([sys.executable, _pp, "set", "start_when", "always", "--reason", "測試"], capture_output=True, text=True, env=_env)
+    _pj = _js.load(open(os.path.join(_ph, "policy.json"), encoding="utf-8"))
+    check("policy.py set start_when now 寫進政策檔；不認得的值拒絕", _r1.returncode == 0 and _pj.get("start_when") == "now"
+          and _r2.returncode != 0, (_r1.stdout[-200:], _r2.stdout[-200:], _pj.get("start_when")))
+    check("政策摘要說明會跳到前面的操作什麼時候動手", "立刻（你一動就讓開）" in policy.summary(_pj), policy.summary(_pj))
+finally:
+    _sh.rmtree(_ph, ignore_errors=True)
 check("記事本目標資料夾：gather 沒有這個目標 → 和 gather 同一個算法", _tid_fb)
 import inspect as _ins  # noqa: E402
 check("記事本擷取的逾時有硬上限 180 秒（參數繞不過）、張數硬上限 40", cg.NOTES_TIMEOUT_MAX_S == 180 and cg.NOTES_HARD_MAX == 40

@@ -63,6 +63,8 @@ DEFAULTS = {
     # 會搶前景的步驟何時可以做：wait_idle（預設：使用者閒置滿 idle_min_s 秒才做，途中他一動就中止交還）｜ask（先問）
     "busy_behavior": "wait_idle",
     "idle_min_s": 180,
+    # 什麼時候動手（wishes 第 3 項）：idle（預設：等使用者離開）｜now（立刻；使用者一動照樣讓開、縮小交還）
+    "start_when": "idle",
     "outbox": {"port": 8765},
     # 示範劇本（demo_runbook.py）：persist=off → 一次性（不留紀錄、不改劇本）；learn=off → 不提出劇本修改
     # learn=auto → 提出的調整自動套用（凍結的劇本除外）
@@ -277,8 +279,9 @@ def summary(pol):
     wl = len(pol.get("chat", {}).get("whitelist", []))
     vis = {"background": "背景（不搶焦點）", "watch": "觀看模式（操作可見，會搶焦點）"}.get(
         pol.get("visibility"), pol.get("visibility"))
-    return "已授權的個人帳號：%s｜未讀保護：%s（白名單 %d 個對話）｜可見度：%s" % (
-        apps, "開" if up == "on" else "關", wl, vis)
+    sw = "立刻（你一動就讓開）" if pol.get("start_when") == "now" else "等你離開"
+    return "已授權的個人帳號：%s｜未讀保護：%s（白名單 %d 個對話）｜可見度：%s｜會跳到前面的操作：%s" % (
+        apps, "開" if up == "on" else "關", wl, vis, sw)
 
 
 def _ledger(home, action, detail, reason):
@@ -339,6 +342,8 @@ def main(argv=None):
         pol["chat"]["unread_protection"] = a[2]; detail = {"unread_protection": a[2]}
     elif cmd == "set" and len(a) == 3 and a[1] == "visibility" and a[2] in ("background", "watch"):
         pol["visibility"] = a[2]; detail = {"visibility": a[2]}
+    elif cmd == "set" and len(a) == 3 and a[1] == "start_when" and a[2] in ("idle", "now"):
+        pol["start_when"] = a[2]; detail = {"start_when": a[2]}
     elif cmd == "set" and len(a) == 3 and a[1] == "demo.persist" and a[2] in ("on", "off"):
         pol.setdefault("demo", {})["persist"] = a[2]; detail = {"demo.persist": a[2]}
     elif cmd == "set" and len(a) == 3 and a[1] == "demo.learn" and a[2] in ("propose", "auto", "off"):
