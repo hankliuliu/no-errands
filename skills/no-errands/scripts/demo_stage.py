@@ -529,6 +529,15 @@ class Stage:
         ended = now.get("ended")
         role, col = now.get("role") or "", now.get("role_color") or ACCENT
         prep = now.get("card") == "checklist"
+        if role and not ended and not prep:
+            # 標記跟著畫面上真正顯示的頁面（5c 11-24：換角色那一格標記不見）：新帳號的頁面還沒換上來之前顯示舊角色，
+            # 換上來（在背板之上就位）的那一格才換成新角色；標記本身一直在
+            acct_ = now.get("account")
+            old_ = getattr(self, "_badge_acct", None)
+            if old_ not in (None, acct_) and getattr(self, "outgoing", None) and not self.active_ready():
+                role, col = self._badge_role, self._badge_col
+            else:
+                self._badge_acct, self._badge_role, self._badge_col = acct_, role, col
         show = (not now.get("card") and bool(role or ended)) or prep
         detail_t = ""
         if prep:
