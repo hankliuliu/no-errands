@@ -417,7 +417,7 @@ check("H2 標記在疊加視窗的上下順序清單裡、滑鼠穿透", "self.b
 check("H3 游標直線移動（沒有弧線）、不淡入、沒有漣漪", "pointer_path(p0, p1, t, bend=0.0)" in _src and '"-alpha", max(0.05, fa)' not in _src
       and 'itemconfigure(self.ripple, state="normal")' not in _src, "")
 check("H1 準備期間不蓋背板：背板透明、滑鼠穿透，右上角小面板；瀏覽器開在螢幕外、試擺在螢幕外量",
-      "def backdrop_mode" in _src and "PROBE_DX" in _src and "STAGED_OFF_X" in _eng and '"準備中 %d/%d"' in _src, "")
+      "def backdrop_mode" in _src and "PROBE_EDGE" in _src and "(2 - w_, y_, w_, h_)" in _eng and '"準備中 %d/%d"' in _src, "")
 check("同時只能有一組舞台：啟動時叫別的舞台停", "def stop_other_stages" in _src and "replaced_by_new_stage" in _src, "")
 check("H3 外框、遮罩從不顯示", "e.deiconify()" not in _src and "self.maskw.deiconify()" not in _src, "")
 check("H3 直線：pointer_path(bend=0) 的中點就在兩點連線上",

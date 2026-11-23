@@ -32,7 +32,8 @@ CURSOR_IDLE_S = 2.0                                     # 真的游標在舞台�
 PTR_KEY = "#010204"                                     # 示範游標視窗的透明色鍵
 FONT = "Microsoft JhengHei UI"
 OFF = -32000                                            # 移到螢幕外
-PROBE_DX = -12000                                       # 試擺：照舞台的大小擺在螢幕外量（準備期間不蓋背板，觀眾看不到）
+PROBE_EDGE = 2                                          # 試擺：照舞台的大小擺在螢幕左邊外面，只留 2 像素在螢幕上（Chrome 才不會判定
+                                                         # 整個看不到而不畫頁面）；準備期間不蓋背板，觀眾幾乎看不到
 EXIT_HINT = "要離開這個畫面：按 Esc 或 Ctrl+Shift+F12，或雙擊背景"
 TIME_SHORT_HINT = "時間不夠時：右下角「⋯」→「結束示範」，停在當下的畫面並還原資料"
 BADGE_ALPHA = 0.85                                       # 右上角標記的底（半透明；字是白的、看得清楚）
@@ -230,13 +231,15 @@ def top_window(pids):
 
 def content_rect(hwnd):
     """頁面可視區（Chrome_RenderWidgetHostHWND）的螢幕矩形。"""
-    found = []
+    found, hidden = [], []
 
     def f(h, _):
-        if _cls(h) == "Chrome_RenderWidgetHostHWND" and u32.IsWindowVisible(h):
-            found.append(_rect(h))
+        if _cls(h) == "Chrome_RenderWidgetHostHWND":
+            (found if u32.IsWindowVisible(h) else hidden).append(_rect(h))
         return True
     u32.EnumChildWindows(hwnd, EnumProc(f), 0)
+    # 試擺幾乎全在螢幕外時，Chrome 可能把頁面那一層藏起來（判定看不到）；它的位置大小照樣是對的，量得出殼的大小
+    found = found or hidden
     return max(found, key=lambda r: r[2] * r[3]) if found else None
 
 
@@ -951,7 +954,9 @@ class Stage:
                 continue
             x, y, w, hh = L.browser_rect(self.lay["stage"], shell, crop, float(now.get("zoom") or 1.5), dpr_of(h))
             if probe:
-                x += PROBE_DX                                  # 試擺在螢幕外（大小照舞台）：準備期間不蓋背板，觀眾看不到
+                dx_ = (PROBE_EDGE - w) - x                     # 試擺在螢幕左邊外面（大小照舞台）：準備期間不蓋背板
+                x += dx_
+                self.__dict__.setdefault("probe_dx", {})[acct] = dx_
             # 上台：只移動、改大小，不動上下順序（SWP_NOZORDER），接著的 restack 才把它插到我們的視窗下面——
             # 先置頂再重排的那一瞬間，瀏覽器的分頁列與網址列會蓋在最上面（排練 13:22：換成長官後露出 0.2 秒）
             # 0x4000＝SWP_ASYNCWINDOWPOS（A35）：只送出、不等瀏覽器的訊息迴圈——瀏覽器忙或沒回應時舞台照常更新
@@ -976,7 +981,8 @@ class Stage:
             wr, cr = _rect(h), content_rect(h)
             err = L.placement_error(self.want.get(acct), wr)
             if probe and cr:
-                cr = (cr[0] - PROBE_DX, cr[1], cr[2], cr[3])   # 螢幕外試擺：換回舞台座標再判斷貼齊
+                dx_ = (getattr(self, "probe_dx", {}) or {}).get(acct, 0)
+                cr = (cr[0] - dx_, cr[1], cr[2], cr[3])        # 螢幕外試擺：換回舞台座標再判斷貼齊
             fit = L.fit_report((self.W, self.H), self.lay["stage"], cr)
             rec.update(window=list(wr), want=list(self.want.get(acct) or []), content=list(cr) if cr else None,
                        placement_error=err, fit=fit, replaced=self.replaced)
