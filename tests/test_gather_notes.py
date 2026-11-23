@@ -246,6 +246,12 @@ try:
     check("7 清單開頭：附件數字之後才說最後一節是記事本（數字不會被看成記事本的）", "）；最後一節是記事本。" in md and "還沒收下來的照片、影片和檔案（已收 0、未收 1）" in md and chr(1) not in md, md[:300])
     ov = open(os.path.join(home, "gather", "收集總覽.md"), encoding="utf-8").read()
     check("7 總覽：記事本一行、公告還沒收", "- 記事本：1 則（由 AI 看圖轉寫；原文以 LINE 為準）" in ov and "- 公告：還沒收" in ov, ov[-500:])
+    rd = os.path.join(tdir, "files", "記事本.md")
+    rmd = open(rd, encoding="utf-8").read() if os.path.exists(rd) else ""
+    check("7 人讀的記事本.md：說明、則數、每則編號時間作者全文、未完整與附圖的註記", "AI 看圖轉寫" in rmd and "共 1 則" in rmd
+          and "## 記事 1 · 2026-11-20 10:00 · Ann" in rmd and "記事內容只進收集資料夾：全形冒號……" in rmd
+          and "內文未完整" in rmd and "附圖 1 張" in rmd, rmd[:400])
+    check("7 總覽的記事本那一行連到記事本.md", "[記事本](line/%s/files/記事本.md)" % tid in ov, ov[-400:])
     lg = open(os.path.join(home, "gather-ledger.jsonl"), encoding="utf-8").read()
     check("7 ledger 只有數字（不含內文）", "notes-add" in lg and "記事內容" not in lg)
     o, rc = g("read", "--target", tid)

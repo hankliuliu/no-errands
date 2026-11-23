@@ -584,7 +584,9 @@ def write_overview():
         gaps = st.get("gaps") or []
         L.append("- 缺口：%s" % ("無" if not gaps else "%d 處（中間有訊息沒接上，見 gather.py status）" % len(gaps)))
         if t["service"] == "line":
-            L.append("- 記事本：%s" % (gn.overview_line(d) or "還沒收"))
+            nl = gn.overview_line(d)
+            link = (" → [記事本](%s/%s/files/記事本.md)" % (t["service"], tid)) if nl and os.path.exists(os.path.join(d, "files", "記事本.md")) else ""
+            L.append("- 記事本：%s%s" % (nl or "還沒收", link))
             L.append("- 公告：還沒收（收集尚未完成）")
         else:
             L.append("- 公告：頻道標題%s、釘選 %d 則" % ("有" if ann.get("header") else "無", len(ann.get("pinned") or [])))
