@@ -655,16 +655,21 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
             ref, used = br.find(acct, act["target"], reuse=first_try)   # 第一次可以沿用拍子剛找到的目標；重試一律重新找
             first_try = False
             info.pop("error", None)
+            t_act = time.time()
             if ref and getattr(br, "look", None) is not None:
                 paused += br.look.act(acct, "@" + ref, press=d in ("click", "check")) or 0.0   # 舞台：示範游標移過去、按下效果
             if ref:
+                info["t_ms"] = {"find": int((t_act - t0) * 1000), "pointer_ready": int((time.time() - t0) * 1000)}
                 info["used"] = used
                 cmd = [d, "@" + ref] + ([subst(act["text"], vars_)] if d == "fill" else [])
                 # 舞台：逐步輸入（守門自己切段、每段前後讀回；暫停時停在原地、繼續時接著打）
                 prog = d == "fill" and getattr(br, "look", None) is not None and getattr(ctl, "dir", None)                     and effects_of(rb)["typing"]
                 if prog:
                     cmd += ["--progressive", "--pace-file", os.path.join(ctl.dir, "control.json")]
+                t_neb = time.time()
                 rc, o, e = br.neb(acct, *cmd, approval=approval, step=st["id"], timeout=7200 if prog else 90)
+                info["t_ms"]["neb_start"] = int((t_neb - t0) * 1000)        # 量 A34：游標到位 → 送出 → 守門返回
+                info["t_ms"]["neb_end"] = int((time.time() - t0) * 1000)
                 if prog:
                     for line in reversed((o or "").strip().splitlines()):
                         try:
@@ -937,8 +942,7 @@ class Look:
             x, y = box[0] + min(36, box[2] / 2), box[1] + box[3] / 2   # 輸入框：指在框內左側
         pz = self.wait(self.point(x, y) + 0.2)
         if press:
-            pz += self.press()
-            pz += self.wait(0.12)                                # 漣漪畫出來之後再停一下，才點擊
+            pz += self.press()                                   # 舞台回報漣漪已畫出 → 立刻送出點擊（5c A34：到位到頁面反應 1 秒內）
         return pz
 
     def set(self, acct, sel, scroll=True):
@@ -1400,8 +1404,11 @@ def execute(rb, mode, a):
     try:
         if mode == "live" and ctl.read().get("hold_first") and i == lo:
             # 上場前準備（standby）：先把每個帳號的瀏覽器開到它第一步要用的頁面，停在「按下一步開始」
+            # 片頭從第一刻就完整（副標、模式）——準備階段也是觀眾會看到的畫面（5c：擷取裡有一格片頭少了副標與模式）
             ctl.publish(step_index=0, status="staging", captions=[{"text": "準備畫面中…", "s": 60}],
-                        card="title" if staged else None)
+                        card="title" if staged else None,
+                        card_data={"subtitle": (rb.get("stage") or {}).get("subtitle", ""),
+                                   "mode": "按下一步前進" if ctl.step_mode() else "自動播放"} if staged else None)
             home = rb["target"]["base_url"].rstrip("/") + rb["target"].get("home_path", "/")
             for acct in rb["accounts"]:
                 br.ensure(acct)
