@@ -367,7 +367,13 @@ def real_chrome_checks(stage_with):
     r = fit_ok(d, True)
     check("A1 試擺（背板下面）：頁面貼齊螢幕底邊、舞台沒有空白帶", r and r.get("ok"), r)
     ex = u.GetWindowLongW(h, -20)
-    check("試擺時瀏覽器不置頂（在背板下面，觀眾看不到）", not (ex & 0x8), hex(ex))
+    check("試擺時瀏覽器不置頂", not (ex & 0x8), hex(ex))
+    wr_ = DS._rect(h)
+    check("H1 試擺在螢幕外（準備期間不蓋背板，觀眾看不到開視窗與試擺）", wr_[0] + wr_[2] <= 0 or wr_[0] >= W, wr_)
+    gp_ = rd(os.path.join(d, "stage_geom.json"))
+    check("H1／A48 準備期間背板是透明的（沒有深色整頁），右上角是「準備中」的小面板",
+          gp_.get("backdrop_shown") is False and "準備中" in ((gp_.get("badge_text") or ["", ""])[1]) and gp_.get("badge")
+          and gp_["badge"][2] < W * 0.5 and gp_["badge"][3] < H * 0.3, (gp_.get("backdrop_shown"), gp_.get("badge_text"), gp_.get("badge")))
     shot_png("stage-shot-1-probe.png")
     json.dump({"status": "closing"}, open(os.path.join(d, "now.json"), "w"))
     try:

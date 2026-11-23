@@ -490,6 +490,9 @@ def layout_of(rb):
     return {"windows": wins, "bar": (0, win_h, sw, bar_h), "screen": (sw, sh), "mode": lay.get("mode", "side")}
 
 
+STAGED_OFF_X = -12000                                    # 舞台模式：瀏覽器開在螢幕外（x）
+
+
 class Browser:
     def __init__(self, rb, headed, log):
         self.rb, self.headed, self.log = rb, headed, log
@@ -1378,6 +1381,11 @@ def execute(rb, mode, a):
     replay = rb.get("replay")
     replay = (replay if os.path.isabs(replay) else os.path.join(rb["_dir"], replay)) if replay else None
     staged = mode == "live" and stage_on(rb)
+    if staged and br.layout:
+        # Sprint H1（5c 11-24：整場不可以出現任何深色整頁，準備期間也不蓋背板）：舞台模式的瀏覽器開在螢幕外，
+        # 觀眾不會看到開視窗的過程；上台、試擺都由舞台擺（試擺也在螢幕外量）
+        for a_, (x_, y_, w_, h_) in list(br.layout["windows"].items()):
+            br.layout["windows"][a_] = (STAGED_OFF_X, y_, w_, h_)
     if staged:
         br.look = Look(br, ctl, align=(rb.get("stage") or {}).get("align"), effects=effects_of(rb))
         ctl.publish(effects=effects_of(rb))
