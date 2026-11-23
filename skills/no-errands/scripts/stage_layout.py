@@ -17,10 +17,11 @@ MAX_CAPTION_LINES = 2
 def layout(W, H):
     """回各區塊的矩形 (x, y, w, h) 與字級（像素）。Sprint F-2：沒有固定字幕帶——頁面用到角色帶以下的整個高度；
     字幕是浮在舞台上的小方塊（大小跟著文字），控制列是右下角一小塊。"""
-    band_h = max(40, round(H * 0.06))
+    # Sprint G（使用者：不可以有任何固定佔位的額外東西）：沒有角色帶——頁面貼齊螢幕四邊；角色與段落在字幕上方的一小列
+    band_h = 0
     pad = max(16, round(W * 0.017))
     cap_font = max(18, round(H * 0.025))                 # 1200 高→30、1080→27
-    stage = (0, band_h, W, H - band_h)
+    stage = (0, 0, W, H)
     ctl_w, ctl_h = max(260, round(W * 0.2)), max(44, round(H * 0.05))
     return {
         "screen": (W, H),
@@ -31,8 +32,8 @@ def layout(W, H):
         "cap_line_h": round(cap_font * 1.35),
         "cap_pad": max(8, round(cap_font * 0.45)),
         "cap_max_w": round(W * 0.62),
-        "cap_bottom": band_h + round((H - band_h) * 0.93),
-        "band_font": max(16, round(band_h * 0.44)),
+        "cap_bottom": round(H * 0.93),
+        "band_font": max(13, round(cap_font * 0.55)),     # 字幕上方那一小列（角色、段落、等待計時）的字級：字幕的 0.55
         "ctl_font": max(12, round(H * 0.0167)),
         "pad": pad,
     }

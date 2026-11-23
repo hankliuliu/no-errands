@@ -308,18 +308,10 @@ class Stage:
         self.card.pack(fill="both", expand=True)
         self.card.bind("<Double-Button-1>", lambda e: self.drop("double_click"))   # 使用者自己的出口：雙擊背板
         r.bind_all("<Escape>", lambda e: self.drop("esc"))                        # 舞台有焦點時按 Esc（不攔全域）
-        # 角色帶
-        self.band = self._top(*lay["band"])
-        self.band.configure(bg="#11151d")
-        bf = lay["band_font"]
-        self.chip = tk.Label(self.band, text="", font=(FONT, px(bf), "bold"), fg="#fff", bg=ACCENT, padx=bf // 1.5)
-        self.chip.pack(side="left", padx=(lay["pad"], 14), pady=6)
-        self.sect = tk.Label(self.band, text="", font=(FONT, px(int(bf * 0.8))), fg=DIM, bg="#11151d")
-        self.sect.pack(side="left")
-        self.where = tk.Label(self.band, text="", font=(FONT, px(int(bf * 0.62))), fg=DIM, bg="#11151d")
-        self.where.pack(side="right", padx=lay["pad"])        # 「5 / 13 · 現場操作」：這是現場操作，不是錄影
-        self.rule = tk.Frame(self.band, height=3, bg=ACCENT)
-        self.rule.place(relx=0, rely=1.0, anchor="sw", relwidth=1.0)
+        # 角色帶（Sprint G 起不再顯示：使用者「不可以有任何固定佔位的額外東西」）。保留一個永遠收起的視窗，
+        # 讓舊的上下順序清單不必跟著改名；角色、段落、等待計時改在字幕上方的一小列（見字幕塊）
+        self.band = self._top(0, 0, 1, 1)
+        self.band.withdraw()
         # 字幕塊（Sprint F-2）：浮在頁面上、大小跟著文字、可拖、可關。兩層視窗疊在同一個位置：
         #   底板 capbg：黑色、整窗 CAP_ALPHA 透明度（看得到底下的頁面）、圓角（SetWindowRgn）
         #   字   capw ：色鍵透明（KEY 色的像素完全透明、點擊穿到底板），字本身完全不透明 → 白字清楚
@@ -339,9 +331,23 @@ class Stage:
         except Exception:
             pass
         cp = lay["cap_pad"]
-        self.cap = tk.Label(self.capw, text="", font=(FONT, px(lay["cap_font"]), "bold"), fg=FG, bg=KEY,
+        # 字幕組（Sprint G）：上方一小列（角色色塊＋段落小字＋等待計時）＋字幕本身，同一個浮動物件——一起拖、關、換位置。
+        # 小列的字級是字幕的 0.55、段落與計時用暗灰：看得出是誰在操作，但不比字幕搶眼
+        bf = lay["band_font"]
+        self.capbox = tk.Frame(self.capw, bg=KEY)
+        self.capbox.pack(side="left", anchor="n")
+        self.caphdr = tk.Frame(self.capbox, bg=KEY)
+        self.caphdr.pack(side="top", anchor="w", padx=cp, pady=(max(4, cp // 2), 0))
+        self.chip = tk.Label(self.caphdr, text="", font=(FONT, px(bf), "bold"), fg="#fff", bg=ACCENT, padx=max(4, bf // 3), pady=0)
+        self.chip.pack(side="left")
+        self.sect = tk.Label(self.caphdr, text="", font=(FONT, px(bf)), fg="#9aa4b2", bg=KEY, padx=max(4, bf // 2))
+        self.sect.pack(side="left")
+        self.where = tk.Label(self.caphdr, text="", font=(FONT, px(bf)), fg=DIM, bg=KEY, padx=max(4, bf // 2))
+        self.where.pack(side="left")
+        self.rule = tk.Frame(self.capbox, height=0, bg=KEY)      # 舊程式還會設定它的顏色：留一個看不見的
+        self.cap = tk.Label(self.capbox, text="", font=(FONT, px(lay["cap_font"]), "bold"), fg=FG, bg=KEY,
                             justify="center", wraplength=lay["cap_max_w"] - 2 * cp, padx=cp, pady=max(4, cp // 2))
-        self.cap.pack(side="left")
+        self.cap.pack(side="top")
         # × 關字幕：在字幕塊「內」右上角，但字幕塊右側永遠多留一格 xs 寬的空位給它——不壓到字（CI 擷圖：
         # 原本疊在最後一個字上），也不另開視窗（外側的獨立小視窗在測試機上有時沒顯示，20 輪第 0 輪就失敗）。
         # 滑鼠停在字幕上才顯示；點擊由墊片判定（x_hit），從哪裡點都接得到、不會穿到頁面。
@@ -386,6 +392,8 @@ class Stage:
             b.pack(side="right", padx=3, pady=4)
         self.dots = tk.Canvas(self.ctlw, bg=CTLBG, highlightthickness=0, height=12, width=70)
         self.dots.pack(side="left", padx=6)
+        self.prog = tk.Label(self.ctlw, text="", font=(FONT, px(lay["ctl_font"])), fg="#9aa4b2", bg=CTLBG)
+        self.prog.pack(side="left", padx=4)
         # 控制列旁的提示（輪到你／已暫停／已收到…）：控制列上方一行
         self.hintw = self._top(ox, oy - lay["ctl_font"] * 2, ow, lay["ctl_font"] * 2)
         self.hintw.configure(bg=CTLBG)
@@ -456,9 +464,9 @@ class Stage:
         絕不把背板拉到最上層——舊做法 root.lift() 讓全螢幕的背板蓋住瀏覽器與字幕，前景鎖讓拿焦點失敗時每秒重來一次：
         候選版長官那一段每秒閃一次空白背板（稽核：舞台中央沒有瀏覽器）。接完焦點立刻照原本的上下順序重排。"""
         try:
-            self.band.focus_force()
+            self.shield.focus_force()                  # 角色帶不再顯示：用隔離層（只有它開著時才會走到這裡）接焦點
             if os.name == "nt":
-                u32.SetForegroundWindow(int(self.band.frame(), 16))
+                u32.SetForegroundWindow(int(self.shield.frame(), 16))
         except Exception:
             pass
         z_ = getattr(self, "_z_t", 0)
@@ -752,8 +760,10 @@ class Stage:
             else:
                 continue
             x, y, w, hh = L.browser_rect(self.lay["stage"], shell, crop, float(now.get("zoom") or 1.5), dpr_of(h))
-            u32.SetWindowPos(h, HWND_NOTOPMOST if probe else HWND_TOPMOST, x, y, w, hh,
-                             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING)
+            # 上台：只移動、改大小，不動上下順序（SWP_NOZORDER），接著的 restack 才把它插到我們的視窗下面——
+            # 先置頂再重排的那一瞬間，瀏覽器的分頁列與網址列會蓋在最上面（排練 13:22：換成長官後露出 0.2 秒）
+            u32.SetWindowPos(h, HWND_NOTOPMOST if probe else 0, x, y, w, hh,
+                             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING | (0 if probe else 0x0004))
             self.placed[acct] = key
             self.want[acct] = (x, y, w, hh)
             self.active_hwnd = h
@@ -948,6 +958,23 @@ class Stage:
         self.maskw.geometry("%dx%d+%d+%d" % (max(1, w), max(1, h), x, y))
         if not self.maskw.winfo_viewable():
             self.maskw.deiconify()
+
+    def avoid_rect(self, now):
+        """這一句期間要避開的區域（引擎在這一拍的字幕旁附上：開著的對話框、這一拍的目標），換成螢幕座標；
+        取面積最大的那一個（對話框包住目標時就是對話框）。"""
+        acct = now.get("account")
+        boxes = ((now.get("beat") or {}).get("avoid")) or []
+        if not boxes or not acct or self.placed.get(acct) in (None, "off"):
+            return None
+        rects = []
+        for b in boxes:
+            try:
+                rects.append(L.css_to_screen(b, self.lay["stage"], now.get("crop") or {}, float(now.get("zoom") or 1.5),
+                                             getattr(self, "dpr", 1.0)))
+            except Exception:
+                pass
+        rects = [r for r in rects if r]
+        return max(rects, key=lambda r: r[2] * r[3]) if rects else None
 
     def draw_look(self, now):
         box = (now.get("look") or {}).get("box")
@@ -1149,29 +1176,31 @@ class Stage:
         if changed_card:
             self.draw_card(now)
         col = now.get("role_color") or ACCENT
-        if now.get("role"):
-            self.chip.configure(text=now["role"], bg=col)
-        else:
-            self.chip.configure(text="", bg="#11151d")   # 片頭／預備時沒有角色：不畫空的名牌
-        self.rule.configure(bg=col)
-        self.sect.configure(text=now.get("section") or "")
+        # 字幕上方的小列：角色色塊、段落、等待計時（沒有角色的時候不畫空的名牌）
+        if now.get("role") and not now.get("card"):
+            if self.chip.cget("text") != now["role"] or self.chip.cget("bg") != col:
+                self.chip.configure(text=now["role"], bg=col)
+            if not self.chip.winfo_ismapped():
+                self.chip.pack(side="left", before=self.sect)
+        elif self.chip.winfo_ismapped():
+            self.chip.pack_forget()
+        sec_ = now.get("section") or ""
+        if self.sect.cget("text") != sec_:
+            self.sect.configure(text=sec_)
         i_, n_ = now.get("step_index") or 0, now.get("steps_total") or 0
-        self.where.configure(text=("%d / %d　·　現場操作" % (i_, n_)) if i_ and not now.get("card") else "現場操作")
-        if now.get("card") in ("title", "checklist", "transition"):
-            self.band.withdraw() if now.get("card") == "checklist" else self.band.deiconify()
-        else:
-            self.band.deiconify()
         beat = now.get("beat") or {}
         slow = bool(st == "waiting_system" and now.get("slow_s") and float(now.get("waited_s") or 0) >= float(now["slow_s"]))
-        # 角色帶右端：等待提示（字幕只講內容）＋「5 / 13 · 現場操作」
         wait_txt = ""
         if st == "waiting_system":
-            wait_txt = (now.get("slow_say") or "") if slow else "等待%s %d 秒%s　·　" % (
-                now.get("wait_label") or "系統", now.get("waited_s") or 0,
+            lab_ = now.get("wait_label") or "系統"
+            wait_txt = (now.get("slow_say") or "") if slow else "等待%s%s %d 秒%s" % (
+                " " if lab_[:1].isascii() else "", lab_, now.get("waited_s") or 0,
                 ("（通常約 %d 秒）" % now["expect_s"]) if now.get("expect_s") else "")
-        base_where = ("%d / %d　·　現場操作" % (i_, n_)) if i_ and not now.get("card") else "現場操作"
-        self.where.configure(text=(wait_txt + ("　·　" if slow and wait_txt else "") + base_where) if wait_txt else base_where,
-                             fg="#d29922" if slow else DIM)
+        if self.where.cget("text") != wait_txt:
+            self.where.configure(text=wait_txt, fg="#d29922" if slow else DIM)
+        prog_ = ("%d / %d" % (i_, n_)) if i_ and not now.get("card") else ""
+        if self.prog.cget("text") != prog_:
+            self.prog.configure(text=prog_)          # 進度只在控制列
         # 控制列：像影片播放器（自動：滑鼠動了才出現；講者輪到他、暫停、超時：常駐）
         paused = ctl.get("state") == "paused"
         presenter = ctl.get("advance") == "step"
@@ -1214,10 +1243,16 @@ class Stage:
         # 字幕塊：大小跟著文字；預設下方置中、自動讓開外框；拖過以使用者位置為準。控制列不推字幕（由控制列讓位）。
         # 滑鼠停在字幕上或拖動中：位置凍結；滑鼠離開後也等到下一拍才重新計算（不在使用者眼前跳）。
         text = beat.get("text", "") if not now.get("card") else ""
-        if self.cap.cget("text") != (text or ""):
-            self.cap.configure(text=text or "")
-        if text and self.cap_on:
-            look = getattr(self, "look_rect", None)
+        # Sprint G2（使用者：字幕出現後到換下一句前，不要閃去其他地方）：一句一個位置——只在新的一句出現（或使用者
+        # 按兩下回預設、拖動）時決定位置與大小，這一句期間目標換了、頁面捲了、對話框開了都不重擺
+        new_sentence = bool(text) and (text != getattr(self, "_cap_for", None) or self._force_place)
+        if new_sentence and self.cap.cget("text") != text:
+            self.cap.configure(text=text)
+        if text and self.cap_on and not new_sentence and getattr(self, "_cap_shown", False) and self.cap_geom:
+            pass                                          # 同一句：位置、大小都不動（拖動由 cap_move 處理）
+        elif text and self.cap_on:
+            self.safe("draw_look", self.draw_look, now)   # 這一拍的外框位置（引擎先發外框、再發字幕）
+            look = self.avoid_rect(now) or getattr(self, "look_rect", None)
             # 外框幾乎佔滿高度（對話框、長卡片）而旁邊空位比字幕窄：字幕縮窄改排兩行，放進旁邊的空位（5c）
             cp_ = self.lay["cap_pad"]
             wrap = self.lay["cap_max_w"] - 2 * cp_
@@ -1235,29 +1270,24 @@ class Stage:
             if int(float(self.cap.cget("wraplength"))) != int(wrap):
                 self.cap.configure(wraplength=wrap)
             self.capw.update_idletasks()
-            bw, bh = self.cap.winfo_reqwidth() + self.xbtn_size + 4, self.cap.winfo_reqheight()   # 右側預留 × 的空位
+            bw, bh = self.capbox.winfo_reqwidth() + self.xbtn_size + 4, self.capbox.winfo_reqheight()   # 右側預留 × 的空位；含上方小列
             box0 = self.cap_box()
             hover = bool(cur and box0 and L.inside((cur[0], cur[1], 0, 0), box0))
-            if hover or self.cap_drag0:
-                self.cap_hold = text
-            if self._force_place:
-                self._force_place = False
-                x, y = L.caption_pos((bw, bh), self.lay, look=look, user=self.cap_user)
-                self.place_caption(bw, bh, x, y)
-                self.cap_hold = text
-            elif box0 and (hover or self.cap_drag0 or getattr(self, "cap_hold", None) == text):
-                if not self.cap_drag0 and (bw, bh) != (box0[2], box0[3]):
-                    # 凍結中換了句子：以中心與底邊為錨點換大小，位置不跳
-                    sx, sy, sw, sh = self.lay["stage"]
-                    nx = min(max(int(box0[0] + box0[2] / 2 - bw / 2), sx), sx + sw - bw)
-                    ny = min(max(int(box0[1] + box0[3] - bh), sy), sy + sh - bh)
-                    self.place_caption(bw, bh, nx, ny)
+            if box0 and not self._force_place and (hover or self.cap_drag0):
+                # 滑鼠停在字幕上或正在拖：換句時以中心與底邊為錨點換大小，位置不跳
+                sx, sy, sw, sh = self.lay["stage"]
+                nx = min(max(int(box0[0] + box0[2] / 2 - bw / 2), sx), sx + sw - bw)
+                ny = min(max(int(box0[1] + box0[3] - bh), sy), sy + sh - bh)
+                self.place_caption(bw, bh, nx, ny)
             else:
-                self.cap_hold = None
                 x, y = L.caption_pos((bw, bh), self.lay, look=look, user=self.cap_user)
                 self.place_caption(bw, bh, x, y)
+            self._force_place = False
+            self._cap_for = text
+            self.cap_placed_n = getattr(self, "cap_placed_n", 0) + 1
             self.show_caption(True)
         else:
+            self._cap_for = None
             self.show_caption(False)
         self.safe("update_xbtn", self.update_xbtn, cur)
         self.safe("cap_resync", self.cap_resync)

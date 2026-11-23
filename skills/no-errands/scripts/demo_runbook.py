@@ -859,7 +859,7 @@ class Look:
         """換步驟：清掉外框。換角色時示範游標從新畫面的中間偏下重新出發（舞台負責淡入）。"""
         if acct != self.acct:
             self.ptr = None
-        self.acct, self.sel, self.box = acct, None, None
+        self.acct, self.sel, self.box, self.aim_box = acct, None, None, None
         self.ctl.publish(mask=None, align=None, look=None)
 
     # ---- F-3：示範游標（畫在舞台上；系統游標不動）與平順捲動
@@ -941,6 +941,7 @@ class Look:
         self.acct, self.sel, self.box = acct, None, None
         self.ctl.publish(look=None)
         box = self.into_view(sel)
+        self.aim_box = box
         if not box:
             return 0.0
         x, y = (box[0] + box[2] / 2, box[1] + box[3] / 2) if click else (box[0] + min(36, box[2] / 2), box[1] + box[3] / 2)
@@ -977,7 +978,7 @@ class Look:
             self.point(*stage_layout.look_pointer(self.box))
 
     def clear(self):
-        self.sel = self.box = None
+        self.sel = self.box = self.aim_box = None
         self.ctl.publish(look=None)
 
     def refresh(self, realign=None):
@@ -1067,7 +1068,19 @@ def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
             look.set(st["account"], "@" + ref, scroll=lk.get("scroll", True))
     elif lk is False:
         look.clear()
-    ctl.publish(beat={"text": subst(b.get("say", ""), vars_), "i": k, "n": n})
+    # Sprint G2：字幕一句一個位置——出現時就要避開這一句期間會用到的區域：開著的對話框、這一拍的目標
+    avoid = []
+    if getattr(look, "acct", None) and hasattr(look, "_box"):
+        try:
+            dlg = look._box(".modal-content")
+            if dlg:
+                avoid.append(dlg)
+        except Exception:
+            pass
+    tb = getattr(look, "box", None) or getattr(look, "aim_box", None)
+    if tb:
+        avoid.append(tb)
+    ctl.publish(beat={"text": subst(b.get("say", ""), vars_), "i": k, "n": n, "avoid": avoid})
     t0 = time.time()                                          # 字幕出來才開始計時
     dur = beat_secs(b, subst(b.get("say", ""), vars_))
     while time.time() - t0 < dur:                           # (停)＝多留一會兒；講者模式只在步與步之間停

@@ -58,8 +58,11 @@ user = (0.1, 0.2)
 check("拖過（使用者位置）→ 用使用者的位置，不再自動讓開",
       L.caption_pos((bw, bh), lay, look=look, user=user) == (int(lay["stage"][0] + 0.1 * lay["stage"][2]), int(lay["stage"][1] + 0.2 * lay["stage"][3])))
 check("拖不出舞台範圍", L.caption_pos((bw, bh), lay, user=(1.5, -0.5)) == (lay["stage"][2] - bw, lay["stage"][1]))
-r = L.caption_ratio((192, 72 + 112), lay)
+r = L.caption_ratio((192, lay["stage"][1] + 112), lay)
 check("位置以舞台比例記住（換解析度也在相同的相對位置）", r == (0.1, round(112 / lay["stage"][3], 4)), r)
+for W_, H_ in ((1920, 1200), (1920, 1080), (1280, 720)):
+    lg = L.layout(W_, H_)
+    check("Sprint G：沒有角色帶——頁面範圍＝整個螢幕（%d×%d）" % (W_, H_), tuple(lg["stage"]) == (0, 0, W_, H_), lg["stage"])
 st = L.controls_state(False, "running", False, False, None)
 check("控制列：自動播放、滑鼠沒動 → 隱藏", st["visible"] is False, st)
 check("控制列：自動播放、滑鼠剛動過 → 出現，2.5 秒後隱藏",
