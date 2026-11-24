@@ -8,7 +8,7 @@
 仍不換頁 → (d) 實體點擊（--headed，只在 CI；在使用者機器上要走閒置閘門或事前告知）。
 每種手段有沒有用都記下來，作為 playbook 的依據。完成後驗證程式檔存在，再靜默移除。
 """
-import ctypes, ctypes.wintypes as wt, hashlib, json, os, subprocess, sys, tempfile, time, urllib.request
+import ctypes, ctypes.wintypes as wt, hashlib, json, os, re, subprocess, sys, tempfile, time, urllib.request
 
 INSTALLERS = {
     "npp": {"framework": "NSIS",
@@ -19,11 +19,19 @@ INSTALLERS = {
                  "url": "https://github.com/WinMerge/winmerge/releases/download/v2.16.44/WinMerge-2.16.44-x64-Setup.exe",
                  "target": r"C:\Program Files\WinMerge\WinMergeU.exe",
                  "uninstall": [r"C:\Program Files\WinMerge\unins000.exe", "/VERYSILENT", "/SUPPRESSMSGBOXES"]},
+    # 只裝給目前使用者（Inno PrivilegesRequired=lowest）：同一套 GUI 精靈、不需要管理員權限、不跳 UAC。
+    # 要管理員的安裝會跳 UAC，而 UAC 畫在安全桌面上、任何程式注入的滑鼠鍵盤都到不了（Windows 的設計）——
+    # 在使用者自己的電腦上要「不用他動手」把精靈從頭點到完成，走這種不升權的安裝檔。
+    "winmerge-user": {"framework": "Inno Setup (per-user, no UAC)",
+                      "url": "https://github.com/WinMerge/winmerge/releases/download/v2.16.44/WinMerge-2.16.44-x64-PerUser-Setup.exe",
+                      "target": os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "WinMerge", "WinMergeU.exe"),
+                      "uninstall": [os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "WinMerge", "unins000.exe"),
+                                    "/VERYSILENT", "/SUPPRESSMSGBOXES"]},
 }
 NEXT_NAMES = {"OK", "Next >", "Next", "I Agree", "Install", "下一步(N) >", "我接受(I)", "安裝(I)",
               "Install for me only (recommended)", "Install for me only", "Install for all users"}
 FINISH_NAMES = {"Finish", "完成(F)"}
-ACCEPT_HINTS = ("I accept", "我接受")
+ACCEPT_HINTS = ("I accept", "我接受", "我同意")
 RUN_HINTS = ("Run", "Launch", "View", "執行")
 u32 = ctypes.windll.user32
 
@@ -51,7 +59,8 @@ def walk(n):
 
 
 def clean(s):
-    return (s or "").replace("&", "").strip()
+    # 連續空白壓成一個：繁中 Inno 的按鈕是「下一步(N)  >」（兩個空格），英文是「Next >」——不壓的話繁中系統上永遠對不到
+    return re.sub(r"\s+", " ", (s or "").replace("&", "")).strip()
 
 
 def _text(h):

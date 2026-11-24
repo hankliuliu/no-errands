@@ -225,6 +225,7 @@ jobs:
           set +e +o pipefail
           python tests/wizard/run_installer.py --ad ../wiz-home/bin/agent-desktop.exe --installer npp --out wizard-npp.json --i-am-ci | tee wizard-npp.txt
           python tests/wizard/run_installer.py --ad ../wiz-home/bin/agent-desktop.exe --installer winmerge --out wizard-winmerge.json --i-am-ci | tee wizard-winmerge.txt
+          python tests/wizard/run_installer.py --ad ../wiz-home/bin/agent-desktop.exe --installer winmerge-user --out wizard-winmerge-user.json --i-am-ci | tee wizard-winmerge-user.txt
       - name: common dialogs
         continue-on-error: true
         run: python tests/wizard/run_dialogs.py --ad ../wiz-home/bin/agent-desktop.exe --i-am-ci | tee dialogs.txt
