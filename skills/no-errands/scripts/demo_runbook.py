@@ -495,6 +495,7 @@ class Browser:
         self.rb, self.headed, self.log = rb, headed, log
         self.started = set()
         self.cur_url = {}
+        self.seen_url = {}          # 每一步結束時頁面的網址（講者一起操作：下一步開始前不在這頁＝他點走了，先回來）
         self.layout = layout_of(rb) if headed else None
 
     def prof(self, acct):
@@ -527,14 +528,20 @@ class Browser:
             self.neb(acct, "set", "viewport", str(w), str(h))
         self.started.add(acct)
 
+    def page_url(self, acct):
+        rc, cur, _ = self.neb(acct, "get", "url")
+        return (cur.strip().splitlines() or [""])[-1].strip() if rc == 0 else ""
+
     def return_to(self, acct):
-        """暫停後繼續：講者可能點走或捲動；不在最近一次開啟的網址路徑就先回去。回傳是否有回去。"""
-        want = self.cur_url.get(acct)
+        """講者可能點走或捲動（暫停後繼續、每一步開始前、找不到目標重試前）：不在上一步結束時的網址路徑
+        （沒有的話用最近一次開啟的網址）就先回去。回傳是否有回去。"""
+        want = self.seen_url.get(acct) or self.cur_url.get(acct)
         if not want or acct not in self.started:
             return False
         import urllib.parse
-        rc, cur, _ = self.neb(acct, "get", "url")
-        cur = (cur.strip().splitlines() or [""])[-1].strip()
+        cur = self.page_url(acct)
+        if not cur:
+            return False
         p = lambda u: (urllib.parse.urlparse(u).path or "/").rstrip("/") or "/"
         if p(cur) != p(want):
             self.neb(acct, "open", want)
@@ -649,6 +656,7 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
         ok = rc == 0
         if ok:
             br.cur_url[acct] = url
+            getattr(br, "seen_url", {}).pop(acct, None)
         else:
             info["error"] = err_of(rc, o)
     elif d == "pause":
@@ -679,6 +687,7 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
                 rc, o, e = br.neb(acct, *cmd, approval=approval, step=st["id"], timeout=7200 if prog else 90)
                 info["t_ms"]["neb_start"] = int((t_neb - t0) * 1000)        # 量 A34：游標到位 → 送出 → 守門返回
                 info["t_ms"]["neb_end"] = int((time.time() - t0) * 1000)
+                why_ = ""
                 if prog:
                     for line in reversed((o or "").strip().splitlines()):
                         try:
@@ -689,8 +698,14 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
                             pi = pj["progressive"]
                             paused += float(pi.get("paused_s") or 0)      # 打字中途暫停的時間不算進這一步
                             info["typing"] = {k: pi.get(k) for k in ("chunks", "typed_chars", "ms", "paused_s")}
+                            why_ = str(pi.get("why") or "")
                             break
                 ok = rc == 0
+                if not ok and prog and any(k_ in why_ for k_ in ("欄位不是空的", "焦點不在", "欄位內容不是")):
+                    # 逐步輸入沒打完（講者在欄位裡打過字、或打字途中點走了焦點）：改用原本的填入方式整段覆蓋一次
+                    info["typing_fallback"] = why_[:80]
+                    rc, o, e = br.neb(acct, "fill", "@" + ref, subst(act["text"], vars_), approval=approval, step=st["id"])
+                    ok = rc == 0
                 if not ok:
                     info["error"] = err_of(rc, o)
                     if info["error"].startswith("neb："):   # 守門拒絕不重試
@@ -743,7 +758,7 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
         ok, hit = False, None
         marks = dict(vars_.get("__marks") or {}, **rec.get("_marks", {}))
         say_while = [x for x in (act.get("say_while") or []) if x.get("say")]
-        said = -1
+        said, said_at = -1, 0.0
         while True:
             for sc in scopes:
                 body = br.text(acct, sc)
@@ -758,14 +773,12 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
             if ok or waited >= budget:
                 break
             if say_while and ctl is not None:
-                # 真的在等才講（5c）：等的東西已經到了就不會走到這裡；依序每句停 s 秒，最後一句留到等完
-                k_, acc = 0, 0.0
-                for k_, x in enumerate(say_while):
-                    acc += float(x.get("s", 8))
-                    if waited < acc:
-                        break
-                if k_ != said:
-                    said = k_
+                # 真的在等才講（5c）：等的東西已經到了就不會走到這裡；依序每句停 s 秒，最後一句留到等完。
+                # 一次只往下一句、從它真的出現起算（某一輪讀畫面很慢時也不會跳過句子）
+                if said < 0 or (said < len(say_while) - 1 and
+                                waited - said_at >= float(say_while[said].get("s", 8))):
+                    said, said_at = said + 1, waited
+                    k_ = said
                     ctl.publish(beat={"text": subst(say_while[k_]["say"], vars_), "i": k_ + 1, "n": len(say_while)},
                                 look=None)
                     info.setdefault("said_while", []).append(round(waited, 1))
@@ -824,8 +837,9 @@ EFFECTS = ("pointer", "smooth_scroll", "typing", "shield", "faint_look")
 def effects_of(rb):
     """F-3 的效果開關（劇本 stage.effects；預設全開）。任一項在真頁面上不穩就單獨關掉、退回前一種做法：
     pointer＝示範游標與按下效果（關：外框框住目標、停 0.8 秒再動作）；smooth_scroll＝平順捲動（關：瞬間捲到）；
-    typing＝逐步輸入（關：一次填入、停一下再送出）；shield＝隔離層（關：沒有隔離層）；faint_look＝淡外框（關：原本的粗框、不淡出）。"""
+    typing＝逐步輸入（關：一次填入、停一下再送出）；shield＝隔離層（預設關；開：吃掉真滑鼠，頁面收不到）；faint_look＝淡外框（關：原本的粗框、不淡出）。"""
     e = dict.fromkeys(EFFECTS, True)
+    e["shield"] = False         # 講者一起操作（使用者 11-24 03:4x）：真滑鼠、鍵盤直接到頁面；劇本 stage.effects.shield=true 才打開
     e.update({k: bool(v) for k, v in (((rb.get("stage") or {}).get("effects")) or {}).items() if k in EFFECTS})
     if (rb.get("stage") or {}).get("typing") == "instant":
         e["typing"] = False
@@ -1156,6 +1170,10 @@ def run_step(br, rb, st, vars_, approval, shots_dir, ctl=None):
 
     beats = beats_of(st) if getattr(br, "look", None) is not None else []
     shown = set()
+    first_ = (st.get("actions") or [{}])[0]
+    if getattr(br, "look", None) is not None and first_.get("do") != "open" and getattr(br, "seen_url", {}).get(acct):
+        if br.return_to(acct):                                # 講者一起操作：上一步之後他點到別頁了 → 先回到那一頁
+            rec["returned"] = rec.get("returned", 0) + 1
 
     def beats_at(i):
         for k, b in enumerate(beats, 1):
@@ -1172,6 +1190,8 @@ def run_step(br, rb, st, vars_, approval, shots_dir, ctl=None):
             info["i"], info["phase"] = base + i, tag
             rec["actions"].append(info)
             if not ok and act["do"] in ("fill", "click", "check", "snapshot_ok", "capture") and not act.get("optional"):
+                if getattr(br, "look", None) is not None and br.return_to(acct):
+                    rec["returned"] = rec.get("returned", 0) + 1     # 講者點到別頁了：先回到這一步的頁面再試
                 time.sleep(2)                                   # 一次就地重試（畫面可能還在更新）
                 ok, info2 = run_action(br, rb, st, act, vars_, approval, rec, ctl)
                 info2["i"], info2["phase"], info2["retry"] = base + i, tag, True
@@ -1216,6 +1236,10 @@ def run_step(br, rb, st, vars_, approval, shots_dir, ctl=None):
             rec["recovered"] = ok
     rec.pop("_marks", None)
     rec["ok"] = ok
+    if ok and getattr(br, "look", None) is not None and hasattr(br, "seen_url"):
+        u_ = br.page_url(acct)
+        if u_:
+            br.seen_url[acct] = u_
     rec["paused_s"] = round(sum(x.get("paused_ms", 0) for x in rec["actions"]) / 1000.0, 1)
     rec["dur_s"] = round(time.time() - t0 - rec["paused_s"], 1)      # 不含暫停
     if shots_dir:
@@ -1343,7 +1367,8 @@ def execute(rb, mode, a):
         # 正式示範：引擎與播放器是獨立的背景行程，指令立刻返回；講者用播放器（或 control 指令）控制
         root = runs_root(rb, persist)
         run_dir = new_run_dir(root, mode)
-        write_control(run_dir, state="playing", advance=advance, next_seq=0, unattended="--presenter" not in a)
+        write_control(run_dir, state="playing", advance=advance, next_seq=0,
+                      unattended="--presenter" not in a and "--coop" not in a)
         passthru = [x for k in ("--from", "--to") if arg(a, k) for x in (k, arg(a, k))]
         kw = {"stdin": subprocess.DEVNULL, "env": dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8")}
         log = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")
@@ -1492,7 +1517,15 @@ def execute(rb, mode, a):
                 planb = os.path.join(rb["_dir"], "planb", "%s.png" % st["id"])
                 stopped = {"failed": st["id"], "planb": planb if os.path.exists(planb) else None,
                            "fallback_text": st.get("on_fail", "")}
-                ctl.publish(status="failed", captions=[{"text": st.get("on_fail") or "這一步沒有完成", "s": 60}],
+                miss_ = next((x for x in reversed(rec["actions"]) if "找不到" in str(x.get("error", ""))), None)
+                miss_t = ""
+                if miss_ is not None and staged:
+                    # 找不到目標（例：講者點走、改了頁面）：說清楚是哪一個，不默默失敗（使用者 11-24 03:4x）
+                    tg_ = ((st.get("actions") or []) + (st.get("fallback") or []))
+                    tg_ = tg_[miss_["i"]] if isinstance(miss_.get("i"), int) and miss_["i"] < len(tg_) else {}
+                    nm_ = ((tg_.get("target") or {}).get("names") or [""])[0] if isinstance(tg_.get("target"), dict) else ""
+                    miss_t = ("這一步找不到「%s」。" % nm_) if nm_ else "這一步在頁面上找不到要操作的地方。"
+                ctl.publish(status="failed", captions=[{"text": miss_t + (st.get("on_fail") or "這一步沒有完成"), "s": 60}],
                             planb=stopped["planb"])
                 if mode == "rehearse" and "--continue" in a:
                     stopped = None
@@ -2097,7 +2130,7 @@ def standby(rb, a):
         # 上場捷徑帶 --presenter → 每一步做完等「下一步」；其他（排練、agent 示範）→ 自動、無人值守
         presenter = "--presenter" in a
         write_control(run_dir, state="playing", advance="step" if presenter else "auto", next_seq=0, hold_first=True,
-                      unattended=not presenter)
+                      unattended=not presenter and "--coop" not in a)   # --coop：自動播放但有人一起操作（輸入不撤下舞台）
         br0 = Browser(rb, headed=False, log=None)
         base = {"card": "checklist", "status": "standby", "title": rb.get("title", ""), "owner_pid": os.getpid(),
                 "accounts": stage_accounts(rb, br0), "zoom": 1.0}

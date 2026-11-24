@@ -167,43 +167,42 @@ def f3_checks(d, p, now, h, geom, W, H, lay):
     def cursor():
         pt = wintypes.POINT(); u.GetCursorPos(ctypes.byref(pt)); return (pt.x, pt.y)
     g = rd(geom)
-    check("A26 隔離層蓋住整個舞台", g.get("shield") == list(lay["stage"]), (g.get("shield"), lay["stage"]))
+    check("講者一起操作：預設沒有隔離層（劇本沒有打開 stage.effects.shield）", not g.get("shield"), g.get("shield"))
     df, di = [], []                                # 量三次、取中位數（忙的測試機上單次 1 秒會偶發偏低；5c v4）
     for _ in range(3):
         t0 = title()
         time.sleep(1.0)
         t1 = title()
         df.append(t1.get("f", 0) - t0.get("f", 0)); di.append(t1.get("i", 0) - t0.get("i", 0))
-    check("A28 隔離層開著時頁面照常繪製（畫面更新計數每秒增加 >20，三次中位數）", sorted(df)[1] > 20, df)
-    check("A28 隔離層開著時頁面計時器沒有被放慢（100 ms 計時每秒增加 ≥7，三次中位數）", sorted(di)[1] >= 7, di)
-    # 真的滑鼠在頁面上：移動、點擊、滾輪 → 頁面都收不到
+    check("A28 台上頁面照常繪製（畫面更新計數每秒增加 >20，三次中位數）", sorted(df)[1] > 20, df)
+    check("A28 台上頁面計時器沒有被放慢（100 ms 計時每秒增加 ≥7，三次中位數）", sorted(di)[1] >= 7, di)
+    # 講者一起操作（使用者 11-24 03:4x）：真的滑鼠在頁面上移動、點擊、滾輪 → 頁面都收得到；點進頁面後鍵盤在頁面上
     cx, cy = lay["stage"][0] + lay["stage"][2] // 2, lay["stage"][1] + lay["stage"][3] // 3
     move_abs(cx, cy); time.sleep(0.2); move_abs(cx + 30, cy + 20); time.sleep(0.2)
     u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.2)
-    u.mouse_event(0x0800, 0, 0, ctypes.c_ulong(-120 & 0xffffffff).value, 0); time.sleep(0.8)
-    t2 = title()
-    check("A26 真的滑鼠在頁面範圍內點擊、滾輪、移動：頁面一個都沒收到",
-          bool(t1) and all(t2.get(k) == t1.get(k) for k in "cwm"),
-          (t1, t2))
-    check("A26 鍵盤焦點不在瀏覽器上（點了頁面範圍之後前景仍不是瀏覽器）", u.GetForegroundWindow() != h, u.GetForegroundWindow())
-    # 拿回焦點時背板不能跑到最上層（候選版：每秒閃一次空白背板）：連看 3 秒，每次量到的上下順序裡背板都在最下面
+    u.mouse_event(0x0800, 0, 0, ctypes.c_ulong(-120 & 0xffffffff).value, 0)
+    t2 = wait(lambda: (lambda t_: t_ if all(t_.get(k, 0) > t1.get(k, 0) for k in "cwm") else None)(title()), 3) or title()
+    check("講者一起操作：真的滑鼠在頁面範圍內移動、點擊、滾輪，頁面都收到了",
+          bool(t1) and all(t2.get(k, 0) > t1.get(k, 0) for k in "cwm"), (t1, t2))
+    fg_ = wait(lambda: u.GetForegroundWindow() == h or None, 3)
+    check("講者一起操作：點了頁面之後鍵盤焦點在台上的瀏覽器（舞台不搶回來）", fg_ is True, u.GetForegroundWindow())
+    yl = wait(lambda: rd(geom).get("keys_yield") is True or None, 3)
+    st0 = rd(os.path.join(d, "control.json")).get("state")
+    u.keybd_event(0x20, 0, 0, 0); u.keybd_event(0x20, 0, 2, 0); time.sleep(0.8)      # 空白鍵（打字）
+    st1 = rd(os.path.join(d, "control.json")).get("state")
+    check("講者一起操作：焦點在頁面上時按空白鍵是打字，不是暫停（舞台把會打進頁面的鍵讓出來）",
+          yl is True and st1 == st0 and st1 != "paused", (yl, st0, st1, rd(geom).get("hotkeys")))
+    time.sleep(1.2)                                # 舞台不搶焦點：前景仍是瀏覽器
+    check("講者一起操作：1 秒多之後前景仍是瀏覽器（沒有被舞台拿回去）", u.GetForegroundWindow() == h, u.GetForegroundWindow())
     zs = []
     for _ in range(6):
         time.sleep(0.5)
         zs.append((rd(geom).get("z_order") or [])[-1:])
-    check("A26 拿回鍵盤焦點時背板一直在最下面（不蓋住瀏覽器與字幕）", all(z == ["backdrop"] for z in zs), zs)
-    bad = []
-    for r_ in range(20):
-        px_ = lay["stage"][0] + int(lay["stage"][2] * (0.2 + 0.6 * ((r_ * 7) % 10) / 10))
-        py_ = lay["stage"][1] + int(lay["stage"][3] * (0.15 + 0.5 * ((r_ * 3) % 10) / 10))
-        move_abs(px_, py_); time.sleep(0.05)
-        u.mouse_event(0x0002, 0, 0, 0, 0); u.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(0.05)
-        u.mouse_event(0x0800, 0, 0, ctypes.c_ulong(-120 & 0xffffffff).value, 0)
-        time.sleep(0.25 + (r_ % 4) * 0.2)                  # 不同時間點（涵蓋舞台每秒重排的時刻）
-    time.sleep(0.6)
-    t3 = title()
-    check("A26 隔離層穩定：20 輪真的點擊＋滾輪＋移動（不同位置與時間點），頁面一次都沒收到",
-          bool(t1) and all(t3.get(k) == t1.get(k) for k in "cwm"), (t1, t3))
+    check("A26 背板一直在最下面（不蓋住瀏覽器與字幕）", all(z == ["backdrop"] for z in zs), zs)
+    ovl = [n for n in (rd(geom).get("z_order") or []) if n in ("captext", "plate", "pad", "controls", "badge")]
+    zo = rd(geom).get("z_order") or []
+    check("講者一起操作：點了瀏覽器之後，字幕、控制列、標記仍在瀏覽器之上",
+          "browser" in zo and ovl and all(zo.index(n) < zo.index("browser") for n in ovl), zo)
     t_idle = time.time()                           # 舞台 2 秒後隱藏、量測值每秒寫一次：忙的機器上輪詢到 5 秒（main CI 45086819215：固定等 2.8 秒誤判）
     hid = wait(lambda: rd(geom).get("cursor_hidden") is True or None, 5)
     check("A26 真的游標不動約 2 秒就隱藏（5 秒內）", hid is True, (rd(geom).get("cursor_hidden"), round(time.time() - t_idle, 1)))
@@ -388,7 +387,10 @@ def real_chrome_checks(stage_with):
            "mask": {"box": [289, 150, 300, 30], "color": "#ff00ff"}, "accounts": accts}
     # 這個情境有兩組 20 輪的測試：舞台要活得比預設的 40 秒久（CI 45060724781／45062678450 都在第 5 輪失敗——
     # 是舞台到了 40 秒自己關掉，不是墊片漏點擊）
-    d, p = stage_with(now, None, {"NO_ERRANDS_HOME": work, "NE_STAGE_GEOM": geom, "NE_STAGE_MAX_S": "600"})
+    # NE_STAGE_NO_HOTKEYS 要清掉：f3 的「講者一起操作」檢查靠熱鍵執行緒讓鍵（keys_yield）；
+    # stage_with 預設關熱鍵，CI 45254616271 keys_yield 永遠 False、hotkeys=={} 就是這樣
+    d, p = stage_with(now, None, {"NO_ERRANDS_HOME": work, "NE_STAGE_GEOM": geom, "NE_STAGE_MAX_S": "600",
+                                  "NE_STAGE_NO_HOTKEYS": ""})
     r = fit_ok(d, False)
     check("A1 上台：頁面底邊貼齊螢幕底邊（差 ≤3）、四邊沒有空白帶", r and r.get("fit", {}).get("ok"), r)
     check("A19 視窗實測和要求的差距 ≤3 像素", r and r.get("placement_error") is not None and r["placement_error"] <= 3, r)
@@ -607,7 +609,10 @@ def real_chrome_checks(stage_with):
         check("A2 拖過之後位置存檔（下次沿用）", rd(os.path.join(work, "stage-caption.json")).get("pos"),
               rd(os.path.join(work, "stage-caption.json")))
         stress_rounds(20)
+    c_f3 = page_clicks()
     f3_checks(d, p, now, h, geom, W, H, lay)
+    if c0 is not None and c_f3 is not None:
+        c0 += (page_clicks() or 0) - c_f3            # f3 裡講者一起操作那段是故意點頁面的：不算在字幕穿透裡
     json.dump(now, open(os.path.join(d, "now.json"), "w", encoding="utf-8"), ensure_ascii=False)   # 回到台上（f3 最後是轉場卡）
     time.sleep(1.5)
     if pl:

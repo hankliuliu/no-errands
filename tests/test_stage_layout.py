@@ -214,6 +214,81 @@ st_w = {"id": "sx", "account": "a"}
 c = WaitCtl(); ok_, inf_ = DR.run_action(WaitBr(12), {}, st_w, act_w, {}, None, {}, c)
 check("等待中字幕：依序出現、等到了就停（不會硬播完）", ok_ and c.beats[:2] == ["第一句", "第二句"] and len(inf_.get("said_while", [])) >= 2
       and inf_.get("t_end"), (ok_, c.beats, inf_))
+class SlowWaitBr(WaitBr):                                   # 某一輪讀畫面很慢（慢機器／頁面卡住）
+    def text(self, acct, sc):
+        if self.n == 1:
+            time.sleep(0.5)
+        return super().text(acct, sc)
+
+
+c = WaitCtl(); ok_, inf_ = DR.run_action(SlowWaitBr(12), {}, st_w, act_w, {}, None, {}, c)
+check("等待中字幕：某一輪讀畫面很慢也不跳句（一句一句往下）", ok_ and c.beats == ["第一句", "第二句", "第三句"],
+      (ok_, c.beats, inf_.get("said_while")))
+import json, tempfile as _tf  # noqa: E402
+
+
+# ---- 講者一起操作（使用者 11-24 03:4x）：他在欄位裡打過字、點到別頁，劇本照樣接得下去
+class CoopLook:
+    def act(self, acct, sel, press):
+        return 0.0
+
+
+class CoopBr:
+    def __init__(self, field_dirty=True, urls=None):
+        self.look, self.calls, self.dirty = CoopLook(), [], field_dirty
+        self.urls = list(urls or [])
+        self.cur_url, self.seen_url, self.started = {}, {}, {"a"}
+
+    def find(self, acct, target, reuse=False):
+        return "e5", {"role": "textbox"}
+
+    def ensure(self, acct):
+        pass
+
+    def neb(self, acct, *cmd, approval=None, step=None, timeout=90):
+        self.calls.append(cmd)
+        if cmd[0] == "fill" and "--progressive" in cmd and self.dirty:
+            return 1, json.dumps({"ok": False, "tool": "neb", "error": "逐步輸入停在第 0 個字",
+                                  "progressive": {"why": "開始前：欄位不是空的", "typed_chars": 0}}), ""
+        if cmd[0] == "get":
+            return 0, (self.urls.pop(0) if self.urls else "https://x.test/a/b"), ""
+        return 0, "", ""
+
+    def page_url(self, acct):
+        return DR.Browser.page_url(self, acct)
+
+    def return_to(self, acct):
+        return DR.Browser.return_to(self, acct)
+
+
+class CoopCtl(FakeCtl):
+    dir = _tf.mkdtemp()
+
+    def gate(self, on_resume=None):
+        return 0.0
+
+
+act_f = {"do": "fill", "target": {"role": "textbox", "names": ["寫一句話"]}, "text": "測試用的一句話"}
+bf = CoopBr()
+ok_, inf_ = DR.run_action(bf, {}, {"id": "sf", "account": "a"}, act_f, {}, "ap1", {}, CoopCtl())
+check("講者一起操作：欄位裡有他打的字 → 逐步輸入不打、改用原本的填入整段覆蓋（不失敗）",
+      ok_ and inf_.get("typing_fallback") and bf.calls[-1] == ("fill", "@e5", "測試用的一句話"), (ok_, inf_, bf.calls))
+bf = CoopBr(field_dirty=False)
+ok_, inf_ = DR.run_action(bf, {}, {"id": "sf", "account": "a"}, act_f, {}, "ap1", {}, CoopCtl())
+check("講者一起操作：欄位是空的 → 照舊逐步輸入、不多送一次", ok_ and not inf_.get("typing_fallback")
+      and len([c_ for c_ in bf.calls if c_[0] == "fill"]) == 1, (ok_, inf_, bf.calls))
+bf = CoopBr(urls=["https://x.test/elsewhere"])
+bf.seen_url["a"] = "https://x.test/a/b"
+rec_ = DR.run_step(bf, {}, {"id": "sg", "account": "a", "actions": [{"do": "pause", "s": 0}]}, {}, None, None, CoopCtl())
+check("講者一起操作：上一步之後他點到別頁 → 這一步開始前先回到上一步結束時的頁面",
+      rec_.get("returned") == 1 and ("open", "https://x.test/a/b") in bf.calls, (rec_, bf.calls))
+bf = CoopBr(urls=["https://x.test/a/b"])
+bf.seen_url["a"] = "https://x.test/a/b"
+rec_ = DR.run_step(bf, {}, {"id": "sg", "account": "a", "actions": [{"do": "pause", "s": 0}]}, {}, None, None, CoopCtl())
+check("講者一起操作：還在同一頁 → 不重新開頁", not rec_.get("returned") and not [c_ for c_ in bf.calls if c_[0] == "open"],
+      (rec_, bf.calls))
+
+
 c = WaitCtl(); ok_, inf_ = DR.run_action(WaitBr(0), {}, st_w, act_w, {}, None, {}, c)
 check("等待中字幕：等的東西已經到了 → 一句都不講、直接往下", ok_ and c.beats == [], (ok_, c.beats))
 act_t = dict(act_w, budget_s=0.3, say_while=None, timeout_say="AI 助理這次回得比較慢，先往下看。", timeout_say_s=0)
@@ -293,9 +368,11 @@ check("A22 點擊在「按下的效果已畫出」之後：舞台 0.3 秒後才�
       _ack_t[0] is not None and t_done >= _ack_t[0] and getattr(lk, "acked", 0) == 1, (_ack_t[0], t_done))
 # ---- 效果開關（真頁面上哪一項不穩就單獨關掉、退回前一種做法）
 fx = DR.effects_of({"stage": {}})
-check("效果開關：預設全開", all(fx.values()) and set(fx) == set(DR.EFFECTS), fx)
+check("效果開關：預設全開，只有隔離層預設關（講者一起操作：真滑鼠鍵盤到頁面）",
+      all(v for k, v in fx.items() if k != "shield") and fx["shield"] is False and set(fx) == set(DR.EFFECTS), fx)
+check("效果開關：劇本 stage.effects.shield=true 才打開隔離層", DR.effects_of({"stage": {"effects": {"shield": True}}})["shield"] is True)
 fx = DR.effects_of({"stage": {"effects": {"pointer": False, "typing": False, "bogus": False}}})
-check("效果開關：只關指定的項目；不認得的名稱忽略", fx["pointer"] is False and fx["typing"] is False and fx["shield"] and "bogus" not in fx, fx)
+check("效果開關：只關指定的項目；不認得的名稱忽略", fx["pointer"] is False and fx["typing"] is False and fx["smooth_scroll"] and "bogus" not in fx, fx)
 br5 = FakeBr(boxes3); c = FakeCtl2(); lk = DR.Look(br5, c, align=AL, effects={"pointer": False}); lk.step("a", True)
 lk.act("a", "@e9", press=True)
 check("示範游標關掉 → 動作前用外框框住目標（前一種做法），不發布游標與按下",
