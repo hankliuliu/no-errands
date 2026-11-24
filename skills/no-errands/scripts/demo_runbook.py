@@ -21,7 +21,11 @@
         通道（劇本 tunnel）→ 檢查指令（失敗且有 fix 就修一次再查；資料不是 demo-base → 還原）→ 帳號登入 →
         核准與次數（長期核准下自動續）→ 備案檔 → 瀏覽器乾淨狀態 → 依當下螢幕排好視窗 → 停在「按下一步開始」。
         登入失效不會自動重新登入（要密碼）：只報出來，上場前請 agent 跑 login。
-        任何一項不過就當場報出來、不啟動。劇本資料夾的「上場前準備.cmd」就是這個指令（不經 agent）。
+        任何一項不過就當場報出來、不啟動。劇本資料夾的「上場前準備.lnk」就是這個指令（不經 agent）。
+  demo_runbook.py launcher  <runbook.json> [--force]           # 在劇本資料夾建「上場前準備.lnk」（Windows）
+        排練第一次整場成功時會自動建（已經有就不動）；--force 重建。
+        連線檢查：劇本有 ping_url／ping_path 就用；有通道（tunnel）就用 Mattermost 的 ping；都沒有就檢查首頁。
+        劇本沒有還原指令＝不改資料的場景：結束時只顯示「示範結束」，不顯示還原結果。
 
 劇本裡的 preflight／reset／tunnel 是會在本機執行的指令：validate 會全部列出；只跑自己寫的或看過的劇本。
 這些指令照 POSIX 規則拆成「程式＋參數」直接執行、不經任何殼層（從 cmd、檔案總管、Git Bash 啟動結果都一樣）；
@@ -35,7 +39,7 @@ preflight／rehearse／live 會自動起草同一份清單，由發件匣伺服�
 政策 demo.persist=off → 一次性：紀錄寫在暫存資料夾、結束即刪，不更新 Plan B、不提出修改。
 紀錄只含結構與數字（步驟、耗時、選取方式、斷言結果）；截圖留本機（可能含系統畫面內容，分享前自己看過）。
 """
-import copy, hashlib, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, urllib.request
+import copy, hashlib, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import policy  # noqa: E402
@@ -1605,7 +1609,7 @@ def execute(rb, mode, a):
             state["reset"] = {"ok": ok_, "results": res_}
             with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False, indent=1)
-            ctl.publish(ended={"reset": bool(ok_)})
+            ctl.publish(ended={"reset": None if ok_ is None else bool(ok_)})   # None＝不需要還原：標記只顯示「示範結束」
             try:
                 if ctl.step_mode():
                     ctl.wait_next(status="done")                 # 講者模式：按「下一步」（結束）才收
@@ -1627,10 +1631,61 @@ def execute(rb, mode, a):
                "paused_s": round(sum(s.get("paused_s", 0) for s in state["steps"]), 1), "stopped": stopped,
                "timeouts_skipped": [s["id"] for s in state["steps"] if any(a.get("timeout_skipped") for a in s.get("actions") or [])],
                "dialog_before_caption": list(getattr(getattr(br, "look", None), "dialog_violations", []) or [])}
+    # 第一次用講的請 agent 做、之後點了就走（wishes 第 6 項）：排練整場跑完、每一步都成功 → 劇本資料夾自動放一個
+    # 「上場前準備」啟動檔（已經有就不動）。只跑一段（--from／--to）或有失敗的不算。
+    if (mode == "rehearse" and summary["ok"] and stopped is None and not summary["failed"]
+            and not arg(a, "--from") and not arg(a, "--to") and len(state["steps"]) == len(rb.get("steps") or [])):
+        summary["launcher"] = make_launcher(rb, overwrite=False)
     if not persist:
         shutil.rmtree(run_dir, ignore_errors=True)
         summary["note"] = "demo.persist=off：一次性執行，紀錄已刪除"
     out(summary, 0 if summary["ok"] else 1)
+
+
+LAUNCHER_NAME = "上場前準備.lnk"
+
+# ASCII only：路徑從環境變數讀（中文路徑走命令列參數會被字碼頁弄壞）
+_LNK_PS = ("$s = New-Object -ComObject WScript.Shell; $l = $s.CreateShortcut($env:NE_LNK); "
+           "$l.TargetPath = $env:NE_TGT; $l.Arguments = $env:NE_ARGS; $l.WorkingDirectory = $env:NE_WD; "
+           "$l.WindowStyle = 1; $l.Save(); if (Test-Path -LiteralPath $env:NE_LNK) { 'ok' } else { 'missing' }")
+
+
+def make_launcher(rb, overwrite=False):
+    """在劇本資料夾建「上場前準備.lnk」：雙擊＝講者模式的 standby（pythonw，不出現主控台視窗）。
+    只支援 Windows。回 {"ok", "path", "created"|"exists"|"error"}。"""
+    lnk = os.path.join(rb["_dir"], LAUNCHER_NAME)
+    if os.name != "nt":
+        return {"ok": False, "path": lnk, "error": "啟動檔目前只支援 Windows"}
+    if os.path.exists(lnk) and not overwrite:
+        return {"ok": True, "path": lnk, "exists": True}
+    pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    tgt = pyw if os.path.exists(pyw) else sys.executable
+    args = '"%s" standby "%s" --presenter' % (os.path.abspath(__file__), rb["_path"])
+    # 捷徑元件存檔時用系統字碼頁：英文系統上存不了中文檔名（CI 45338402512：FileNotFoundException）。
+    # 先用英文的暫存名稱建好，再由這裡改成中文名稱。
+    tmp = os.path.join(rb["_dir"], "ne-launcher-%d.lnk" % os.getpid())
+    env = dict(os.environ, NE_LNK=tmp, NE_TGT=tgt, NE_ARGS=args, NE_WD=rb["_dir"])
+    try:
+        p = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _LNK_PS], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", env=env, timeout=60)
+        if (p.stdout or "").strip().endswith("ok") and os.path.exists(tmp):
+            os.replace(tmp, lnk)
+    except Exception as e:
+        return {"ok": False, "path": lnk, "error": str(e)[:160]}
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    ok = os.path.exists(lnk)
+    return {"ok": ok, "path": lnk, "created": ok, "target": tgt} if ok else \
+        {"ok": False, "path": lnk, "error": ((p.stderr or p.stdout) or "").strip()[-200:]}
+
+
+def launcher(rb, a):
+    o = make_launcher(rb, overwrite="--force" in a)
+    out(o, 0 if o.get("ok") else 1)
 
 
 def show_hang_notice(rb, run_dir, ctl, reset, hold_s=10.0, launch=True):
@@ -1642,11 +1697,12 @@ def show_hang_notice(rb, run_dir, ctl, reset, hold_s=10.0, launch=True):
             nowin.popen_background([sys.executable, os.path.join(HERE, "demo_stage.py"), run_dir],
                                    stdin=subprocess.DEVNULL, stdout=lg, stderr=lg,
                                    env=dict(os.environ, NO_ERRANDS_HOME=policy.HOME, PYTHONIOENCODING="utf-8"))
-        ok_ = bool(reset.get("ok"))
+        ok_ = reset.get("ok")
+        ok_ = None if ok_ is None and not needs_reset(rb) else bool(ok_)
         ctl.publish(status="running", card="end", look=None, pointer=None, beat={"text": "", "i": 0, "n": 0}, role="", section="",
                     card_data={"heading": "示範中斷：畫面卡住，已自動收起",
                                "text": "不是操作造成的。可以改放備案畫面接著講。",
-                               "points": [], "reset": "資料已還原" if ok_ else "還原沒有成功：請 agent 處理",
+                               "points": [], "reset": "" if ok_ is None else ("資料已還原" if ok_ else "還原沒有成功：請 agent 處理"),
                                "reset_ok": ok_})
         t_ = time.time()
         seen = int(ctl.read().get("next_seq", 0))
@@ -1990,37 +2046,67 @@ def login(rb, a):
          "landed": cur.strip().splitlines()[-1] if cur.strip() else ""}, 0 if ok else 1)
 
 
+def needs_reset(rb):
+    """劇本有還原指令才需要還原；沒有＝這個場景不改資料（例如只讀的網站），結束時不顯示還原結果。"""
+    return bool((rb.get("reset") or {}).get("commands"))
+
+
+def reset_consented(rb):
+    """使用者同意過「這組」還原指令嗎：新的同意表（demo.reset_consents，鍵是指令 sha256，可存很多場景），
+    或舊的單一欄位（demo.reset_consent.commands_sha256，照樣算數）。"""
+    d = policy.load().get("demo") or {}
+    sha = reset_sha(rb)
+    return sha in (d.get("reset_consents") or {}) or (d.get("reset_consent") or {}).get("commands_sha256") == sha
+
+
 def do_reset(rb):
-    """回 (ok, 結果或錯誤)。政策檔要有使用者對這組指令雜湊的同意。"""
-    r = rb.get("reset") or {}
-    consent = ((policy.load().get("demo") or {}).get("reset_consent") or {})
-    if consent.get("commands_sha256") != reset_sha(rb):
+    """回 (ok, 結果或錯誤)。ok＝None：劇本沒有還原指令，不需要還原。政策檔要有使用者對這組指令雜湊的同意。"""
+    if not needs_reset(rb):
+        return None, "不適用：這個劇本沒有還原指令"
+    if not reset_consented(rb):
         return False, "政策檔沒有使用者對「這組」還原指令的同意"
     res = []
-    for c in r.get("commands") or []:
+    for c in (rb.get("reset") or {}).get("commands") or []:
         rc, o, e = run_cmd(c, 300)
         res.append({"rc": rc, "tail": (o or e).strip().splitlines()[-1:]})
     return all(x["rc"] == 0 for x in res), res
 
 
 def reset(rb, a):
-    consent = ((policy.load().get("demo") or {}).get("reset_consent") or {})
-    if consent.get("commands_sha256") != reset_sha(rb):
+    if needs_reset(rb) and not reset_consented(rb):
         out({"ok": False, "error": "政策檔沒有使用者對「這組」還原指令的同意（指令改過就要重新同意）",
              "commands": (rb.get("reset") or {}).get("commands"), "commands_sha256": reset_sha(rb),
              "next": "把指令給使用者看；他同意後：policy.py set demo.reset_consent <sha256> --reason \"<原話>\""}, 3)
     ok, res = do_reset(rb)
-    out({"ok": ok, "results": res}, 0 if ok else 1)
+    out({"ok": ok is not False, "results": res, "applicable": ok is not None}, 1 if ok is False else 0)
 
 
 # ---------------------------------------------------------------- standby（上場前準備）
 
 def http_ok(url, timeout=3):
+    """連得到就算通：2xx、3xx 都算（首頁常常轉址）。帶一般瀏覽器的 User-Agent——有些網站對沒帶的回 403。"""
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) no-errands-standby"})
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            return r.status == 200
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return 200 <= r.status < 400
+    except urllib.error.HTTPError as e:
+        return 300 <= e.code < 400
     except Exception:
         return False
+
+
+def ping_url_of(rb):
+    """上場前連線檢查的網址：劇本有設 ping_url／ping_path 就用；有通道（自架的 Mattermost 那類）照舊用它的 ping；
+    都沒有（例如公開網站的場景）就檢查首頁。"""
+    t = rb["target"]
+    base = t["base_url"].rstrip("/")
+    if t.get("ping_url"):
+        return t["ping_url"]
+    if t.get("ping_path"):
+        return base + t["ping_path"]
+    if rb.get("tunnel"):
+        return base + "/api/v4/system/ping"
+    return base + t.get("home_path", "/")
 
 
 def clean_profile(prof):
@@ -2163,7 +2249,7 @@ def standby(rb, a):
     if old:
         say("  已關掉上一次準備好的畫面（%s）" % os.path.basename(old))
     # 1. 通道
-    ping = rb["target"].get("ping_url") or rb["target"]["base_url"].rstrip("/") + rb["target"].get("ping_path", "/api/v4/system/ping")
+    ping = ping_url_of(rb)
     tun_ok = http_ok(ping)
     tun_pid = None
     if not tun_ok and rb.get("tunnel"):
@@ -2336,6 +2422,8 @@ def main():
         reset(rb, a)
     if sub == "standby":
         standby(rb, a)
+    if sub == "launcher":
+        launcher(rb, a)
     out({"ok": False, "error": "未知子指令"}, 2)
 
 

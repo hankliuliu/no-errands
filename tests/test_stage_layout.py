@@ -487,7 +487,7 @@ _eng = open(os.path.join(os.path.dirname(L.__file__), "demo_runbook.py"), encodi
 _exec = _eng[_eng.index("def execute("):_eng.index("def show_hang_notice(")]
 check("H1 引擎正常流程不發布片頭、換角色、片尾卡（只剩卡住說明卡）",
       'card="title"' not in _exec and 'card="transition"' not in _exec and 'card="end"' not in _exec, "")
-check("H1 結束：停在真頁面，發布 ended（還原結果），收場時才關瀏覽器", "ended={\"reset\": None}" in _exec and "ended={\"reset\": bool(ok_)}" in _exec, "")
+check("H1 結束：停在真頁面，發布 ended（還原結果；劇本沒有還原指令時是 None＝不顯示還原結果），收場時才關瀏覽器", "ended={\"reset\": None}" in _exec and "ended={\"reset\": None if ok_ is None else bool(ok_)}" in _exec, "")
 check("H2 角色、等待、結束訊息在右上角的標記（字幕組上方那一小列不再放進字幕組）",
       "self.badgew" in _src and "self.caphdr.pack(" not in _src and "def update_badge" in _src, "")
 check("H2 標記在疊加視窗的上下順序清單裡、滑鼠穿透", "self.badgew, self.ptrw" in _src and "for w in (self.ptrw, self.badgew)" in _src, "")
