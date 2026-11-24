@@ -36,6 +36,9 @@ FONT = "Microsoft JhengHei UI"
 OFF = -32000                                            # 移到螢幕外
 PROBE_EDGE = 2                                          # 試擺：照舞台的大小擺在螢幕右邊外面，只留 2 像素在螢幕上（Chrome 才不會判定
                                                          # 整個看不到而不畫頁面）；準備期間不蓋背板，觀眾幾乎看不到
+# 瀏覽器的分頁列與網址列照原樣顯示（使用者 11-24：「分頁和網址列不用藏」——live demo 要真實，觀眾看得到是哪個網站）：
+# 視窗整個放在舞台上、頁面不裁切。NE_STAGE_HIDE_SHELL=1 → 舊做法（外框推到舞台上緣外、照劇本的 crop 裁切頁面）
+HIDE_SHELL = bool(os.environ.get("NE_STAGE_HIDE_SHELL"))
 EXIT_HINT = "要離開這個畫面：按 Esc 或 Ctrl+Shift+F12，或雙擊背景"
 TIME_SHORT_HINT = "時間不夠時：右下角「⋯」→「結束示範」，停在當下的畫面並還原資料"
 BADGE_ALPHA = 0.85                                       # 右上角標記的底（半透明；字是白的、看得清楚）
@@ -601,8 +604,9 @@ class Stage:
         bw, bh = self.badgew.winfo_reqwidth(), self.badgew.winfo_reqheight()
         m = max(8, round(self.H * 0.012))
         sx, sy, sw, sh = self.lay["stage"]
+        py = self.page_area(now.get("account"))[1]      # 網頁從哪裡開始（分頁列與網址列照原樣顯示時，在它們下面）
         top_ = round(self.H * 0.15)                      # 頁面最上面兩列（標誌、搜尋、頭像；頻道名稱與圖示）的下方：不蓋頁面的圖示
-        rect = (sx + sw - bw - m, sy + top_, bw, bh)
+        rect = (sx + sw - bw - m, py + top_, bw, bh)
         if rect != self.badge_rect:
             self.badge_rect = rect
             self.badgew.geometry("%dx%d+%d+%d" % (bw, bh, rect[0], rect[1]))
@@ -940,6 +944,20 @@ class Stage:
         self.hk.start()
 
     # ---------- 瀏覽器視窗
+    def page_area(self, acct=None):
+        """網頁內容（不含瀏覽器外框）在螢幕上的範圍。外框照原樣顯示時＝舞台扣掉最上面的分頁列與網址列；
+        外框藏起來（NE_STAGE_HIDE_SHELL）時＝整個舞台（外框在舞台外）。外框高度還沒量到時先當 0。"""
+        sx, sy, sw, sh = self.lay["stage"]
+        if HIDE_SHELL:
+            return (sx, sy, sw, sh)
+        shell = (getattr(self, "shells", None) or {}).get(acct or (self.now or {}).get("account"))
+        bt = int(shell[1]) if shell else 0
+        return (sx, sy + bt, sw, sh - bt)
+
+    def page_crop(self, now):
+        """頁面裁切：外框照原樣顯示時不裁（裁上面會被網址列蓋住、裁左邊會切掉網址列開頭）。"""
+        return (now.get("crop") or {}) if HIDE_SHELL else {}
+
     def win_of(self, acct, profile):
         h = self.wins.get(acct)
         if h and u32.IsWindow(h):
@@ -973,7 +991,7 @@ class Stage:
                     self.placed[acct] = "off"
                 continue
             self.active_hwnd = h
-            crop = now.get("crop") or {}
+            crop = (now.get("crop") or {}) if HIDE_SHELL else {}
             key = json.dumps([crop, now.get("zoom"), self.W, self.H, bool(probe)])
             if self.placed.get(acct) == key:
                 continue
@@ -990,7 +1008,7 @@ class Stage:
                 shell = shells[acct]
             else:
                 continue
-            x, y, w, hh = L.browser_rect(self.lay["stage"], shell, crop, float(now.get("zoom") or 1.5), dpr_of(h))
+            x, y, w, hh = L.browser_rect(self.page_area(acct), shell, crop, float(now.get("zoom") or 1.5), dpr_of(h))
             if probe:
                 dx_ = (self.W - PROBE_EDGE) - x                # 試擺在螢幕右邊外面、只留 2 像素（大小照舞台）：準備期間不蓋背板
                 x += dx_
@@ -1021,7 +1039,7 @@ class Stage:
             if probe and cr:
                 dx_ = (getattr(self, "probe_dx", {}) or {}).get(acct, 0)
                 cr = (cr[0] - dx_, cr[1], cr[2], cr[3])        # 螢幕外試擺：換回舞台座標再判斷貼齊
-            fit = L.fit_report((self.W, self.H), self.lay["stage"], cr)
+            fit = L.fit_report((self.W, self.H), self.page_area(acct), cr)
             rec.update(window=list(wr), want=list(self.want.get(acct) or []), content=list(cr) if cr else None,
                        placement_error=err, fit=fit, replaced=self.replaced)
             if (err is not None and err > 3) or not fit["ok"]:
@@ -1086,7 +1104,7 @@ class Stage:
                 pass
 
     def ptr_screen(self, now, p):
-        return L.css_point(p, self.lay["stage"], now.get("crop") or {}, float(now.get("zoom") or 1.5), getattr(self, "dpr", 1.0))
+        return L.css_point(p, self.page_area(now.get("account")), self.page_crop(now), float(now.get("zoom") or 1.5), getattr(self, "dpr", 1.0))
 
     def update_pointer(self, now):
         """示範游標：卡片（片頭、轉場、片尾）時淡出；新畫面開始時從舞台中間偏下淡入，再平順移到目標。"""
@@ -1166,7 +1184,7 @@ class Stage:
         acct = now.get("account")
         rect = None
         if m.get("box") and not now.get("card") and acct and self.placed.get(acct) not in (None, "off"):
-            rect = L.css_to_screen(m["box"], self.lay["stage"], now.get("crop") or {}, float(now.get("zoom") or 1.5),
+            rect = L.css_to_screen(m["box"], self.page_area(now.get("account")), self.page_crop(now), float(now.get("zoom") or 1.5),
                                    getattr(self, "dpr", 1.0))
         self.mask_rect = None                            # Sprint H3：沒有遮罩（頁面上切到一半的列就讓它那樣）
         if self.maskw.winfo_viewable():
@@ -1182,7 +1200,7 @@ class Stage:
         rects = []
         for b in boxes:
             try:
-                rects.append(L.css_to_screen(b, self.lay["stage"], now.get("crop") or {}, float(now.get("zoom") or 1.5),
+                rects.append(L.css_to_screen(b, self.page_area(now.get("account")), self.page_crop(now), float(now.get("zoom") or 1.5),
                                              getattr(self, "dpr", 1.0)))
             except Exception:
                 pass
@@ -1194,7 +1212,7 @@ class Stage:
         acct = now.get("account")
         rect = None
         if box and not now.get("card") and acct and self.placed.get(acct) not in (None, "off"):
-            rect = L.css_to_screen(box, self.lay["stage"], now.get("crop") or {}, float(now.get("zoom") or 1.5),
+            rect = L.css_to_screen(box, self.page_area(now.get("account")), self.page_crop(now), float(now.get("zoom") or 1.5),
                                    getattr(self, "dpr", 1.0))
         self.look_rect = rect                            # 字幕避開這一拍目標用的位置（Sprint H3：外框本身不畫）
         key = (now.get("look") or {}).get("seq")
