@@ -392,8 +392,9 @@ WATCH = {"watch": None, "win": None}   # 閒置閘門：操作中監看使用者
 
 
 def idle_gate(prof, pol, a):
-    """會搶前景的 app：只在使用者閒置時做（或使用者已同意）。回傳後開始監看。"""
-    if not prof.get("raises_foreground") or pol.get("visibility") == "watch":
+    """會搶前景的 app：只在使用者閒置時做（或使用者已同意、或政策設成立刻／觀看）。回傳後開始監看。
+    不論哪一種，只要會跳到前面，使用者一有輸入就讓開（下面的監看不因觀看模式或立刻開始而關掉）。"""
+    if not prof.get("raises_foreground"):
         return
     sig = idle.screen_signals()
     why = idle.screen_unavailable(sig)
@@ -402,7 +403,9 @@ def idle_gate(prof, pol, a):
     if idle.single_lock_signal(sig):   # 只有一個訊號說鎖定：照常進行，但記下來（之後判斷誤判用）
         sys.stderr.write("screen: one lock signal only, proceeding %s" % json.dumps(sig) + chr(10))
     mode = pol.get("busy_behavior", "wait_idle")
-    if mode == "ask":
+    if pol.get("visibility") == "watch" or pol.get("start_when") == "now":
+        pass   # 使用者設定了「看著做」或「立刻開始」：不等閒置；下面的輸入監看照樣開著（他一動就縮小交還）
+    elif mode == "ask":
         if "--user-ok" not in a:
             raise Refused("這個 app 操作時可能跳到前景：先問使用者現在方便嗎，同意後加 --user-ok")
     elif "--user-ok" in a:
