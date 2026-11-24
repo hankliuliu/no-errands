@@ -137,6 +137,37 @@ def main():
         check("tab new 到未授權的敏感網站 → 拒", rc == 3, o)
         rc, o = neb("read", "https://web.whatsapp.com/")
         check("read 未授權的敏感網站 → 拒", rc == 3, o)
+
+        # real read（平常的瀏覽器、唯讀）：守門的拒絕路徑——一律不開瀏覽器，三平台都跑。
+        # 用另一個全新的家目錄（上面的測試授權過 Gmail 等；2026-11-24 那樣跑曾真的在使用者的 Edge 開了 Gmail）
+        home_r = tempfile.mkdtemp(prefix="ne-neb-real-")
+        json.dump({}, open(os.path.join(home_r, "policy.json"), "w"))
+        env_r = dict(env, NO_ERRANDS_HOME=home_r)
+
+        def real(*a, e=None):
+            p = subprocess.run([sys.executable, NEB, "real"] + list(a), capture_output=True, text=True, encoding="utf-8",
+                               env=e or env_r)
+            return p.returncode, p.stdout
+        rc, o = real("read", "https://web.whatsapp.com/")
+        check("real read 聊天網站 → 拒（不打開）", rc == 3 and "不開郵件、聊天" in o, o)
+        rc, o = real("read", "https://mail.google.com/mail/u/0")
+        check("real read 郵件 → 拒（不打開）", rc == 3 and "不開郵件、聊天" in o, o)
+        rc, o = real("read", "https://mail.google.com/mail/u/0", e=env)          # 這個家目錄授權過 Gmail
+        check("real read 郵件就算授權了也拒（真的帳號一打開就變已讀）", rc == 3 and "授權" not in o.split("不開")[0] and "不開郵件、聊天" in o, o)
+        rc, o = real("read", "javascript:alert(1)")
+        check("real read 非 http(s) 網址 → 拒", rc == 3 and "javascript" in o, o)
+        rc, o = real("read", "about:blank")
+        check("real read about:blank → 拒（要 http(s)）", rc == 3, o)
+        rc, o = real("fill", "https://example.com", "x")
+        check("real 只有 read：fill → 拒", rc == 3 and "只有 read" in o, o)
+        rc, o = real("read", "https://example.com", "extra")
+        check("real read 多出參數 → 拒", rc == 3, o)
+        p = subprocess.run([sys.executable, NEB, "--session", "t", "real", "read", "https://example.com"], capture_output=True,
+                           text=True, encoding="utf-8", env=env_r)
+        check("real read 不接受全域旗標（--session／--profile 是專用瀏覽器的）", p.returncode == 3 and "不接受" in p.stdout, p.stdout)
+        lg = open(os.path.join(home_r, "neb-ledger.jsonl"), encoding="utf-8").read()
+        check("real read 的拒絕都寫進紀錄（不含網址路徑以外的內容）", lg.count('"sub": "real') >= 6, lg[-300:])
+        shutil.rmtree(home_r, ignore_errors=True)
     finally:
         shutil.rmtree(home, ignore_errors=True)
     print("ALL PASS (%d)" % len(R) if all(R) else "FAILED %d/%d" % (R.count(False), len(R)))

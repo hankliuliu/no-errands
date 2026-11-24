@@ -302,6 +302,7 @@ def managed_block(home, paths, checks=None, repo=None):
         status("browser", "- 操作網頁：`%s open <url>`→`... snapshot -i -c`→`... click @ref` / `... fill @ref 文字`→`... get text @ref`→`... close`"
                % neb_cmd(home)),
         status("profile", "- 登入過的站免再登入：上述指令加 `--profile \"%s\"`" % prof),
+        status("browser", "- 要登入的頁面先用使用者平常的瀏覽器（Chrome／Edge／Brave，依序試）唯讀地讀（Windows）：`%s real read <url> [--out 檔]`；回報沒登入才改走上一行的專用 profile（郵件／聊天／社群／金融不走這條）" % neb_cmd(home)),
         status("desktop", "- 看桌面視窗：`%s <App.exe> screenshot <絕對路徑.png>`" % ned_cmd(home)),
         status("desktop", "- 操作桌面：`%s <App.exe> snapshot -i --compact`→`... click '@ref'` / `... set-value '@ref' 文字`→`... get '@ref' --property value`（ned 會鎖定 app 範圍）" % ned_cmd(home)),
         "- 政策：%s（`%s show`；只在使用者明確要求時才改）" % (pol_mod.summary(pol), pol_cmd),

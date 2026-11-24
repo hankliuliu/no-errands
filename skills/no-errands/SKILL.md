@@ -23,7 +23,11 @@ description: >-
    `ned <App.exe> screenshot out.png`；全桌面與各類成果的看法見 [references/eyes.md](references/eyes.md)。
 3. **瀏覽器（乾淨 profile）**：`agent-browser open <url>`——免安裝、直接驅動系統
    Chrome/Edge。詳見 [references/browser.md](references/browser.md)。
-4. **瀏覽器（agent 專用已登入 profile）**：`agent-browser --profile ~/.no-errands/browser-profile`。
+4. **使用者平常的瀏覽器（只讀，Windows 的 Chrome／Edge／Brave）**：遇到登入牆，先試
+   `neb.py real read <網址> [--out 檔]`——開一個新視窗、讀頁面文字、只關自己開的那個，登入狀態就是他平常的；
+   不打字、不點頁面。回報沒登入（被導去登入頁）才往下一階。郵件、聊天、社群、金融類網站一律不走這條
+   （用的是他真的帳號，一打開就會變已讀），照舊走下一階的專用 profile 與同意閘門。
+   **瀏覽器（agent 專用已登入 profile）**：`agent-browser --profile ~/.no-errands/browser-profile`。
    未登入＝請使用者在跳出的視窗登入**一次**（你輪詢登入狀態，不等回話），之後永遠有效。
    ⛔ **同意閘門（進入第 4、5 階前必查）**：第一次要碰任何**個人帳號面**（聊天、郵件、
    雲端硬碟、金融、社群）之前——**包含把該 app 開到登入畫面**——必須先在對話中講清楚
