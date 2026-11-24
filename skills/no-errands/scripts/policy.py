@@ -22,7 +22,8 @@ CLI（agent 只在「使用者於對話中明確要求」時才可呼叫 set/gra
   policy.py set outbox.port <埠> --reason "..."            # 發件匣頁面的埠（只改這台的設定）
   policy.py domain add <host[:port]> <app> --reason "..."  # 登記敏感網域（例：經通道的示範主機）
       [--demo-accounts a,b] [--agent-login a]   # 示範用途：只有這些帳號能跑核准過的劇本；agent-login＝使用者同意 agent 代為登入
-  policy.py set demo.reset_consent <還原指令的 sha256> --reason "<使用者原話>"   # 指令改了就要重新同意
+  policy.py set demo.reset_consent <還原指令的 sha256> --reason "<使用者原話>"   # 指令改了就要重新同意；每個場景各一組，可以存很多組
+  policy.py unset demo.reset_consent <還原指令的 sha256> --reason "<使用者原話>" # 撤回那一組的同意
   policy.py domain set <host[:port]> runbook_approval page|standing --reason "<使用者原話>"
       page（預設）：每份劇本清單都進發件匣頁面等使用者核准。
       standing（長期核准）：只要使用者曾在頁面上親自核准過同一台主機、帳號不超出那次範圍的劇本，
@@ -316,7 +317,7 @@ def main(argv=None):
         _out({"ok": True, "path": path(home), "policy": shown})
     if cmd == "summary":
         print(summary(pol)); sys.exit(0)
-    if not reason:
+    if not reason.strip():
         _out({"ok": False, "error": "修改政策必須附 --reason（使用者在對話中的要求摘要）；"
                                     "無人值守的執行不得修改政策"}, 3)
     if cmd in ("grant", "revoke") and len(a) == 2:
@@ -356,10 +357,25 @@ def main(argv=None):
         pol["sensitive_domains"] = ents
         detail = {"domain_add": a[2].lower(), "app": canonical_app(a[3]), "demo_accounts": ent.get("demo_accounts"),
                   "agent_login": ent.get("agent_login")}
-    elif cmd == "set" and len(a) == 3 and a[1] == "demo.reset_consent":
-        pol.setdefault("demo", {})["reset_consent"] = {"commands_sha256": a[2], "reason": reason,
-                                                       "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
-        detail = {"demo.reset_consent": a[2][:16]}
+    elif cmd in ("set", "unset") and len(a) == 3 and a[1] == "demo.reset_consent":
+        # 還原指令的同意：可以存很多組（每個示範場景一組），鍵是指令的 sha256。
+        # 舊的單一欄位 demo.reset_consent 不改寫、照樣算數；只有使用者撤回那一組時才清掉。
+        sha = a[2].lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            _out({"ok": False, "error": "要給還原指令的 sha256（64 個十六進位字元）：demo_runbook.py reset 拒絕時會印出來"}, 2)
+        dm = pol.setdefault("demo", {})
+        table = dm.setdefault("reset_consents", {})
+        if cmd == "set":
+            table[sha] = {"reason": reason, "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            detail = {"demo.reset_consent": sha[:16]}
+        else:
+            legacy = (dm.get("reset_consent") or {}).get("commands_sha256") == sha
+            if sha not in table and not legacy:
+                _out({"ok": False, "error": "沒有這一組還原指令的同意，不用撤回"}, 2)
+            table.pop(sha, None)
+            if legacy:
+                dm.pop("reset_consent", None)
+            detail = {"demo.reset_consent_revoked": sha[:16]}
     elif cmd == "domain" and len(a) == 5 and a[1] == "set" and a[3] == "runbook_approval"             and a[4] in ("page", "standing"):
         ents = pol.get("sensitive_domains") or []
         hit = [e for e in ents if str(e.get("host", "")).lower() == a[2].lower()]

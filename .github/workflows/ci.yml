@@ -76,6 +76,7 @@ jobs:
           "$PY" tests/test_neb.py | tee neb.txt
           "$PY" tests/test_demo_runbook.py | tee runbook.txt
           "$PY" tests/test_standing_approval.py | tee standing.txt
+          "$PY" tests/test_any_scenario.py | tee anyscn.txt
           "$PY" tests/test_stage_layout.py | tee stage.txt
           "$PY" tests/test_line_profile.py | tee lineprof.txt
           "$PY" tests/test_guard_rules.py | tee guard.txt
@@ -144,6 +145,7 @@ jobs:
             neb.txt
             runbook.txt
             standing.txt
+            anyscn.txt
             stage.txt
             lineprof.txt
             guard.txt
