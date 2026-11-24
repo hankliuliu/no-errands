@@ -116,20 +116,28 @@ def name_level(display, wanted):
     return 0
 
 
+def _title_name(kids):
+    """標頭工具列的「名稱按鈕」：通常是第一顆；官方帳號（真機 2026-11-25）第一顆是沒有名稱的頭像，
+    名稱在第二顆。只跳過開頭「一顆」沒名稱的按鈕，不往後找（避免把功能按鈕當成名稱）。"""
+    if kids and not kids[0].get("name") and len(kids) > 1:
+        return kids[1].get("name") or ""
+    return (kids[0].get("name") or "") if kids else ""
+
+
 def _header_display(prof, snap):
-    """開著的對話標頭工具列第一顆的名稱（「名稱, N人」或「名稱 (N)」）；沒有標頭回 None。只比對、不輸出。"""
+    """開著的對話標頭工具列名稱按鈕的名稱（「名稱, N人」或「名稱 (N)」）；沒有標頭回 None。只比對、不輸出。"""
     for node, _ in walk(snap["tree"]):
         kids = [k for k in node.get("children") or [] if k.get("role") == "button"]
-        if node.get("role") != "listbox" and len(kids) >= 6 and kids[0].get("name"):
-            return kids[0]["name"]
+        if node.get("role") != "listbox" and len(kids) >= 6 and _title_name(kids):
+            return _title_name(kids)
     return None
 
 
 def is_header_toolbar(node, chat):
-    """開著的對話標頭工具列：非 listbox、≥6 顆按鈕、第一顆的名稱（去掉人數）和指名對話相符。"""
+    """開著的對話標頭工具列：非 listbox、≥6 顆按鈕、名稱按鈕的名稱（去掉人數）和指名對話相符。"""
     kids = [k for k in (node or {}).get("children") or [] if k.get("role") == "button"]
     return bool(node) and node.get("role") != "listbox" and len(kids) >= 6 and bool(chat) \
-        and name_level(kids[0].get("name") or "", chat) > 0
+        and name_level(_title_name(kids), chat) > 0
 
 
 def header_toolbar(snap, chat):
@@ -148,7 +156,7 @@ def header_ok(prof, snap, chat):   # snap 必須是完整 snapshot（-i 會漏�
     if prof.get("header_toolbar"):
         for node, _ in walk(snap["tree"]):
             kids = [k for k in node.get("children") or [] if k.get("role") == "button"]
-            if node.get("role") != "listbox" and len(kids) >= 6 and name_level(kids[0].get("name") or "", chat):
+            if node.get("role") != "listbox" and len(kids) >= 6 and name_level(_title_name(kids), chat):
                 return True
         return False
     return True
@@ -165,7 +173,7 @@ def header_members(prof, snap, chat):
     for node, _ in walk(snap["tree"]):
         kids = [k for k in node.get("children") or [] if k.get("role") == "button"]
         if node.get("role") != "listbox" and len(kids) >= 6:
-            disp = kids[0].get("name") or ""
+            disp = _title_name(kids)
             if not name_level(disp, chat):
                 continue
             m = _MEMBERS_RE.search(disp)

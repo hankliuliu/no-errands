@@ -61,6 +61,18 @@ check("header_members：「Group A, 4人」→ 4", cg.header_members(P, snap("Gr
 check("header_members：一對一（沒有人數）→ 2", cg.header_members(P, snap("Group A"), "Group A") == 2)
 check("header_members：沒開對話 → None", cg.header_members(P, s, "Group A") is None)
 check("header_members：別的對話的標頭不算 → None", cg.header_members(P, snap("Group A Ops, 3人"), "Group A") is None)
+# 官方帳號（真機 2026-11-25）：標頭 6 顆，第一顆是沒名稱的頭像，名稱在第二顆，沒有人數
+def oa_snap(title, lead=("",)):
+    tb = [btn(n, "@s:e%d" % (70 + i)) for i, n in enumerate(list(lead) + [title, "貼圖小舖", "搜尋聊天", "以個別視窗開啟", "其他功能"])]
+    return {"tree": {"role": "window", "name": "LINE", "children": [
+        {"role": "group", "children": [{"role": "listbox", "children": [btn(title + ", hi, 2026年11月21日", "@s:e1")]}]},
+        {"role": "group", "children": [{"role": "group", "children": tb}]}]}}
+check("官方帳號：頭像沒名稱、名稱在第二顆 → header_ok 為真", cg.header_ok(P, oa_snap("Sticker News"), "Sticker News"))
+check("官方帳號：名稱是別的 → header_ok 為假", not cg.header_ok(P, oa_snap("Sticker News Ops"), "Sticker News"))
+check("官方帳號：header_toolbar 找得到", cg.header_toolbar(oa_snap("Sticker News"), "Sticker News") is not None)
+check("官方帳號：沒有人數 → 2", cg.header_members(P, oa_snap("Sticker News"), "Sticker News") == 2)
+check("開頭兩顆都沒名稱 → 不往後找（header_ok 為假）", not cg.header_ok(P, oa_snap("Sticker News", lead=("", "")), "Sticker News"))
+check("第一顆有名稱（別的）→ 不看第二顆", not cg.header_ok(P, oa_snap("Sticker News", lead=("Other",)), "Sticker News"))
 check("LINE profile 不再要求首行含名稱、改用發言者數", not P.get("verify_export_first_line_contains_chat")
       and P.get("verify_export_senders_within_members"))
 
