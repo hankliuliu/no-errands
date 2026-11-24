@@ -100,9 +100,11 @@ def main():
         else:
             check("(4) 建出 上場前準備.lnk", r4.get("created") and os.path.exists(r4["path"]), r4)
             check("(4) 已經有就不動", D.make_launcher(D.load_rb(rbp)).get("exists") is True)
+            _ascii_copy = os.path.join(rbd, "readback.lnk")   # 英文系統上捷徑元件開不了中文檔名：複製一份英文名稱的來讀
+            shutil.copyfile(r4["path"], _ascii_copy)
             q = subprocess.run(["powershell", "-NoProfile", "-Command",
                                 "$l=(New-Object -ComObject WScript.Shell).CreateShortcut($env:L); $l.TargetPath; $l.Arguments; $l.WorkingDirectory"],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=dict(os.environ, L=r4["path"]))
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=dict(os.environ, L=_ascii_copy))
             ln = q.stdout.strip().splitlines()
             check("(4) 雙擊＝講者模式的 standby，工作目錄是劇本資料夾",
                   len(ln) == 3 and "standby" in ln[1] and "--presenter" in ln[1] and "runbook.json" in ln[1]

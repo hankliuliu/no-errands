@@ -1661,13 +1661,24 @@ def make_launcher(rb, overwrite=False):
     pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     tgt = pyw if os.path.exists(pyw) else sys.executable
     args = '"%s" standby "%s" --presenter' % (os.path.abspath(__file__), rb["_path"])
-    env = dict(os.environ, NE_LNK=lnk, NE_TGT=tgt, NE_ARGS=args, NE_WD=rb["_dir"])
+    # 捷徑元件存檔時用系統字碼頁：英文系統上存不了中文檔名（CI 45338402512：FileNotFoundException）。
+    # 先用英文的暫存名稱建好，再由這裡改成中文名稱。
+    tmp = os.path.join(rb["_dir"], "ne-launcher-%d.lnk" % os.getpid())
+    env = dict(os.environ, NE_LNK=tmp, NE_TGT=tgt, NE_ARGS=args, NE_WD=rb["_dir"])
     try:
         p = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _LNK_PS], capture_output=True,
                            text=True, encoding="utf-8", errors="replace", env=env, timeout=60)
+        if (p.stdout or "").strip().endswith("ok") and os.path.exists(tmp):
+            os.replace(tmp, lnk)
     except Exception as e:
         return {"ok": False, "path": lnk, "error": str(e)[:160]}
-    ok = (p.stdout or "").strip().endswith("ok") and os.path.exists(lnk)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    ok = os.path.exists(lnk)
     return {"ok": ok, "path": lnk, "created": ok, "target": tgt} if ok else \
         {"ok": False, "path": lnk, "error": ((p.stderr or p.stdout) or "").strip()[-200:]}
 
