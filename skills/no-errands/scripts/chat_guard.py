@@ -370,6 +370,12 @@ def assert_allowed(prof, action, node, parents, ctx):
         if ctx.get("allow") == "list-target" and any(_is_list(prof, p_) for p_ in parents)                 and prof["chat_name"](name) == ctx.get("target_chat"):
             return
         raise Refused("只能把目標對話的清單項目捲進畫面")
+    if action == "list-wheel":
+        # scroll-to 不被支援時（LINE 的 Qt 清單：scroll_into_view_unsupported，真機 2026-11-25）的備援：
+        # 對聊天清單投遞滾輪，只為了把「目標對話自己的清單項目」捲到點得到的地方。捲動不開任何對話、不改未讀。
+        if ctx.get("allow") == "list-target" and ctx.get("target_chat") and _is_chat_list(node):
+            return
+        raise Refused("只能為了把目標對話捲進畫面而捲聊天清單")
     if action != "click":
         raise Refused("主視窗只允許語意點擊（不輸入任何文字）")
     in_list = any(_is_list(prof, p_) for p_ in parents)
@@ -489,6 +495,9 @@ def guarded(prof, action, node, parents, ctx, text=None):
             ad("scroll", node["ref_id"], "--direction", "up", "--amount", str(text or 25))
         elif action == "scroll-to":
             ad("scroll-to", node["ref_id"])
+        elif action == "list-wheel":
+            hwnd, cx, cy, n = text
+            popup_menu.wheel(hwnd, cx, cy, n)
     finally:
         if w:
             w.own_end(own)
@@ -512,6 +521,44 @@ def cmd_locate(app, prof, chat):
              "error": "名稱（不含人數標示）要相符且唯一（符合 %d 個）" % len(hits)}, 3)
     ledger(app, "locate", True, "", chat)
     out({"ok": True, "found": True, "matches": 1, "fingerprint": h(hits[0].get("name", ""))})
+
+
+def _open_by_list_wheel(prof, win, chat, ctx, step=3, max_rounds=40, settle=0.5):
+    """scroll-to 不被支援時：對聊天清單投遞滾輪（不動游標），每捲一次重新取樹、對目標項目再點一次。
+    先往下捲、到底沒點到再往上捲。每輪都重新比對：名稱要唯一且仍是同一個對話，否則停手。"""
+    if popup_menu is None or os.name != "nt":
+        raise Refused("清單捲動備援目前只支援 Windows")
+    pid = win.get("pid")
+    tops = sorted(popup_menu.popup_windows(pid), key=lambda w: (w["rect"][2] - w["rect"][0]) * (w["rect"][3] - w["rect"][1]))
+    if not tops:
+        raise Refused("找不到 app 的主視窗")
+    hwnd = tops[-1]["hwnd"]
+    cands = [l for l in popup_menu.list_rects(hwnd) if l.get("children", 0) >= 3 and l.get("buttons", 0) >= 0.8 * l["children"]]
+    if len(cands) != 1:
+        raise Refused("找不到唯一的聊天清單（符合 %d 個），不捲" % len(cands))
+    r = cands[0]["rect"]
+    cx, cy = (r[0] + r[2]) // 2, (r[1] + r[3]) // 2
+    for direction in (-1, 1):            # -1＝往下、1＝往上
+        for _ in range(max_rounds):
+            snap = snapshot(win)
+            lst, lparents = find_node(snap, _is_chat_list)
+            if not lst:
+                raise Refused("找不到聊天清單，不捲")
+            guarded(prof, "list-wheel", lst, lparents, ctx, text=(popup_menu._deepest_child(hwnd, cx, cy), cx, cy, direction * step))
+            time.sleep(settle)
+            snap = snapshot(win)
+            hits = match_chat(prof, snap, chat)
+            if len(hits) != 1 or prof["chat_name"](hits[0].get("name", "")) != ctx["target_chat"]:
+                raise Refused("捲動後對不到同一個對話（符合 %d 個），停手" % len(hits))
+            node = hits[0]
+            _, parents = find_node(snap, lambda n: n is node)
+            try:
+                guarded(prof, "click", node, parents, ctx)
+                return
+            except RuntimeError as e:
+                if "ACTION_FAILED" not in str(e):
+                    raise
+    raise Refused("捲遍聊天清單仍點不到目標對話，停手")
 
 
 def cmd_open(app, prof, chat, expect, pol):
@@ -543,15 +590,21 @@ def cmd_open(app, prof, chat, expect, pol):
         if "ACTION_FAILED" not in str(e):
             raise
         # 項目可能在清單看不到的地方：捲進畫面、重新取樹、再點一次（只一次）
-        guarded(prof, "scroll-to", node, parents, ctx)
-        time.sleep(0.6)
-        snap = snapshot(win)
-        hits = match_chat(prof, snap, chat)
-        if len(hits) != 1 or prof["chat_name"](hits[0].get("name", "")) != ctx["target_chat"]:
-            raise Refused("捲動後對不到同一個對話（符合 %d 個），停手" % len(hits))
-        node = hits[0]
-        _, parents = find_node(snap, lambda n: n is node)
-        guarded(prof, "click", node, parents, ctx)
+        try:
+            guarded(prof, "scroll-to", node, parents, ctx)
+        except RuntimeError as e2:
+            if "ACTION_FAILED" not in str(e2):
+                raise
+            _open_by_list_wheel(prof, win, chat, ctx)   # Qt 清單不支援 ScrollIntoView → 投遞滾輪
+        else:
+            time.sleep(0.6)
+            snap = snapshot(win)
+            hits = match_chat(prof, snap, chat)
+            if len(hits) != 1 or prof["chat_name"](hits[0].get("name", "")) != ctx["target_chat"]:
+                raise Refused("捲動後對不到同一個對話（符合 %d 個），停手" % len(hits))
+            node = hits[0]
+            _, parents = find_node(snap, lambda n: n is node)
+            guarded(prof, "click", node, parents, ctx)
         OPEN_CTX["scrolled_into_view"] = True
     time.sleep(0.8)
     if not header_ok(prof, snapshot(win, interactive=False), chat):

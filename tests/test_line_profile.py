@@ -87,6 +87,17 @@ def _scroll(node, allow):
 check("訊息區＋history-scroll → 可以捲", _scroll(_msgs, "history-scroll"))
 check("聊天清單（子項是按鈕）→ 不可捲", not _scroll(_chat, "history-scroll"))
 check("沒有明確允許 → 不可捲", not _scroll(_msgs, None))
+def _lw(node, allow, target):
+    try:
+        cg.assert_allowed(P, "list-wheel", node, (), {"zone": "main", "allow": allow, "target_chat": target}); return True
+    except cg.Refused:
+        return False
+# 開啟對話時 scroll-to 不被支援（Qt 清單）→ 只能為了目標對話捲聊天清單
+check("list-wheel：聊天清單＋list-target＋目標 → 可以捲", _lw(_chat, "list-target", "Group A"))
+check("list-wheel：沒有 list-target → 不可捲", not _lw(_chat, None, "Group A") and not _lw(_chat, "history-scroll", "Group A"))
+check("list-wheel：沒帶目標對話 → 不可捲", not _lw(_chat, "list-target", None))
+check("list-wheel：訊息區不是聊天清單 → 不可捲", not _lw(_msgs, "list-target", "Group A"))
+check("list-wheel 不放寬一般 scroll：聊天清單＋list-target 用 scroll 仍擋", not _scroll(_chat, "list-target"))
 
 # 靜態檢查：chat_guard 用 prof["k"]（缺了會 KeyError）讀的鍵，每個 profile 都要有，或前 8 行內有 prof.get("k") 守著。
 # 為什麼：真機 LINE 匯出存檔後因 prof["dialog_title"]（假聊天才有的鍵）當掉；CI 只跑假聊天所以抓不到。
