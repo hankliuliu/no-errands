@@ -671,6 +671,8 @@ def run_action(br, rb, st, act, vars_, approval, rec, ctl=None):
         ok = True
     elif d in ("fill", "click", "check"):
         settle = float(act.get("settle_s", 0))           # 先等目標出現／可操作（learn 依「就地重試才成功」的紀錄提出）
+        if act.get("optional") and ctl.step_mode():
+            settle = 0.0                                 # 講者模式：可有可無的目標（例：通知視窗）找一次就好，不讓他乾等
         first_try = True
         while True:
             ref, used = br.find(acct, act["target"], reuse=first_try)   # 第一次可以沿用拍子剛找到的目標；重試一律重新找
@@ -899,7 +901,7 @@ class Look:
         return pz
 
     def point(self, x, y):
-        """示範游標移到頁面上的 CSS 點；回移動秒數（依距離 0.3–0.9 秒；第一次 0.6 秒）。"""
+        """示範游標移到頁面上的 CSS 點；回移動秒數。照 web-demo：時長＝距離 ÷ 950 px/s，夾在 0.26–1.4 秒（第一次 0.6 秒）。"""
         import math
         if not self.fx["pointer"]:
             return 0.0
@@ -907,7 +909,7 @@ class Look:
             dur = 0.6
         else:
             d = math.hypot(x - self.ptr[0], y - self.ptr[1])
-            dur = 0.0 if d < 2 else min(0.6, max(0.3, 0.3 + d / 2000.0))    # 5c：移動上限 0.6 秒
+            dur = 0.0 if d < 2 else min(1.4, max(0.26, d / 950.0))       # 使用者 11-25：視覺效果照 web-demo
         self.ptr, self.ptr_seq = (x, y), self.ptr_seq + 1
         self.ctl.publish(pointer={"x": round(x, 1), "y": round(y, 1), "dur": round(dur, 2), "seq": self.ptr_seq})
         return dur
@@ -953,6 +955,8 @@ class Look:
                 time.sleep(0.15)
                 box = self._box(sel) or box
             return box
+        if self.visible(box):
+            return box                                     # 已經整個在畫面內：不捲、不重量（省兩次 neb，游標不會停頓）
         self.br.neb(self.acct, "scrollintoview", sel)
         time.sleep(0.2)
         return self._box(sel) or box
@@ -992,14 +996,28 @@ class Look:
         box = self.into_view(sel)
         if not box:
             return 0.0
+        return self.move_then_press(box, press)
+
+    CLICK_PAUSE = 0.12                                       # web-demo clickPause：到位後、按下前的小停頓
+
+    def move_then_press(self, box, press):
+        """游標移到目標（點擊＝元素中心、輸入＝框內左側）→ 等它真的到位 → 停 CLICK_PAUSE → 點擊的話發按下。回暫停秒數。"""
         if press:
             x, y = box[0] + box[2] / 2, box[1] + box[3] / 2      # 和真正點擊的位置（元素中心）一致
         else:
             x, y = box[0] + min(36, box[2] / 2), box[1] + box[3] / 2   # 輸入框：指在框內左側
-        pz = self.wait(self.point(x, y) + 0.2)
+        pz = self.wait(self.point(x, y) + self.CLICK_PAUSE)
         if press:
-            pz += self.press()                                   # 舞台回報漣漪已畫出 → 立刻送出點擊（5c A34：到位到頁面反應 1 秒內）
+            pz += self.press()                                   # 舞台回報已畫出 → 立刻送出點擊
         return pz
+
+    def visible(self, box):
+        """目標整個在瀏覽器可視範圍內（不用捲）。"""
+        vp = (getattr(self.br, "rb", None) or {}).get("viewport") or {}
+        vw, vh = vp.get("width"), vp.get("height")
+        if not (vw and vh and box):
+            return False
+        return box[0] >= 0 and box[1] >= 0 and box[0] + box[2] <= vw and box[1] + box[3] <= vh
 
     def set(self, acct, sel, scroll=True):
         """讀內容的拍子：捲到那一段 → 淡外框（舞台 1.2 秒後淡出）→ 游標指在那一段開頭的左邊、不蓋住字。"""
@@ -1093,9 +1111,17 @@ def beat_target(st, b):  # noqa: C901
 
 def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
     """一拍：先把這一拍的目標捲到看得見、框好，再出字幕（5c：先捲到再出字幕）。
-    自動模式（預設）：字幕留 beat_secs 秒、暫停時計時凍結；逐步模式：hold 的拍才停下等「下一步」。"""
+    自動模式（預設）：字幕留 beat_secs 秒、暫停時計時凍結；逐步（講者）模式：每一句都停著等「下一步」，按了字幕就消失。"""
     lk = beat_target(st, b)
     said = []
+    if ctl.step_mode() and isinstance(lk, dict) and lk.get("target"):
+        tgt = json.dumps(lk["target"], ensure_ascii=False, sort_keys=True)
+        if lk.get("action") or any(a.get("do") in ("fill", "click", "check") and a.get("target") and
+                                   json.dumps(a["target"], ensure_ascii=False, sort_keys=True) == tgt
+                                   for a in st.get("actions") or []):
+            # 講者模式（使用者 11-25）：這一拍指的就是接下來要操作的目標——字幕期間不預移游標，
+            # 按「下一步」後由動作本身一次移過去（web-demo R1/R2：移動→小停→點，單段連續，不會兩段跳動）
+            lk = None
 
     def publish_caption(tbox=None):
         """這一句字幕：連同這一句期間要避開的區域（開著的對話框、這一拍的目標）一起發布（Sprint G2）。只發一次。"""
@@ -1127,6 +1153,11 @@ def show_beat(rb, st, b, k, n, look, ctl, vars_, live):
         look.clear()
     look._pre_point = None
     publish_caption(getattr(look, "box", None) or getattr(look, "aim_box", None))   # 沒有游標移動的拍子：在這裡出字幕
+    if ctl.step_mode():
+        # 講者模式（使用者 11-25）：字幕不計時，留到講者按「下一步」才消失、接著做下一個動作
+        waited = ctl.wait_next(refresh=look.refresh)
+        ctl.publish(beat={"text": "", "i": k, "n": n})
+        return waited
     t0 = time.time()                                          # 字幕出來才開始計時
     dur = beat_secs(b, subst(b.get("say", ""), vars_))
     while time.time() - t0 < dur:                           # (停)＝多留一會兒；講者模式只在步與步之間停
@@ -1506,7 +1537,10 @@ def execute(rb, mode, a):
                         captions=captions_of(rb, st), on_fail=st.get("on_fail", ""), status="running", waited_s=0,
                         planb=pb if os.path.exists(pb) else None)
             cue_wait = 0.0
-            if mode == "live" and ((st.get("advance") == "cue" and not staged) or ctl.step_mode()) and not held:
+            # 講者模式下，第一句字幕排在任何動作之前的步驟：那一句本身就會等「下一步」，步驟開頭不再多等一次
+            first_beat_waits = staged and ctl.step_mode() and any(int(b.get("at", 0)) == 0 for b in beats_of(st))
+            if mode == "live" and ((st.get("advance") == "cue" and not staged) or ctl.step_mode()) and not held \
+                    and not first_beat_waits:
                 cue_wait = ctl.wait_next()                     # 播放器「下一步」或 control next
             held = False
             ctl.gate()
@@ -2220,9 +2254,14 @@ def standby(rb, a):
         br0 = Browser(rb, headed=False, log=None)
         base = {"card": "checklist", "status": "standby", "title": rb.get("title", ""), "owner_pid": os.getpid(),
                 "accounts": stage_accounts(rb, br0), "zoom": 1.0}
+        # 準備項目總數（使用者 11-25：進度要用總數當分母，不是做到哪算到哪）：
+        # 通道＋劇本自己的檢查＋每個帳號的登入＋核准兩項＋備案畫面＋瀏覽器乾淨啟動（＋勿擾，有舞台時）。
+        # 偶爾多出的項目（例：依長期核准續約）用 max() 吃掉，分母只會變大不會小於已列出的。
+        planned = 1 + len(rb.get("preflight") or []) + len(rb["accounts"]) + 2 + 1 + 1 + (1 if "--no-player" not in a else 0)
 
         def show(heading="上場前準備"):
-            _atomic_json(os.path.join(run_dir, "now.json"), dict(base, card_data={"heading": heading, "items": items}))
+            _atomic_json(os.path.join(run_dir, "now.json"),
+                         dict(base, card_data={"heading": heading, "items": items, "total": max(planned, len(items))}))
         show()
         if "--no-player" not in a:
             lg = open(os.path.join(run_dir, "engine.log"), "a", encoding="utf-8")

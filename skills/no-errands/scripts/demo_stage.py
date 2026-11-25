@@ -13,7 +13,7 @@
   字幕帶（底部）：全寬、一拍一句、最多兩行；右端只有「下一步」「暫停」「⋯」與還剩幾句的小圓點。
   鍵盤／簡報筆：→、PageDown 下一步；空白鍵暫停／繼續（RegisterHotKey，不靠焦點；舞台結束就取消）。
   講者一起操作：沒有隔離層，真滑鼠鍵盤直接到台上的頁面；示範瀏覽器有鍵盤焦點時 →、空白、C 讓給頁面（打字用），
-  PageDown 與 Ctrl+Shift+F12 一直有效。
+  PageDown 與 Ctrl+Shift+F12 一直有效。準備中（checklist）使用者還在用電腦：只留 Ctrl+Shift+F12，其餘全讓開。
 now.json 用到的欄位：status、card（title|checklist|transition|end|None）、card_data、account、role、role_color、
   section、crop、zoom、beat（{text,i,n}）、look（{box:[x,y,w,h] CSS}）、slow_s、waited_s、slow_say、planb、replay、
   title、accounts（{帳號:{role,color}}）。
@@ -551,13 +551,14 @@ class Stage:
             d_ = now.get("card_data") or {}
             items_ = d_.get("items") or []
             ok_n = sum(1 for it in items_ if it.get("state") == "ok")
+            tot_ = max(int(d_.get("total") or 0), len(items_))   # 分母＝準備項目總數（引擎一開始就算好），不是做到哪算到哪
             bad_ = [it for it in items_ if it.get("state") in ("fail", "warn")]
             fail_ = [it for it in bad_ if it.get("state") == "fail"]
             chip_t, res_t, res_fg = "", "", FG
             if fail_:
-                where_t, where_fg = "還沒準備好（%d/%d）" % (ok_n, len(items_)), "#f47067"
+                where_t, where_fg = "還沒準備好（%d/%d）" % (ok_n, tot_), "#f47067"
             else:
-                where_t, where_fg = ("準備中 %d/%d" % (ok_n, len(items_)) if items_ else "準備中…"), "#c9d1dc"
+                where_t, where_fg = ("準備中 %d/%d" % (ok_n, tot_) if items_ else "準備中…"), "#c9d1dc"
             if bad_:
                 detail_t = "\n".join(("✗ " if it.get("state") == "fail" else "! ") + (it.get("name") or "")
                                       + ("：" + it["say"] if it.get("say") else "") for it in bad_)
@@ -882,7 +883,8 @@ class Stage:
                 return
 
     def hotkeys(self):
-        """→／PageDown 下一步、空白暫停（簡報筆送的是 PageDown）。只在舞台存在期間註冊。"""
+        """→／PageDown 下一步、空白暫停（簡報筆送的是 PageDown）。只在舞台存在期間註冊；
+        準備中（checklist）只留 Ctrl+Shift+F12——使用者那時還在用電腦，不攔他的方向鍵、空白、PageDown。"""
         if os.name != "nt" or os.environ.get("NE_STAGE_NO_HOTKEYS"):
             return
         # VK_RIGHT、VK_NEXT（PageDown）、VK_SPACE；撤下用 Ctrl+Shift+F12（不攔單獨的 Esc：台上的瀏覽器與其他程式都收得到）
@@ -897,24 +899,27 @@ class Stage:
             if bad:                                        # 別的程式先註冊了同一個鍵：舞台收不到——畫面上說清楚，請改用按鈕
                 self._hk_warn = "%s 被別的程式佔用，按了不會有反應：請用右下角的按鈕" % "、".join(bad)
             msg = wintypes.MSG()
-            typing_keys, held_ = (1, 3, 5), {1, 3, 5}
+            reg_ = {i for i in (1, 2, 3, 5) if self.hotkeys_ok.get(names[i])}
+            fail_, off_prev = set(), None
             while True:
-                # 講者一起操作（使用者 11-24 03:4x）：示範瀏覽器有鍵盤焦點時，會被打進輸入框的鍵（→、空白、C）
-                # 不攔，讓他在頁面上打字；焦點回到別處再接回來。PageDown（簡報筆）與 Ctrl+Shift+F12 一直有效。
+                # 讓開的兩種時刻（4＝Ctrl+Shift+F12 永遠有效）：
+                # - 準備中（使用者 11-25：「準備中會搶我鍵盤」）：他還在用電腦，→、PageDown、空白、C 全讓開；
+                # - 講者一起操作（使用者 11-24 03:4x）：示範瀏覽器有鍵盤焦點時，會被打進輸入框的鍵（→、空白、C）
+                #   不攔，讓他在頁面上打字；PageDown（簡報筆）保留。焦點回到別處再接回來。
                 fg_ = u32.GetForegroundWindow()
                 in_page = bool(fg_) and (fg_ in self.browser_hwnds or u32.GetAncestor(fg_, 2) in self.browser_hwnds)
-                if in_page and held_:
-                    for i in typing_keys:
-                        u32.UnregisterHotKey(None, i)
-                    held_ = set()
-                elif not in_page and not held_:
-                    for i in typing_keys:
-                        mod, vk = keys[i]
-                        if u32.RegisterHotKey(None, i, 0x4000 | mod, vk):
-                            held_.add(i)
-                    if not held_:
-                        held_ = {0}                        # 被別的程式佔走：不要每 0.1 秒重試
-                self.keys_yield = in_page
+                prep_ = bool(getattr(self, "prep_hold", True))     # 還沒讀到 now.json 之前當作準備中（啟動時就是）
+                off_ = {1, 2, 3, 5} if prep_ else ({1, 3, 5} if in_page else set())
+                if off_ != off_prev:
+                    fail_ = set()                          # 狀態變了才重試被佔走的鍵（不要每 0.1 秒重試）
+                    off_prev = off_
+                for i in sorted(reg_ & off_):
+                    u32.UnregisterHotKey(None, i)
+                    reg_.discard(i)
+                for i in sorted({1, 2, 3, 5} - off_ - reg_ - fail_):
+                    mod, vk = keys[i]
+                    (reg_ if u32.RegisterHotKey(None, i, 0x4000 | mod, vk) else fail_).add(i)
+                self.keys_yield = in_page or prep_
                 if not u32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):      # PM_REMOVE
                     u32.MsgWaitForMultipleObjects(0, None, False, 100, 0x04FF)    # QS_ALLINPUT；最多 0.1 秒看一次前景
                     continue
@@ -1376,6 +1381,8 @@ class Stage:
         ctl = read_json(os.path.join(self.run_dir, "control.json"))
         changed_card = now.get("card") != self.now.get("card") or now.get("card_data") != self.now.get("card_data")
         self.now = now
+        # 快速鍵執行緒讀這個旗標：準備中（或引擎還沒發布）→ 讓開 →、PageDown、空白、C（使用者 11-25）
+        self.prep_hold = (now.get("card") == "checklist") if now else True
         st = now.get("status")
         if self.safety(ctl):
             return

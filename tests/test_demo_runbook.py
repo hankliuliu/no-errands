@@ -124,6 +124,59 @@ print(json.dumps({"retry_ok": retry_ok, "healed": healed, "next_ok": res.get("do
 """
 
 
+CAPTION = r"""
+import json, os, sys, threading, time, tempfile
+sys.path.insert(0, sys.argv[1])
+import demo_runbook as d
+class Look:
+    box = aim_box = None
+    def refresh(self, realign=None): pass
+    def clear(self): pass
+def run(advance, press_after):
+    t = tempfile.mkdtemp()
+    d.write_control(t, state="playing", advance=advance, next_seq=0)
+    c = d.Control(t)
+    if press_after is not None:
+        threading.Timer(press_after, lambda: d.write_control(t, next=True)).start()
+    st = {"account": "a", "actions": []}
+    b = {"say": "一句很長很長很長很長很長很長的字幕", "at": 0, "look": False}
+    t0 = time.time()
+    d.show_beat({}, st, b, 1, 1, Look(), c, {}, True)
+    beat = json.load(open(os.path.join(t, "now.json"), encoding="utf-8")).get("beat") or {}
+    return round(time.time() - t0, 2), beat.get("text")
+step_s, step_text = run("step", 0.5)
+auto_s, auto_text = run("auto", None)
+# 講者模式：這一拍指的目標＝接下來要操作的 → 字幕期間不預移游標（不發 pointer）；
+# 按「下一步」後 act 單段連續：量一次位置（在畫面內就不捲）→ 游標移到位（距離 ÷ 950，0.26–1.4 秒）→ ＋0.12 秒才按
+class Br:
+    rb = {"viewport": {"width": 1280, "height": 800}}
+    calls = []
+    def neb(self, acct, *cmd, **kw):
+        Br.calls.append(cmd[0])
+        return 0, "x: 10 y: 20 width: 100 height: 30", ""
+    def find(self, acct, target, reuse=False):
+        return "e7", {}
+t = tempfile.mkdtemp()
+d.write_control(t, state="playing", advance="step", next_seq=0)
+c = d.Control(t)
+lk = d.Look(Br(), c)
+lk.acct = "a"
+st2 = {"account": "a", "actions": [{"do": "click", "target": {"role": "button", "names": ["查詢"]}}]}
+threading.Timer(0.4, lambda: d.write_control(t, next=True)).start()
+d.show_beat({}, st2, {"say": "按下面的查詢", "at": 0}, 1, 1, lk, c, {}, True)
+no_premove = "pointer" not in json.load(open(os.path.join(t, "now.json"), encoding="utf-8"))
+lk.ptr = (600.0, 400.0)
+t0 = time.time()
+lk.act("a", "@e7", press=True)
+act_s = round(time.time() - t0, 2)
+nowj = json.load(open(os.path.join(t, "now.json"), encoding="utf-8"))
+move_s = (nowj.get("pointer") or {}).get("dur")
+print(json.dumps({"step_s": step_s, "step_text": step_text, "auto_s": auto_s, "auto_text": auto_text,
+                  "no_premove": no_premove, "act_s": act_s, "move_s": move_s, "pressed": nowj.get("press"),
+                  "calls": Br.calls}, ensure_ascii=False))
+"""
+
+
 def check(n, c, d=""):
     R.append(bool(c)); print(("PASS " if c else "FAIL ") + n + ("" if c else "  -- " + str(d)[:400]))
 
@@ -1058,6 +1111,18 @@ def main():
         rr = json.loads(q.stdout or "{}")
         check("狀態檔被讀的一方開著 → 寫入重試成功（不吞掉）", rr.get("retry_ok"), q.stdout + q.stderr[-300:])
         check("「在等下一步」的狀態遺失 → 2 秒內自己補上；之後按下一步照常", rr.get("healed") and rr.get("next_ok"), rr)
+
+        # ---------- 字幕（使用者 11-25）：講者模式不計時，按下一步就消失；自動模式照字數留
+        q = subprocess.run([sys.executable, "-c", CAPTION, S], capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+        cp = json.loads(q.stdout or "{}")
+        check("講者模式：字幕等到按「下一步」才走（不是照字數計時），按了字幕清掉",
+              0.4 <= (cp.get("step_s") or 0) < 2.0 and cp.get("step_text") == "", q.stdout + q.stderr[-300:])
+        check("自動模式：字幕照字數留著（不等人按）", (cp.get("auto_s") or 0) >= 3.0 and cp.get("auto_text"), cp)
+        mv = cp.get("move_s") or 0
+        check("講者模式：這一拍的目標＝接下來要點的 → 字幕期間不預移游標", cp.get("no_premove"), cp)
+        check("按了下一步 → 單段連續：量一次位置、游標移到位＋0.12 秒才按（web-demo R1/R2）",
+              cp.get("calls") == ["get", "get"] and 0.26 <= mv <= 1.4 and abs(mv - 652 / 950.0) < 0.02 and cp.get("pressed")
+              and (cp.get("act_s") or 0) >= mv + 0.12, cp)
 
         # ---------- 本機指令：照 POSIX 規則拆、不經殼層（從 cmd／檔案總管啟動也一樣）
         q = subprocess.run([sys.executable, "-c", CMDARGV, S], capture_output=True, text=True, encoding="utf-8", env=env)
